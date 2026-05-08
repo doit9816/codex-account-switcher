@@ -120,14 +120,14 @@ This repository includes workflows for CI and release builds.
   - Runs frontend build and Rust tests on pull requests, pushes, and manual dispatch.
 - `.github/workflows/release.yml`
   - Builds Windows, macOS, and Linux desktop artifacts.
-  - Runs manually or when pushing tags like `codex-account-switcher-v0.1.0`.
+  - Runs manually or when pushing tags like `codex-account-switcher-v0.1.1`.
   - On version tags, uploads installers to a GitHub Release.
 
 Create a release:
 
 ```bash
-git tag codex-account-switcher-v0.1.0
-git push origin codex-account-switcher-v0.1.0
+git tag codex-account-switcher-v0.1.1
+git push origin codex-account-switcher-v0.1.1
 ```
 
 If release upload fails with a token permission error, set the repository's GitHub Actions workflow permissions to **Read and write permissions**.
@@ -158,8 +158,8 @@ tools/codex-account-switcher/scripts/publish-to-github.ps1 `
 Then push a version tag to trigger release builds:
 
 ```bash
-git tag codex-account-switcher-v0.1.0
-git push origin codex-account-switcher-v0.1.0
+git tag codex-account-switcher-v0.1.1
+git push origin codex-account-switcher-v0.1.1
 ```
 
 ## Notes

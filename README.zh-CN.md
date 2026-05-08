@@ -119,15 +119,15 @@ src-tauri/target/release/bundle/
 - `.github/workflows/ci.yml`
   - 在 push、pull request、手动触发时运行前端构建和 Rust 测试。
 - `.github/workflows/release.yml`
-  - 手动触发或推送 `codex-account-switcher-v0.1.0` 这类 tag 时运行。
+- 手动触发或推送 `codex-account-switcher-v0.1.1` 这类 tag 时运行。
   - 自动构建 Windows、Linux、macOS Apple Silicon、macOS Intel 版本。
   - tag 构建会生成 GitHub Release 草稿并上传安装包。
 
 创建发版 tag：
 
 ```bash
-git tag codex-account-switcher-v0.1.0
-git push origin codex-account-switcher-v0.1.0
+git tag codex-account-switcher-v0.1.1
+git push origin codex-account-switcher-v0.1.1
 ```
 
 如果 Release 上传失败，通常是仓库权限问题。到 GitHub 仓库设置：

@@ -39,7 +39,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,8 +49,14 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Add macOS Apple Silicon target
+        if: matrix.name == 'macOS Apple Silicon'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Add macOS Intel target
+        if: matrix.name == 'macOS Intel'
+        run: rustup target add x86_64-apple-darwin
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -72,5 +78,5 @@ jobs:
             Download the installer or bundle for your platform from the assets below.
 
             These builds are unsigned by default.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
