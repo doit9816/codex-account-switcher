@@ -1,5 +1,7 @@
 # Codex Account Switcher
 
+[中文说明](README.zh-CN.md)
+
 Codex Account Switcher is a Tauri v2 desktop utility for managing multiple Codex / ChatGPT account profiles on one machine. It can import the current `~/.codex/auth.json`, save it as an encrypted local profile, probe usage, switch the global Codex auth file, and migrate all account profiles to another computer.
 
 > This tool manages account files you already own. It does not automate login, bypass verification, or bypass platform limits.
