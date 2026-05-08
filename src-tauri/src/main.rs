@@ -1,0 +1,2763 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use argon2::Argon2;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::Engine;
+use chrono::{DateTime, TimeZone, Utc};
+use fs2::FileExt;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
+use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use uuid::Uuid;
+use walkdir::WalkDir;
+use zip::write::SimpleFileOptions;
+use zip::{ZipArchive, ZipWriter};
+
+const STORE_FILE: &str = "store.json";
+const LOCAL_KEY_FILE: &str = "local-profile.key";
+const EXPORT_FORMAT: &str = "codex-switcher.bundle";
+const EXPORT_VERSION: u32 = 1;
+const KEYRING_SERVICE: &str = "codex-account-switcher";
+const KEYRING_USER: &str = "profiles";
+const LEGACY_APP_IDENTIFIER: &str = "cn.cmscloud.codex-account-switcher";
+const CHATGPT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AppStore {
+    #[serde(default)]
+    settings: AppSettings,
+    #[serde(default)]
+    profiles: Vec<AccountProfile>,
+    #[serde(default)]
+    events: Vec<AppEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    codex_home: Option<String>,
+    current_profile_id: Option<String>,
+    auto_switch_enabled: bool,
+    #[serde(default)]
+    probe_proxy: ProxySettings,
+    #[serde(default)]
+    auto_token_refresh_enabled: bool,
+    #[serde(default = "default_auto_refresh_interval_secs")]
+    auto_refresh_interval_secs: u64,
+    #[serde(default)]
+    background_token_refresh_enabled: bool,
+    #[serde(default = "default_background_token_refresh_interval_secs")]
+    background_token_refresh_interval_secs: u64,
+    #[serde(default = "default_token_refresh_threshold_secs")]
+    token_refresh_threshold_secs: u64,
+    #[serde(default = "default_true")]
+    auto_probe_enabled: bool,
+    #[serde(default = "default_auto_probe_interval_secs")]
+    auto_probe_interval_secs: u64,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            codex_home: default_codex_home().map(|p| p.to_string_lossy().to_string()),
+            current_profile_id: None,
+            auto_switch_enabled: true,
+            probe_proxy: ProxySettings::default(),
+            auto_token_refresh_enabled: false,
+            auto_refresh_interval_secs: default_auto_refresh_interval_secs(),
+            background_token_refresh_enabled: false,
+            background_token_refresh_interval_secs: default_background_token_refresh_interval_secs(
+            ),
+            token_refresh_threshold_secs: default_token_refresh_threshold_secs(),
+            auto_probe_enabled: true,
+            auto_probe_interval_secs: default_auto_probe_interval_secs(),
+        }
+    }
+}
+
+fn default_auto_refresh_interval_secs() -> u64 {
+    600
+}
+
+fn default_background_token_refresh_interval_secs() -> u64 {
+    3_600
+}
+
+fn default_token_refresh_threshold_secs() -> u64 {
+    0
+}
+
+fn default_auto_probe_interval_secs() -> u64 {
+    60
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ProxySettings {
+    enabled: bool,
+    url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountProfile {
+    id: String,
+    alias: String,
+    enabled: bool,
+    priority: i32,
+    cooldown_until: Option<String>,
+    quota_rule: QuotaRule,
+    summary: AuthSummary,
+    encrypted_auth_json: SecretEnvelope,
+    usage: UsageStats,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuotaRule {
+    hourly_limit: Option<u32>,
+    daily_limit: Option<u32>,
+    cooldown_minutes: u32,
+}
+
+impl Default for QuotaRule {
+    fn default() -> Self {
+        Self {
+            hourly_limit: None,
+            daily_limit: None,
+            cooldown_minutes: 180,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UsageStats {
+    hourly_used: u32,
+    daily_used: u32,
+    #[serde(default)]
+    detected_limits: Vec<DetectedLimit>,
+    detected_summary: Option<String>,
+    last_probe_at: Option<String>,
+    last_probe_status: Option<String>,
+    last_error: Option<String>,
+    last_used_at: Option<String>,
+    estimated_reset_at: Option<String>,
+    #[serde(default)]
+    last_token_refresh_at: Option<String>,
+    #[serde(default)]
+    last_token_refresh_status: Option<String>,
+    #[serde(default)]
+    last_token_refresh_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DetectedLimit {
+    window: String,
+    used: Option<u32>,
+    limit: Option<u32>,
+    remaining: Option<u32>,
+    used_percent: Option<u32>,
+    remaining_percent: Option<u32>,
+    reset_at: Option<String>,
+    label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AuthSummary {
+    email: Option<String>,
+    plan: Option<String>,
+    account_id: Option<String>,
+    user_id: Option<String>,
+    organization_id: Option<String>,
+    access_token_exp: Option<i64>,
+    id_token_exp: Option<i64>,
+    auth_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecretEnvelope {
+    v: u32,
+    alg: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppEvent {
+    ts: String,
+    level: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexHomeScan {
+    codex_home: String,
+    exists: bool,
+    has_auth: bool,
+    current_auth: Option<AuthSummary>,
+    migratable: Vec<String>,
+    excluded: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoreView {
+    settings: AppSettings,
+    profiles: Vec<AccountProfileView>,
+    events: Vec<AppEvent>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountProfileView {
+    id: String,
+    alias: String,
+    enabled: bool,
+    priority: i32,
+    cooldown_until: Option<String>,
+    quota_rule: QuotaRule,
+    summary: AuthSummary,
+    usage: UsageStats,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchResult {
+    profile_id: String,
+    backup_path: Option<String>,
+    codex_running: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageProbeResult {
+    profile_id: String,
+    status: String,
+    http_status: Option<u16>,
+    raw_json: Option<Value>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenRefreshBatchResult {
+    refreshed: u32,
+    skipped: u32,
+    failed: u32,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportEnvelope {
+    format: String,
+    version: u32,
+    kdf: String,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundlePayload {
+    manifest: BundleManifest,
+    settings: AppSettings,
+    profiles: Vec<ExportProfile>,
+    files: Vec<BundleFile>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleManifest {
+    format: String,
+    version: u32,
+    exported_at: String,
+    platform: String,
+    profile_count: usize,
+    include_conversations: bool,
+    files: Vec<BundleFileMeta>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleFileMeta {
+    path: String,
+    sha256: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleFile {
+    path: String,
+    sha256: String,
+    bytes_base64: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportProfile {
+    id: String,
+    alias: String,
+    enabled: bool,
+    priority: i32,
+    cooldown_until: Option<String>,
+    quota_rule: QuotaRule,
+    summary: AuthSummary,
+    auth_json: String,
+    usage: UsageStats,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportResult {
+    imported_profiles: usize,
+    restored_files: usize,
+    skipped_conversation_files: usize,
+    message: String,
+}
+
+#[tauri::command]
+fn get_store(app: AppHandle) -> Result<StoreView, String> {
+    let store = load_store(&app)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn scan_codex_home(app: AppHandle, codex_home: Option<String>) -> Result<CodexHomeScan, String> {
+    let path = resolve_codex_home(&app, codex_home)?;
+    scan_codex_home_path(&path)
+}
+
+#[tauri::command]
+fn import_current_auth_as_profile(
+    app: AppHandle,
+    codex_home: Option<String>,
+    alias: Option<String>,
+) -> Result<StoreView, String> {
+    let path = resolve_codex_home(&app, codex_home)?;
+    let auth_path = path.join("auth.json");
+    let auth_json =
+        fs::read_to_string(&auth_path).map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
+    let summary = summarize_auth(&auth_json)?;
+    let key = load_master_key(&app)?;
+    let now = now_string();
+    let account_label = summary
+        .email
+        .clone()
+        .or_else(|| summary.account_id.clone())
+        .unwrap_or_else(|| "Codex Account".to_string());
+    let mut store = load_store(&app)?;
+    store.settings.codex_home = Some(path.to_string_lossy().to_string());
+
+    let existing_index = store.profiles.iter().position(|p| {
+        p.summary.account_id.is_some()
+            && p.summary.account_id == summary.account_id
+            && summary.account_id.is_some()
+    });
+
+    let profile = AccountProfile {
+        id: existing_index
+            .map(|idx| store.profiles[idx].id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        alias: alias.unwrap_or(account_label),
+        enabled: true,
+        priority: existing_index
+            .map(|idx| store.profiles[idx].priority)
+            .unwrap_or(100),
+        cooldown_until: None,
+        quota_rule: existing_index
+            .map(|idx| store.profiles[idx].quota_rule.clone())
+            .unwrap_or_default(),
+        summary,
+        encrypted_auth_json: encrypt_secret(auth_json.as_bytes(), &key)?,
+        usage: existing_index
+            .map(|idx| store.profiles[idx].usage.clone())
+            .unwrap_or_default(),
+        created_at: existing_index
+            .map(|idx| store.profiles[idx].created_at.clone())
+            .unwrap_or_else(|| now.clone()),
+        updated_at: now,
+    };
+
+    if let Some(idx) = existing_index {
+        store.profiles[idx] = profile;
+    } else {
+        store.profiles.push(profile);
+    }
+    push_event(&mut store, "info", "已导入当前 auth.json 为账号 profile");
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn save_quota_rule(
+    app: AppHandle,
+    profile_id: String,
+    hourly_limit: Option<u32>,
+    daily_limit: Option<u32>,
+    cooldown_minutes: u32,
+    enabled: bool,
+    priority: i32,
+) -> Result<StoreView, String> {
+    let mut store = load_store(&app)?;
+    let profile = store
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    profile.quota_rule = QuotaRule {
+        hourly_limit,
+        daily_limit,
+        cooldown_minutes,
+    };
+    profile.enabled = enabled;
+    profile.priority = priority;
+    profile.updated_at = now_string();
+    push_event(&mut store, "info", "已保存账号额度规则");
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn save_proxy_settings(app: AppHandle, enabled: bool, url: String) -> Result<StoreView, String> {
+    let mut store = load_store(&app)?;
+    let normalized = normalize_proxy_url(&url)?;
+    if enabled && normalized.is_empty() {
+        return Err("启用代理时必须填写代理地址".to_string());
+    }
+    store.settings.probe_proxy = ProxySettings {
+        enabled,
+        url: normalized,
+    };
+    push_event(
+        &mut store,
+        "info",
+        if enabled {
+            "已保存额度探测代理设置"
+        } else {
+            "已关闭额度探测代理"
+        },
+    );
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn open_codex_home(app: AppHandle, codex_home: Option<String>) -> Result<(), String> {
+    let path = resolve_codex_home(&app, codex_home)?;
+    if !path.exists() {
+        return Err(format!("目录不存在：{}", path.to_string_lossy()));
+    }
+    open_path_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn save_auto_settings(
+    app: AppHandle,
+    auto_token_refresh_enabled: bool,
+    auto_refresh_interval_secs: u64,
+    background_token_refresh_enabled: bool,
+    background_token_refresh_interval_secs: u64,
+    token_refresh_threshold_secs: u64,
+    auto_probe_enabled: bool,
+    auto_probe_interval_secs: u64,
+) -> Result<StoreView, String> {
+    let mut store = load_store(&app)?;
+    let _ = auto_token_refresh_enabled;
+    store.settings.auto_token_refresh_enabled = false;
+    store.settings.auto_refresh_interval_secs = clamp_interval(auto_refresh_interval_secs);
+    store.settings.background_token_refresh_enabled = background_token_refresh_enabled;
+    store.settings.background_token_refresh_interval_secs =
+        clamp_background_token_refresh_interval(background_token_refresh_interval_secs);
+    store.settings.token_refresh_threshold_secs =
+        clamp_token_refresh_threshold(token_refresh_threshold_secs);
+    store.settings.auto_probe_enabled = auto_probe_enabled;
+    store.settings.auto_probe_interval_secs = clamp_interval(auto_probe_interval_secs);
+    push_event(&mut store, "info", "已保存自动刷新设置");
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn refresh_profile_tokens_from_codex_home(
+    app: AppHandle,
+    codex_home: Option<String>,
+    profile_id: Option<String>,
+) -> Result<StoreView, String> {
+    let path = resolve_codex_home(&app, codex_home)?;
+    let auth_json = fs::read_to_string(path.join("auth.json"))
+        .map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
+    let summary = summarize_auth(&auth_json)?;
+    let key = load_master_key(&app)?;
+    let mut store = load_store(&app)?;
+    let target_id = profile_id.or_else(|| store.settings.current_profile_id.clone());
+    let idx = if let Some(target_id) = target_id {
+        let idx = store
+            .profiles
+            .iter()
+            .position(|p| p.id == target_id)
+            .ok_or_else(|| "没有找到要同步的账号 profile".to_string())?;
+        if store.profiles[idx].summary.account_id.is_some()
+            && summary.account_id.is_some()
+            && store.profiles[idx].summary.account_id != summary.account_id
+        {
+            return Err("当前 auth.json 与所选账号不匹配，已跳过 token 同步".to_string());
+        }
+        idx
+    } else {
+        store
+            .profiles
+            .iter()
+            .position(|p| {
+                summary.account_id.is_some() && p.summary.account_id == summary.account_id
+            })
+            .ok_or_else(|| "没有找到与当前 auth.json 匹配的账号 profile".to_string())?
+    };
+
+    store.profiles[idx].summary = summary;
+    store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
+    store.profiles[idx].updated_at = now_string();
+    push_event(
+        &mut store,
+        "info",
+        "已同步当前 auth.json token 到账号 profile",
+    );
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+fn sync_current_auth_into_profile(
+    app: &AppHandle,
+    store: &mut AppStore,
+    idx: usize,
+    key: &[u8; 32],
+) -> Result<Option<String>, String> {
+    let path = resolve_codex_home(app, store.settings.codex_home.clone())?;
+    let auth_path = path.join("auth.json");
+    if !auth_path.exists() {
+        return Ok(None);
+    }
+
+    let auth_json = fs::read_to_string(&auth_path)
+        .map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
+    let summary = summarize_auth(&auth_json)?;
+    let profile_summary = store.profiles[idx].summary.clone();
+
+    if profile_summary.account_id.is_some()
+        && summary.account_id.is_some()
+        && profile_summary.account_id != summary.account_id
+    {
+        return Ok(None);
+    }
+
+    if let (Some(profile_email), Some(current_email)) =
+        (profile_summary.email.as_deref(), summary.email.as_deref())
+    {
+        if !profile_email.eq_ignore_ascii_case(current_email) {
+            return Ok(None);
+        }
+    }
+
+    store.profiles[idx].summary = summary;
+    store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), key)?;
+    store.profiles[idx].updated_at = now_string();
+    push_event(
+        store,
+        "info",
+        "已从当前 Codex auth.json 同步账号 token 快照",
+    );
+    Ok(Some(auth_json))
+}
+
+#[tauri::command]
+async fn refresh_all_profile_tokens(
+    app: AppHandle,
+    include_current: bool,
+    threshold_secs: Option<u64>,
+) -> Result<TokenRefreshBatchResult, String> {
+    if is_codex_running() {
+        return Err("检测到 Codex 正在运行，已暂停其他账号 token 保活，避免 refresh_token 被轮换后影响当前会话。".to_string());
+    }
+    let key = load_master_key(&app)?;
+    let mut store = load_store(&app)?;
+    let client = build_probe_client(&store.settings.probe_proxy)?;
+    let current_id = store.settings.current_profile_id.clone();
+    let threshold = clamp_token_refresh_threshold(
+        threshold_secs.unwrap_or(store.settings.token_refresh_threshold_secs),
+    );
+    let mut refreshed = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+
+    for idx in 0..store.profiles.len() {
+        if !store.profiles[idx].enabled {
+            skipped += 1;
+            continue;
+        }
+        if !include_current && current_id.as_deref() == Some(store.profiles[idx].id.as_str()) {
+            skipped += 1;
+            continue;
+        }
+        if !should_refresh_access_token(store.profiles[idx].summary.access_token_exp, threshold) {
+            skipped += 1;
+            continue;
+        }
+
+        let now = now_string();
+        let auth_json = match String::from_utf8(decrypt_secret(
+            &store.profiles[idx].encrypted_auth_json,
+            &key,
+        )?) {
+            Ok(value) => value,
+            Err(err) => {
+                failed += 1;
+                store.profiles[idx].usage.last_token_refresh_at = Some(now);
+                store.profiles[idx].usage.last_token_refresh_status =
+                    Some("decode_error".to_string());
+                store.profiles[idx].usage.last_token_refresh_error = Some(err.to_string());
+                continue;
+            }
+        };
+
+        match refresh_auth_json_with_client(&client, &auth_json).await {
+            Ok(updated_auth_json) => {
+                store.profiles[idx].summary = summarize_auth(&updated_auth_json)?;
+                store.profiles[idx].encrypted_auth_json =
+                    encrypt_secret(updated_auth_json.as_bytes(), &key)?;
+                store.profiles[idx].usage.last_token_refresh_at = Some(now);
+                store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
+                store.profiles[idx].usage.last_token_refresh_error = None;
+                store.profiles[idx].updated_at = now_string();
+                refreshed += 1;
+            }
+            Err(err) => {
+                failed += 1;
+                store.profiles[idx].usage.last_token_refresh_at = Some(now);
+                store.profiles[idx].usage.last_token_refresh_status = Some("error".to_string());
+                store.profiles[idx].usage.last_token_refresh_error = Some(err);
+            }
+        }
+    }
+
+    push_event(
+        &mut store,
+        "info",
+        &format!(
+            "token保活完成：刷新 {} 个，跳过 {} 个，失败 {} 个",
+            refreshed, skipped, failed
+        ),
+    );
+    save_store(&app, &store)?;
+    Ok(TokenRefreshBatchResult {
+        refreshed,
+        skipped,
+        failed,
+        message: "已完成其他账号 token 保活检查".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn switch_profile(
+    app: AppHandle,
+    profile_id: String,
+    codex_home: Option<String>,
+    force: bool,
+) -> Result<SwitchResult, String> {
+    let mut store = load_store(&app)?;
+    let path = resolve_codex_home(&app, codex_home)?;
+    let key = load_master_key(&app)?;
+    let idx = store
+        .profiles
+        .iter()
+        .position(|p| p.id == profile_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let profile = store.profiles[idx].clone();
+    if !profile.enabled && !force {
+        return Err("账号已禁用，不能自动切换；可先启用账号后再切换".to_string());
+    }
+    if let Some(cooldown) = &profile.cooldown_until {
+        if parse_time(cooldown)
+            .map(|t| t > Utc::now())
+            .unwrap_or(false)
+            && !force
+        {
+            return Err("账号仍在冷却中；如需强制切换请勾选强制切换".to_string());
+        }
+    }
+    let codex_running = is_codex_running();
+    if codex_running && !force {
+        return Err("检测到 Codex 正在运行。为避免当前会话账号不匹配，请先关闭 Codex，或勾选强制切换后再继续。".to_string());
+    }
+
+    fs::create_dir_all(&path).map_err(display_err)?;
+    let lock_path = path.join(".account-switcher.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(display_err)?;
+    lock.lock_exclusive().map_err(display_err)?;
+
+    let mut auth_json = String::from_utf8(decrypt_secret(&profile.encrypted_auth_json, &key)?)
+        .map_err(|e| e.to_string())?;
+    if should_refresh_access_token(profile.summary.access_token_exp, 0) {
+        let client = build_probe_client(&store.settings.probe_proxy)?;
+        auth_json = refresh_auth_json_with_client(&client, &auth_json)
+            .await
+            .map_err(|e| format!("账号 token 已过期且刷新失败：{}", e))?;
+        store.profiles[idx].summary = summarize_auth(&auth_json)?;
+        store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
+        store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
+        store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
+        store.profiles[idx].usage.last_token_refresh_error = None;
+    }
+    let auth_path = path.join("auth.json");
+    let backup_path = backup_auth_file(&auth_path)?;
+    replace_file_with_rollback(&auth_path, auth_json.as_bytes(), backup_path.as_deref())?;
+
+    store.settings.codex_home = Some(path.to_string_lossy().to_string());
+    store.settings.current_profile_id = Some(profile_id.clone());
+    store.profiles[idx].usage.last_used_at = Some(now_string());
+    store.profiles[idx].updated_at = now_string();
+    push_event(
+        &mut store,
+        "info",
+        &format!("已切换到账号 {}", profile.alias),
+    );
+    save_store(&app, &store)?;
+
+    Ok(SwitchResult {
+        profile_id,
+        backup_path: backup_path.map(|p| p.to_string_lossy().to_string()),
+        codex_running,
+        message: if codex_running {
+            "已切换，但检测到 Codex 进程正在运行，当前会话可能仍使用旧账号".to_string()
+        } else {
+            "已切换当前 Codex 账号".to_string()
+        },
+    })
+}
+
+#[tauri::command]
+async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeResult, String> {
+    let mut store = load_store(&app)?;
+    let key = load_master_key(&app)?;
+    let idx = store
+        .profiles
+        .iter()
+        .position(|p| p.id == profile_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let mut auth_json = String::from_utf8(decrypt_secret(
+        &store.profiles[idx].encrypted_auth_json,
+        &key,
+    )?)
+    .map_err(|e| e.to_string())?;
+    let client = build_probe_client(&store.settings.probe_proxy)?;
+    if should_refresh_access_token(store.profiles[idx].summary.access_token_exp, 0) {
+        let is_current_profile =
+            store.settings.current_profile_id.as_deref() == Some(profile_id.as_str());
+        if is_current_profile {
+            if let Some(current_auth_json) =
+                sync_current_auth_into_profile(&app, &mut store, idx, &key)?
+            {
+                auth_json = current_auth_json;
+            }
+
+            if should_refresh_access_token(store.profiles[idx].summary.access_token_exp, 0) {
+                let message = "当前全局账号 access token 已过期；切换器不会自动刷新当前正在使用的账号 token，请让 Codex 自行刷新或重新登录后重新导入当前 auth.json";
+                store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
+                store.profiles[idx].usage.last_token_refresh_status =
+                    Some("skipped_current".to_string());
+                store.profiles[idx].usage.last_token_refresh_error = Some(message.to_string());
+                push_event(&mut store, "warn", message);
+                save_store(&app, &store)?;
+                return Err(message.to_string());
+            }
+        } else {
+            auth_json = refresh_auth_json_with_client(&client, &auth_json)
+                .await
+                .map_err(|e| format!("账号 token 已过期且刷新失败：{}", e))?;
+            store.profiles[idx].summary = summarize_auth(&auth_json)?;
+            store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
+            store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
+            store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
+            store.profiles[idx].usage.last_token_refresh_error = None;
+        }
+    }
+    let auth: Value = serde_json::from_str(&auth_json).map_err(display_err)?;
+    let access_token = auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "auth.json 中没有 access_token，无法探测 usage".to_string())?;
+
+    let response = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .bearer_auth(access_token)
+        .send()
+        .await;
+
+    let now = now_string();
+    match response {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let json_body = resp.json::<Value>().await.ok();
+            store.profiles[idx].usage.last_probe_at = Some(now);
+            store.profiles[idx].usage.last_probe_status = Some(status.to_string());
+            store.profiles[idx].usage.last_error = None;
+            if let Some(body) = &json_body {
+                apply_usage_probe_body(&mut store.profiles[idx], body);
+            }
+            if status == 429 {
+                let cooldown = Utc::now()
+                    + chrono::Duration::minutes(
+                        store.profiles[idx].quota_rule.cooldown_minutes as i64,
+                    );
+                store.profiles[idx].cooldown_until = Some(cooldown.to_rfc3339());
+                store.profiles[idx].usage.estimated_reset_at = Some(cooldown.to_rfc3339());
+            }
+            push_event(
+                &mut store,
+                "info",
+                &format!("额度探测完成，HTTP {}", status),
+            );
+            save_store(&app, &store)?;
+            Ok(UsageProbeResult {
+                profile_id,
+                status: if status < 400 { "ok" } else { "http_error" }.to_string(),
+                http_status: Some(status),
+                raw_json: json_body,
+                message: "已完成 usage 探测；若返回结构为空，将继续使用本地估算".to_string(),
+            })
+        }
+        Err(err) => {
+            store.profiles[idx].usage.last_probe_at = Some(now);
+            store.profiles[idx].usage.last_probe_status = Some("network_error".to_string());
+            store.profiles[idx].usage.last_error = Some(err.to_string());
+            push_event(&mut store, "warn", "额度探测失败，已回退到本地估算");
+            save_store(&app, &store)?;
+            Ok(UsageProbeResult {
+                profile_id,
+                status: "network_error".to_string(),
+                http_status: None,
+                raw_json: None,
+                message: "usage 接口探测失败，已记录为本地估算状态".to_string(),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+fn export_all_accounts_bundle(
+    app: AppHandle,
+    output_path: String,
+    password: String,
+    include_conversations: bool,
+) -> Result<BundleManifest, String> {
+    if !password.is_empty() && password.len() < 8 {
+        return Err("导出口令至少需要 8 位；如需明文导出请留空".to_string());
+    }
+    let store = load_store(&app)?;
+    let key = load_master_key(&app)?;
+    let codex_home = resolve_codex_home(&app, store.settings.codex_home.clone())?;
+    let export_profiles = store
+        .profiles
+        .iter()
+        .map(|p| {
+            let auth_json = String::from_utf8(decrypt_secret(&p.encrypted_auth_json, &key)?)
+                .map_err(|e| e.to_string())?;
+            Ok(ExportProfile {
+                id: p.id.clone(),
+                alias: p.alias.clone(),
+                enabled: p.enabled,
+                priority: p.priority,
+                cooldown_until: p.cooldown_until.clone(),
+                quota_rule: p.quota_rule.clone(),
+                summary: p.summary.clone(),
+                auth_json,
+                usage: p.usage.clone(),
+                created_at: p.created_at.clone(),
+                updated_at: p.updated_at.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let files = collect_bundle_files(&codex_home, include_conversations)?;
+    let metas = files
+        .iter()
+        .map(|f| BundleFileMeta {
+            path: f.path.clone(),
+            sha256: f.sha256.clone(),
+            bytes: STANDARD
+                .decode(&f.bytes_base64)
+                .map(|b| b.len() as u64)
+                .unwrap_or(0),
+        })
+        .collect::<Vec<_>>();
+
+    let manifest = BundleManifest {
+        format: EXPORT_FORMAT.to_string(),
+        version: EXPORT_VERSION,
+        exported_at: now_string(),
+        platform: std::env::consts::OS.to_string(),
+        profile_count: export_profiles.len(),
+        include_conversations,
+        files: metas,
+    };
+    let payload = BundlePayload {
+        manifest,
+        settings: store.settings.clone(),
+        profiles: export_profiles,
+        files,
+    };
+
+    let zip_bytes = zip_payload(&payload)?;
+    if password.is_empty() {
+        fs::write(&output_path, zip_bytes).map_err(display_err)?;
+    } else {
+        let encrypted = encrypt_export(&zip_bytes, &password)?;
+        let bytes = serde_json::to_vec_pretty(&encrypted).map_err(display_err)?;
+        fs::write(&output_path, bytes).map_err(display_err)?;
+    }
+
+    Ok(payload.manifest)
+}
+
+#[tauri::command]
+fn preview_bundle(bundle_path: String, password: String) -> Result<BundleManifest, String> {
+    let payload = read_bundle(&bundle_path, &password)?;
+    Ok(payload.manifest)
+}
+
+#[tauri::command]
+fn import_accounts_bundle(
+    app: AppHandle,
+    bundle_path: String,
+    password: String,
+    restore_conversations: bool,
+    codex_home: Option<String>,
+) -> Result<ImportResult, String> {
+    let payload = read_bundle(&bundle_path, &password)?;
+    let key = load_master_key(&app)?;
+    let mut store = load_store(&app)?;
+    let target_codex_home = resolve_codex_home(&app, codex_home)?;
+    fs::create_dir_all(&target_codex_home).map_err(display_err)?;
+
+    let mut imported = 0usize;
+    for profile in payload.profiles {
+        let encrypted_auth_json = encrypt_secret(profile.auth_json.as_bytes(), &key)?;
+        let local_profile = AccountProfile {
+            id: profile.id,
+            alias: profile.alias,
+            enabled: profile.enabled,
+            priority: profile.priority,
+            cooldown_until: profile.cooldown_until,
+            quota_rule: profile.quota_rule,
+            summary: profile.summary,
+            encrypted_auth_json,
+            usage: profile.usage,
+            created_at: profile.created_at,
+            updated_at: now_string(),
+        };
+        if let Some(idx) = store.profiles.iter().position(|p| {
+            p.id == local_profile.id
+                || (p.summary.account_id.is_some()
+                    && p.summary.account_id == local_profile.summary.account_id)
+        }) {
+            store.profiles[idx] = local_profile;
+        } else {
+            store.profiles.push(local_profile);
+        }
+        imported += 1;
+    }
+
+    let mut restored = 0usize;
+    let mut skipped_conversations = 0usize;
+    for file in payload.files {
+        if is_conversation_path(&file.path) && !restore_conversations {
+            skipped_conversations += 1;
+            continue;
+        }
+        if is_excluded_path(&file.path) {
+            continue;
+        }
+        let bytes = STANDARD.decode(&file.bytes_base64).map_err(display_err)?;
+        let sha = hex_sha256(&bytes);
+        if sha != file.sha256 {
+            return Err(format!("迁移包文件校验失败: {}", file.path));
+        }
+        let out = target_codex_home.join(safe_relative_path(&file.path)?);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(display_err)?;
+        }
+        fs::write(out, bytes).map_err(display_err)?;
+        restored += 1;
+    }
+
+    store.settings.codex_home = Some(target_codex_home.to_string_lossy().to_string());
+    if store.settings.current_profile_id.is_none() {
+        store.settings.current_profile_id = store.profiles.first().map(|p| p.id.clone());
+    }
+    push_event(
+        &mut store,
+        "info",
+        &format!("已导入迁移包，恢复 {} 个账号", imported),
+    );
+    save_store(&app, &store)?;
+
+    Ok(ImportResult {
+        imported_profiles: imported,
+        restored_files: restored,
+        skipped_conversation_files: skipped_conversations,
+        message: "迁移包已导入；选择账号后可写入当前机器的 auth.json".to_string(),
+    })
+}
+
+#[tauri::command]
+fn restore_backup(
+    app: AppHandle,
+    codex_home: Option<String>,
+    backup_path: Option<String>,
+) -> Result<String, String> {
+    let home = resolve_codex_home(&app, codex_home)?;
+    let backup = if let Some(path) = backup_path {
+        PathBuf::from(path)
+    } else {
+        latest_backup(&home).ok_or_else(|| "没有找到 auth.json 备份".to_string())?
+    };
+    let target = home.join("auth.json");
+    fs::copy(&backup, &target).map_err(display_err)?;
+    Ok(format!("已恢复备份 {}", backup.to_string_lossy()))
+}
+
+fn scan_codex_home_path(path: &Path) -> Result<CodexHomeScan, String> {
+    let auth_path = path.join("auth.json");
+    let current_auth = if auth_path.exists() {
+        Some(summarize_auth(
+            &fs::read_to_string(&auth_path).map_err(display_err)?,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(CodexHomeScan {
+        codex_home: path.to_string_lossy().to_string(),
+        exists: path.exists(),
+        has_auth: auth_path.exists(),
+        current_auth,
+        migratable: migratable_roots(false)
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        excluded: excluded_roots().into_iter().map(String::from).collect(),
+    })
+}
+
+fn store_view(store: AppStore) -> StoreView {
+    StoreView {
+        settings: store.settings,
+        profiles: store
+            .profiles
+            .into_iter()
+            .map(|p| AccountProfileView {
+                id: p.id,
+                alias: p.alias,
+                enabled: p.enabled,
+                priority: p.priority,
+                cooldown_until: p.cooldown_until,
+                quota_rule: p.quota_rule,
+                summary: p.summary,
+                usage: p.usage,
+                created_at: p.created_at,
+                updated_at: p.updated_at,
+            })
+            .collect(),
+        events: store.events,
+    }
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(display_err)?;
+    migrate_legacy_app_data_dir(&dir)?;
+    fs::create_dir_all(&dir).map_err(display_err)?;
+    Ok(dir)
+}
+
+fn migrate_legacy_app_data_dir(new_dir: &Path) -> Result<(), String> {
+    if new_dir.join(STORE_FILE).exists() {
+        return Ok(());
+    }
+
+    let Some(parent) = new_dir.parent() else {
+        return Ok(());
+    };
+    let legacy_dir = parent.join(LEGACY_APP_IDENTIFIER);
+    if !legacy_dir.exists() || legacy_dir == new_dir {
+        return Ok(());
+    }
+
+    copy_dir_contents_if_missing(&legacy_dir, new_dir)
+}
+
+fn copy_dir_contents_if_missing(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(display_err)?;
+    for entry in WalkDir::new(from)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let source = entry.path();
+        let rel = source.strip_prefix(from).map_err(display_err)?;
+        let target = to.join(rel);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target).map_err(display_err)?;
+        } else if !target.exists() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(display_err)?;
+            }
+            fs::copy(source, target).map_err(display_err)?;
+        }
+    }
+    Ok(())
+}
+
+fn load_store(app: &AppHandle) -> Result<AppStore, String> {
+    let path = app_data_dir(app)?.join(STORE_FILE);
+    if !path.exists() {
+        return Ok(AppStore::default());
+    }
+    let text = fs::read_to_string(path).map_err(display_err)?;
+    serde_json::from_str(&text).map_err(display_err)
+}
+
+fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
+    let path = app_data_dir(app)?.join(STORE_FILE);
+    let tmp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(store).map_err(display_err)?;
+    fs::write(&tmp, text).map_err(display_err)?;
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    fs::rename(tmp, path).map_err(display_err)
+}
+
+fn load_master_key(app: &AppHandle) -> Result<[u8; 32], String> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        if let Ok(secret) = entry.get_password() {
+            if let Ok(bytes) = STANDARD.decode(secret) {
+                if bytes.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&bytes);
+                    return Ok(key);
+                }
+            }
+        }
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        if entry.set_password(&STANDARD.encode(key)).is_ok() {
+            return Ok(key);
+        }
+    }
+
+    let key_path = app_data_dir(app)?.join(LOCAL_KEY_FILE);
+    if key_path.exists() {
+        let bytes = fs::read(&key_path).map_err(display_err)?;
+        if bytes.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
+    }
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    fs::write(key_path, key).map_err(display_err)?;
+    Ok(key)
+}
+
+fn encrypt_secret(plaintext: &[u8], key: &[u8; 32]) -> Result<SecretEnvelope, String> {
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(display_err)?;
+    let mut nonce = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext)
+        .map_err(display_err)?;
+    Ok(SecretEnvelope {
+        v: 1,
+        alg: "AES-256-GCM".to_string(),
+        nonce: STANDARD.encode(nonce),
+        ciphertext: STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_secret(envelope: &SecretEnvelope, key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(display_err)?;
+    let nonce = STANDARD.decode(&envelope.nonce).map_err(display_err)?;
+    let ciphertext = STANDARD.decode(&envelope.ciphertext).map_err(display_err)?;
+    cipher
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .map_err(display_err)
+}
+
+fn encrypt_export(plaintext: &[u8], password: &str) -> Result<ExportEnvelope, String> {
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let mut key = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(password.as_bytes(), &salt, &mut key)
+        .map_err(display_err)?;
+    let secret = encrypt_secret(plaintext, &key)?;
+    Ok(ExportEnvelope {
+        format: EXPORT_FORMAT.to_string(),
+        version: EXPORT_VERSION,
+        kdf: "argon2id-default".to_string(),
+        salt: STANDARD.encode(salt),
+        nonce: secret.nonce,
+        ciphertext: secret.ciphertext,
+    })
+}
+
+fn decrypt_export(envelope: ExportEnvelope, password: &str) -> Result<Vec<u8>, String> {
+    if envelope.format != EXPORT_FORMAT {
+        return Err("不是 Codex Switcher 迁移包".to_string());
+    }
+    let salt = STANDARD.decode(envelope.salt).map_err(display_err)?;
+    let mut key = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(password.as_bytes(), &salt, &mut key)
+        .map_err(display_err)?;
+    decrypt_secret(
+        &SecretEnvelope {
+            v: envelope.version,
+            alg: "AES-256-GCM".to_string(),
+            nonce: envelope.nonce,
+            ciphertext: envelope.ciphertext,
+        },
+        &key,
+    )
+}
+
+fn summarize_auth(auth_json: &str) -> Result<AuthSummary, String> {
+    let auth: Value = serde_json::from_str(auth_json).map_err(display_err)?;
+    let id_claims = auth
+        .pointer("/tokens/id_token")
+        .and_then(Value::as_str)
+        .and_then(decode_jwt_claims);
+    let access_claims = auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .and_then(decode_jwt_claims);
+
+    Ok(AuthSummary {
+        email: id_claims
+            .as_ref()
+            .and_then(|v| v.get("email"))
+            .and_then(Value::as_str)
+            .map(String::from),
+        plan: id_claims
+            .as_ref()
+            .and_then(|v| v.get("chatgpt_plan_type").or_else(|| v.get("plan_type")))
+            .and_then(Value::as_str)
+            .map(String::from),
+        account_id: auth
+            .pointer("/tokens/account_id")
+            .and_then(Value::as_str)
+            .map(String::from),
+        user_id: id_claims
+            .as_ref()
+            .and_then(|v| v.get("chatgpt_user_id").or_else(|| v.get("sub")))
+            .and_then(Value::as_str)
+            .map(String::from),
+        organization_id: id_claims
+            .as_ref()
+            .and_then(|v| v.get("organization_id"))
+            .and_then(Value::as_str)
+            .map(String::from),
+        access_token_exp: access_claims
+            .as_ref()
+            .and_then(|v| v.get("exp"))
+            .and_then(Value::as_i64),
+        id_token_exp: id_claims
+            .as_ref()
+            .and_then(|v| v.get("exp"))
+            .and_then(Value::as_i64),
+        auth_mode: auth
+            .get("auth_mode")
+            .and_then(Value::as_str)
+            .map(String::from),
+    })
+}
+
+fn decode_jwt_claims(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn build_probe_client(proxy: &ProxySettings) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder();
+    if proxy.enabled {
+        let proxy_url = normalize_proxy_url(&proxy.url)?;
+        if proxy_url.is_empty() {
+            return Err("proxy is enabled but proxy url is empty".to_string());
+        }
+        builder = builder.proxy(reqwest::Proxy::all(proxy_url).map_err(display_err)?);
+    }
+    builder.build().map_err(display_err)
+}
+
+async fn refresh_auth_json_with_client(
+    client: &reqwest::Client,
+    auth_json: &str,
+) -> Result<String, String> {
+    let auth: Value = serde_json::from_str(auth_json).map_err(display_err)?;
+    let refresh_token = auth
+        .pointer("/tokens/refresh_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "auth.json missing refresh_token".to_string())?;
+
+    let response = client
+        .post("https://auth.openai.com/oauth/token")
+        .json(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": CHATGPT_OAUTH_CLIENT_ID,
+            "refresh_token": refresh_token,
+        }))
+        .send()
+        .await
+        .map_err(display_err)?;
+    let status = response.status();
+    let body = response.text().await.map_err(display_err)?;
+    if !status.is_success() {
+        return Err(format!(
+            "token refresh HTTP {}: {}",
+            status.as_u16(),
+            compact_error_body(&body)
+        ));
+    }
+    let token_response: Value = serde_json::from_str(&body).map_err(display_err)?;
+    apply_token_refresh_response(auth_json, &token_response)
+}
+
+fn apply_token_refresh_response(auth_json: &str, token_response: &Value) -> Result<String, String> {
+    let mut auth: Value = serde_json::from_str(auth_json).map_err(display_err)?;
+    let tokens = auth
+        .get_mut("tokens")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "auth.json missing tokens object".to_string())?;
+    let access_token = token_response
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "refresh response missing access_token".to_string())?;
+    tokens.insert(
+        "access_token".to_string(),
+        Value::String(access_token.to_string()),
+    );
+    if let Some(id_token) = token_response.get("id_token").and_then(Value::as_str) {
+        tokens.insert("id_token".to_string(), Value::String(id_token.to_string()));
+    }
+    if let Some(refresh_token) = token_response.get("refresh_token").and_then(Value::as_str) {
+        tokens.insert(
+            "refresh_token".to_string(),
+            Value::String(refresh_token.to_string()),
+        );
+    }
+    auth["last_refresh"] = Value::String(now_string());
+    serde_json::to_string_pretty(&auth).map_err(display_err)
+}
+
+fn should_refresh_access_token(access_token_exp: Option<i64>, threshold_secs: u64) -> bool {
+    let Some(exp) = access_token_exp else {
+        return true;
+    };
+    exp <= Utc::now().timestamp() + threshold_secs as i64
+}
+
+fn compact_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.chars().count() > 240 {
+        format!("{}...", trimmed.chars().take(240).collect::<String>())
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_proxy_url(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let normalized = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let lower = normalized.to_ascii_lowercase();
+    if !(lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("socks5://")
+        || lower.starts_with("socks5h://"))
+    {
+        return Err("代理地址仅支持 http、https、socks5、socks5h".to_string());
+    }
+    Ok(normalized)
+}
+
+fn clamp_interval(seconds: u64) -> u64 {
+    seconds.clamp(30, 86_400)
+}
+
+fn clamp_background_token_refresh_interval(seconds: u64) -> u64 {
+    seconds.clamp(3_600, 604_800)
+}
+
+fn clamp_token_refresh_threshold(seconds: u64) -> u64 {
+    seconds.min(2_592_000)
+}
+
+fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(display_err)?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(display_err)?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(display_err)?;
+        return Ok(());
+    }
+}
+
+fn resolve_codex_home(app: &AppHandle, explicit: Option<String>) -> Result<PathBuf, String> {
+    if let Some(path) =
+        explicit.or_else(|| load_store(app).ok().and_then(|s| s.settings.codex_home))
+    {
+        return Ok(PathBuf::from(path));
+    }
+    default_codex_home().ok_or_else(|| "无法定位用户主目录".to_string())
+}
+
+fn default_codex_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".codex"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex"))
+    }
+}
+
+fn backup_auth_file(auth_path: &Path) -> Result<Option<PathBuf>, String> {
+    if !auth_path.exists() {
+        return Ok(None);
+    }
+    let backup_dir = auth_path
+        .parent()
+        .ok_or_else(|| "auth.json 路径无父目录".to_string())?
+        .join(".account-switcher-backups");
+    fs::create_dir_all(&backup_dir).map_err(display_err)?;
+    let backup = backup_dir.join(format!("auth-{}.json", Utc::now().format("%Y%m%d%H%M%S")));
+    fs::copy(auth_path, &backup).map_err(display_err)?;
+    Ok(Some(backup))
+}
+
+fn replace_file_with_rollback(
+    target: &Path,
+    bytes: &[u8],
+    backup_path: Option<&Path>,
+) -> Result<(), String> {
+    let tmp = target.with_extension(format!("json.tmp-{}", Uuid::new_v4()));
+    fs::write(&tmp, bytes).map_err(display_err)?;
+    if target.exists() {
+        fs::remove_file(target).map_err(display_err)?;
+    }
+    if let Err(err) = fs::rename(&tmp, target) {
+        if let Some(backup) = backup_path {
+            let _ = fs::copy(backup, target);
+        }
+        return Err(err.to_string());
+    }
+    Ok(())
+}
+
+fn latest_backup(codex_home: &Path) -> Option<PathBuf> {
+    let dir = codex_home.join(".account-switcher-backups");
+    let mut entries = fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.pop()
+}
+
+fn is_codex_running() -> bool {
+    #[cfg(windows)]
+    {
+        Command::new("tasklist")
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .to_ascii_lowercase()
+                    .contains("codex")
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("pgrep")
+            .args(["-f", "codex"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+fn collect_bundle_files(
+    codex_home: &Path,
+    include_conversations: bool,
+) -> Result<Vec<BundleFile>, String> {
+    let mut files = Vec::new();
+    let roots = migratable_roots(include_conversations);
+    for root in roots {
+        let path = codex_home.join(root);
+        if !path.exists() {
+            continue;
+        }
+        if path.is_file() {
+            push_bundle_file(codex_home, &path, &mut files)?;
+        } else {
+            for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
+                let p = entry.path();
+                if p.is_file() {
+                    push_bundle_file(codex_home, p, &mut files)?;
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn push_bundle_file(
+    codex_home: &Path,
+    path: &Path,
+    files: &mut Vec<BundleFile>,
+) -> Result<(), String> {
+    let rel = path.strip_prefix(codex_home).map_err(display_err)?;
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if is_excluded_path(&rel_str) {
+        return Ok(());
+    }
+    let bytes = fs::read(path).map_err(display_err)?;
+    files.push(BundleFile {
+        path: rel_str,
+        sha256: hex_sha256(&bytes),
+        bytes_base64: STANDARD.encode(bytes),
+    });
+    Ok(())
+}
+
+fn migratable_roots(include_conversations: bool) -> Vec<&'static str> {
+    let mut roots = vec!["config.toml", "rules", "memories"];
+    if include_conversations {
+        roots.extend([
+            "sessions",
+            "session_index.jsonl",
+            "logs_2.sqlite",
+            "logs_2.sqlite-shm",
+            "logs_2.sqlite-wal",
+            "state_5.sqlite",
+            "state_5.sqlite-shm",
+            "state_5.sqlite-wal",
+        ]);
+    }
+    roots
+}
+
+fn excluded_roots() -> Vec<&'static str> {
+    vec![
+        "installation_id",
+        "cap_sid",
+        ".sandbox",
+        ".sandbox-bin",
+        ".sandbox-secrets",
+        ".tmp",
+        "tmp",
+        "sandbox.log",
+        "log",
+    ]
+}
+
+fn is_excluded_path(path: &str) -> bool {
+    let first = path.split('/').next().unwrap_or(path);
+    excluded_roots().contains(&first)
+}
+
+fn is_conversation_path(path: &str) -> bool {
+    let first = path.split('/').next().unwrap_or(path);
+    matches!(
+        first,
+        "sessions"
+            | "session_index.jsonl"
+            | "logs_2.sqlite"
+            | "logs_2.sqlite-shm"
+            | "logs_2.sqlite-wal"
+            | "state_5.sqlite"
+            | "state_5.sqlite-shm"
+            | "state_5.sqlite-wal"
+    )
+}
+
+fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(path);
+    if p.is_absolute() || path.contains("..") {
+        return Err(format!("迁移包包含不安全路径: {}", path));
+    }
+    Ok(p)
+}
+
+fn zip_payload(payload: &BundlePayload) -> Result<Vec<u8>, String> {
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    writer
+        .start_file("bundle.json", options)
+        .map_err(display_err)?;
+    let json = serde_json::to_vec(payload).map_err(display_err)?;
+    writer.write_all(&json).map_err(display_err)?;
+    let cursor = writer.finish().map_err(display_err)?;
+    Ok(cursor.into_inner())
+}
+
+fn read_bundle(path: &str, password: &str) -> Result<BundlePayload, String> {
+    let bytes = fs::read(path).map_err(display_err)?;
+    if let Ok(payload) = read_payload_zip(&bytes) {
+        return Ok(payload);
+    }
+
+    let envelope: ExportEnvelope = serde_json::from_slice(&bytes)
+        .map_err(|_| "迁移包格式不正确，既不是明文 zip，也不是加密迁移包".to_string())?;
+    if password.is_empty() {
+        return Err("该迁移包已加密，请输入迁移包口令".to_string());
+    }
+    let zip_bytes = decrypt_export(envelope, password)?;
+    read_payload_zip(&zip_bytes)
+}
+
+fn read_payload_zip(zip_bytes: &[u8]) -> Result<BundlePayload, String> {
+    let mut archive = ZipArchive::new(Cursor::new(zip_bytes.to_vec())).map_err(display_err)?;
+    let mut file = archive.by_name("bundle.json").map_err(display_err)?;
+    let mut json = Vec::new();
+    file.read_to_end(&mut json).map_err(display_err)?;
+    let payload: BundlePayload = serde_json::from_slice(&json).map_err(display_err)?;
+    if payload.manifest.format != EXPORT_FORMAT || payload.manifest.version != EXPORT_VERSION {
+        return Err("迁移包版本不兼容".to_string());
+    }
+    Ok(payload)
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn apply_usage_probe_body(profile: &mut AccountProfile, body: &Value) {
+    let detected = detect_usage_limits(body);
+    if detected.is_empty() {
+        profile.usage.detected_summary = Some(summarize_usage_body(body));
+        return;
+    }
+
+    for item in &detected {
+        if is_hour_window(&item.window) {
+            if let Some(used) = item.used {
+                profile.usage.hourly_used = used;
+            } else if let (Some(limit), Some(remaining)) = (item.limit, item.remaining) {
+                profile.usage.hourly_used = limit.saturating_sub(remaining);
+            }
+            if item.limit.is_some() {
+                profile.quota_rule.hourly_limit = item.limit;
+            }
+        }
+
+        if is_day_window(&item.window) {
+            if let Some(used) = item.used {
+                profile.usage.daily_used = used;
+            } else if let (Some(limit), Some(remaining)) = (item.limit, item.remaining) {
+                profile.usage.daily_used = limit.saturating_sub(remaining);
+            }
+            if item.limit.is_some() {
+                profile.quota_rule.daily_limit = item.limit;
+            }
+        }
+
+        if profile.usage.estimated_reset_at.is_none() {
+            profile.usage.estimated_reset_at = item.reset_at.clone();
+        }
+    }
+
+    profile.usage.detected_summary = Some(format_detected_limits(&detected));
+    profile.usage.detected_limits = detected;
+}
+
+fn detect_usage_limits(body: &Value) -> Vec<DetectedLimit> {
+    let mut out = Vec::new();
+    collect_codex_rate_limit_windows(body, &mut out);
+    collect_usage_limits(body, "", &mut out);
+    dedupe_detected_limits(out)
+}
+
+fn collect_codex_rate_limit_windows(body: &Value, out: &mut Vec<DetectedLimit>) {
+    let Some(rate_limit) = body.get("rate_limit").and_then(Value::as_object) else {
+        return;
+    };
+
+    for (key, label) in [
+        ("primary_window", "primary"),
+        ("secondary_window", "secondary"),
+    ] {
+        let Some(window) = rate_limit.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        let window_seconds = pick_u32(window, &["limit_window_seconds"]);
+        let used_percent = pick_u32(window, &["used_percent"]);
+        let remaining_percent = used_percent.map(|value| 100_u32.saturating_sub(value.min(100)));
+        let reset_at = pick_reset_at(window);
+        let window_name = window_seconds
+            .map(window_name_from_seconds)
+            .unwrap_or_else(|| label.to_string());
+
+        out.push(DetectedLimit {
+            label: Some(window_name.clone()),
+            window: window_name,
+            used: None,
+            limit: None,
+            remaining: None,
+            used_percent,
+            remaining_percent,
+            reset_at,
+        });
+    }
+}
+
+fn collect_usage_limits(value: &Value, path: &str, out: &mut Vec<DetectedLimit>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_usage_limits(item, path, out);
+            }
+        }
+        Value::Object(map) => {
+            let window = detect_window_name(map, path);
+            let limit = pick_u32(
+                map,
+                &["limit", "quota", "max", "total", "cap", "limit_amount"],
+            );
+            let remaining = pick_u32(map, &["remaining", "available", "left", "remaining_amount"]);
+            let used = pick_u32(
+                map,
+                &[
+                    "used",
+                    "usage",
+                    "consumed",
+                    "current",
+                    "count",
+                    "used_amount",
+                ],
+            )
+            .or_else(|| {
+                limit
+                    .zip(remaining)
+                    .map(|(limit, remaining)| limit.saturating_sub(remaining))
+            });
+            let reset_at = pick_string(
+                map,
+                &[
+                    "reset_at",
+                    "resets_at",
+                    "resetAfter",
+                    "reset_after",
+                    "next_reset_at",
+                ],
+            );
+            let label = pick_string(
+                map,
+                &["name", "label", "type", "bucket", "model", "category"],
+            );
+
+            if (limit.is_some() || remaining.is_some() || used.is_some()) && window.is_some() {
+                out.push(DetectedLimit {
+                    window: window.unwrap(),
+                    used,
+                    limit,
+                    remaining,
+                    used_percent: pick_u32(map, &["used_percent", "usage_percent"]),
+                    remaining_percent: pick_u32(map, &["remaining_percent", "available_percent"]),
+                    reset_at,
+                    label,
+                });
+            }
+
+            for (key, child) in map {
+                let next_path = if path.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_usage_limits(child, &next_path, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn detect_window_name(map: &serde_json::Map<String, Value>, path: &str) -> Option<String> {
+    for key in [
+        "window",
+        "period",
+        "bucket",
+        "duration",
+        "interval",
+        "reset_period",
+        "timeframe",
+    ] {
+        if let Some(value) = map.get(key).and_then(Value::as_str) {
+            return Some(normalize_window(value));
+        }
+    }
+
+    let haystack = path.to_ascii_lowercase();
+    if haystack.contains("hour") || haystack.contains("3h") || haystack.contains("3_h") {
+        return Some("hour".to_string());
+    }
+    if haystack.contains("day") || haystack.contains("daily") || haystack.contains("24h") {
+        return Some("day".to_string());
+    }
+    if haystack.contains("week") || haystack.contains("7d") {
+        return Some("week".to_string());
+    }
+    None
+}
+
+fn normalize_window(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("hour") || lower.contains("3h") || lower == "h" {
+        "hour".to_string()
+    } else if lower.contains("day") || lower.contains("24h") || lower == "d" {
+        "day".to_string()
+    } else if lower.contains("week") || lower.contains("7d") || lower == "w" {
+        "week".to_string()
+    } else {
+        lower
+    }
+}
+
+fn window_name_from_seconds(seconds: u32) -> String {
+    match seconds {
+        0..=5400 => format!("{}分钟", (seconds / 60).max(1)),
+        5401..=172800 => {
+            let hours = ((seconds as f64) / 3600.0).round() as u32;
+            format!("{hours}小时")
+        }
+        172801..=1_209_600 => {
+            let days = ((seconds as f64) / 86_400.0).round() as u32;
+            if days == 7 {
+                "1周".to_string()
+            } else {
+                format!("{days}天")
+            }
+        }
+        _ => format!("{}天", (seconds / 86_400).max(1)),
+    }
+}
+
+fn is_hour_window(window: &str) -> bool {
+    let lower = window.to_ascii_lowercase();
+    lower.contains("hour") || lower.contains("3h") || lower == "h" || lower.contains("小时")
+}
+
+fn is_day_window(window: &str) -> bool {
+    let lower = window.to_ascii_lowercase();
+    lower.contains("day") || lower.contains("24h") || lower == "d" || lower.contains("天")
+}
+
+fn pick_u32(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u32> {
+    for expected in keys {
+        for (key, value) in map {
+            if key.eq_ignore_ascii_case(expected) {
+                if let Some(parsed) = value_to_u32(value) {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn value_to_u32(value: &Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .or_else(|| value.as_str().and_then(|v| v.parse::<u32>().ok()))
+}
+
+fn pick_string(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    for expected in keys {
+        for (key, value) in map {
+            if key.eq_ignore_ascii_case(expected) {
+                if let Some(text) = value.as_str() {
+                    return Some(text.to_string());
+                }
+                if value.is_number() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn pick_reset_at(map: &serde_json::Map<String, Value>) -> Option<String> {
+    if let Some(text) = pick_string(
+        map,
+        &[
+            "reset_at",
+            "resets_at",
+            "resetAfter",
+            "reset_after",
+            "next_reset_at",
+        ],
+    ) {
+        if let Ok(epoch) = text.parse::<i64>() {
+            return Utc
+                .timestamp_opt(epoch, 0)
+                .single()
+                .map(|dt| dt.to_rfc3339());
+        }
+        return Some(text);
+    }
+    None
+}
+
+fn dedupe_detected_limits(items: Vec<DetectedLimit>) -> Vec<DetectedLimit> {
+    let mut deduped: Vec<DetectedLimit> = Vec::new();
+    for item in items {
+        let exists = deduped.iter().any(|existing| {
+            existing.window == item.window
+                && existing.label == item.label
+                && existing.limit == item.limit
+                && existing.used == item.used
+                && existing.remaining == item.remaining
+                && existing.used_percent == item.used_percent
+                && existing.remaining_percent == item.remaining_percent
+        });
+        if !exists {
+            deduped.push(item);
+        }
+    }
+    deduped
+}
+
+fn format_detected_limits(items: &[DetectedLimit]) -> String {
+    items
+        .iter()
+        .map(|item| {
+            let label = item.label.as_deref().unwrap_or(&item.window);
+            if let Some(remaining_percent) = item.remaining_percent {
+                let reset = item
+                    .reset_at
+                    .as_deref()
+                    .map(format_short_time)
+                    .unwrap_or_else(|| "-".to_string());
+                format!("{label}: 剩余 {remaining_percent}% · {reset}")
+            } else {
+                let used = item
+                    .used
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let limit = item
+                    .limit
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                format!("{label}: {used}/{limit}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_short_time(value: &str) -> String {
+    parse_time(value)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn summarize_usage_body(body: &Value) -> String {
+    let text = serde_json::to_string(body).unwrap_or_default();
+    if text.chars().count() > 240 {
+        format!(
+            "unparsed: {}...",
+            text.chars().take(240).collect::<String>()
+        )
+    } else {
+        format!("unparsed: {text}")
+    }
+}
+
+fn push_event(store: &mut AppStore, level: &str, message: &str) {
+    store.events.insert(
+        0,
+        AppEvent {
+            ts: now_string(),
+            level: level.to_string(),
+            message: message.to_string(),
+        },
+    );
+    store.events.truncate(100);
+}
+
+fn now_string() -> String {
+    Utc::now().to_rfc3339()
+}
+
+fn parse_time(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn display_err<E: std::fmt::Display>(err: E) -> String {
+    err.to_string()
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            setup_tray(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_store,
+            scan_codex_home,
+            import_current_auth_as_profile,
+            switch_profile,
+            probe_usage,
+            save_quota_rule,
+            save_proxy_settings,
+            open_codex_home,
+            save_auto_settings,
+            refresh_profile_tokens_from_codex_home,
+            refresh_all_profile_tokens,
+            export_all_accounts_bundle,
+            preview_bundle,
+            import_accounts_bundle,
+            restore_backup
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running Codex Account Switcher");
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+    let probe = MenuItem::with_id(app, "probe-current", "探测当前账号额度", true, None::<&str>)?;
+    let auto_switch = MenuItem::with_id(app, "auto-switch", "自动选择账号", true, None::<&str>)?;
+    let refresh = MenuItem::with_id(app, "refresh", "刷新数据", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "隐藏窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, Some("Ctrl+Q"))?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &settings,
+            &separator,
+            &probe,
+            &auto_switch,
+            &refresh,
+            &separator,
+            &hide,
+            &quit,
+        ],
+    )?;
+
+    let mut builder = TrayIconBuilder::new()
+        .tooltip("Codex Account Switcher")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main_window(app),
+            "settings" => {
+                show_main_window(app);
+                let _ = app.emit("tray-action", "settings");
+            }
+            "probe-current" => {
+                let _ = app.emit("tray-action", "probe-current");
+            }
+            "auto-switch" => {
+                let _ = app.emit("tray-action", "auto-switch");
+            }
+            "refresh" => {
+                let _ = app.emit("tray-action", "refresh");
+            }
+            "hide" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn fake_jwt(claims: Value) -> String {
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+        format!("{}.{}.sig", header, payload)
+    }
+
+    fn fake_auth(account_id: &str, email: &str) -> String {
+        let id_token = fake_jwt(serde_json::json!({
+            "email": email,
+            "chatgpt_plan_type": "plus",
+            "chatgpt_user_id": "user-123",
+            "organization_id": "org-123",
+            "exp": 4102444800_i64
+        }));
+        let access_token = fake_jwt(serde_json::json!({
+            "client_id": "app_test",
+            "sub": "user-123",
+            "exp": 4102441200_i64
+        }));
+        serde_json::json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": id_token,
+                "access_token": access_token,
+                "refresh_token": "rt_test",
+                "account_id": account_id
+            },
+            "last_refresh": "2026-05-06T00:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn write_text(path: &Path, value: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, value).unwrap();
+    }
+
+    fn bundle_payload_with_profile(
+        codex_home: &Path,
+        include_conversations: bool,
+    ) -> BundlePayload {
+        let files = collect_bundle_files(codex_home, include_conversations).unwrap();
+        let metas = files
+            .iter()
+            .map(|f| BundleFileMeta {
+                path: f.path.clone(),
+                sha256: f.sha256.clone(),
+                bytes: STANDARD.decode(&f.bytes_base64).unwrap().len() as u64,
+            })
+            .collect::<Vec<_>>();
+        BundlePayload {
+            manifest: BundleManifest {
+                format: EXPORT_FORMAT.to_string(),
+                version: EXPORT_VERSION,
+                exported_at: now_string(),
+                platform: "test".to_string(),
+                profile_count: 1,
+                include_conversations,
+                files: metas,
+            },
+            settings: AppSettings {
+                codex_home: Some(codex_home.to_string_lossy().to_string()),
+                current_profile_id: None,
+                auto_switch_enabled: true,
+                probe_proxy: ProxySettings::default(),
+                auto_token_refresh_enabled: false,
+                auto_refresh_interval_secs: 60,
+                background_token_refresh_enabled: false,
+                background_token_refresh_interval_secs: 3_600,
+                token_refresh_threshold_secs: 0,
+                auto_probe_enabled: true,
+                auto_probe_interval_secs: 60,
+            },
+            profiles: vec![ExportProfile {
+                id: "profile-1".to_string(),
+                alias: "primary".to_string(),
+                enabled: true,
+                priority: 100,
+                cooldown_until: None,
+                quota_rule: QuotaRule::default(),
+                summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
+                auth_json: fake_auth("acc-1", "one@example.com"),
+                usage: UsageStats::default(),
+                created_at: now_string(),
+                updated_at: now_string(),
+            }],
+            files,
+        }
+    }
+
+    #[test]
+    fn excludes_machine_bound_paths() {
+        assert!(is_excluded_path("installation_id"));
+        assert!(is_excluded_path(".sandbox/setup_marker.json"));
+        assert!(is_excluded_path("cap_sid"));
+        assert!(!is_excluded_path("config.toml"));
+        assert!(!is_excluded_path("rules/default.rules"));
+    }
+
+    #[test]
+    fn detects_conversation_paths() {
+        assert!(is_conversation_path("sessions/abc.jsonl"));
+        assert!(is_conversation_path("logs_2.sqlite"));
+        assert!(!is_conversation_path("memories/user.json"));
+    }
+
+    #[test]
+    fn secret_envelope_round_trips() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let encrypted = encrypt_secret(b"hello", &key).unwrap();
+        let decrypted = decrypt_secret(&encrypted, &key).unwrap();
+        assert_eq!(decrypted, b"hello");
+    }
+
+    #[test]
+    fn rejects_unsafe_relative_paths() {
+        assert!(safe_relative_path("../auth.json").is_err());
+        assert!(safe_relative_path("rules/default.rules").is_ok());
+    }
+
+    #[test]
+    fn summarizes_auth_from_jwt_claims() {
+        let summary = summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap();
+        assert_eq!(summary.auth_mode.as_deref(), Some("chatgpt"));
+        assert_eq!(summary.email.as_deref(), Some("one@example.com"));
+        assert_eq!(summary.plan.as_deref(), Some("plus"));
+        assert_eq!(summary.account_id.as_deref(), Some("acc-1"));
+        assert_eq!(summary.user_id.as_deref(), Some("user-123"));
+        assert_eq!(summary.organization_id.as_deref(), Some("org-123"));
+        assert_eq!(summary.id_token_exp, Some(4102444800));
+        assert_eq!(summary.access_token_exp, Some(4102441200));
+    }
+
+    #[test]
+    fn scans_codex_home_without_reading_secrets_into_output() {
+        let dir = tempdir().unwrap();
+        write_text(
+            &dir.path().join("auth.json"),
+            &fake_auth("acc-1", "one@example.com"),
+        );
+
+        let scan = scan_codex_home_path(dir.path()).unwrap();
+
+        assert!(scan.exists);
+        assert!(scan.has_auth);
+        assert_eq!(
+            scan.current_auth.unwrap().email.as_deref(),
+            Some("one@example.com")
+        );
+        assert!(scan.migratable.contains(&"config.toml".to_string()));
+        assert!(scan.excluded.contains(&"installation_id".to_string()));
+    }
+
+    #[test]
+    fn store_view_omits_encrypted_auth_json() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let store = AppStore {
+            settings: AppSettings::default(),
+            profiles: vec![AccountProfile {
+                id: "profile-1".to_string(),
+                alias: "primary".to_string(),
+                enabled: true,
+                priority: 100,
+                cooldown_until: None,
+                quota_rule: QuotaRule::default(),
+                summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
+                encrypted_auth_json: encrypt_secret(
+                    fake_auth("acc-1", "one@example.com").as_bytes(),
+                    &key,
+                )
+                .unwrap(),
+                usage: UsageStats::default(),
+                created_at: now_string(),
+                updated_at: now_string(),
+            }],
+            events: vec![],
+        };
+
+        let json = serde_json::to_string(&store_view(store)).unwrap();
+
+        assert!(json.contains("one@example.com"));
+        assert!(!json.contains("encryptedAuthJson"));
+        assert!(!json.contains("rt_test"));
+    }
+
+    #[test]
+    fn collect_bundle_files_respects_default_and_conversation_scope() {
+        let dir = tempdir().unwrap();
+        write_text(&dir.path().join("config.toml"), "model = \"gpt-5.5\"");
+        write_text(&dir.path().join("rules/default.rules"), "allow");
+        write_text(&dir.path().join("memories/user.json"), "{}");
+        write_text(&dir.path().join("sessions/session-1.jsonl"), "{}");
+        write_text(&dir.path().join("logs_2.sqlite"), "sqlite");
+        write_text(&dir.path().join("installation_id"), "machine-id");
+        write_text(&dir.path().join(".sandbox/setup_marker.json"), "{}");
+
+        let default_files = collect_bundle_files(dir.path(), false).unwrap();
+        let default_paths = default_files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(default_paths.contains(&"config.toml"));
+        assert!(default_paths.contains(&"rules/default.rules"));
+        assert!(default_paths.contains(&"memories/user.json"));
+        assert!(!default_paths.contains(&"sessions/session-1.jsonl"));
+        assert!(!default_paths.contains(&"installation_id"));
+        assert!(!default_paths.contains(&".sandbox/setup_marker.json"));
+
+        let full_files = collect_bundle_files(dir.path(), true).unwrap();
+        let full_paths = full_files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(full_paths.contains(&"sessions/session-1.jsonl"));
+        assert!(full_paths.contains(&"logs_2.sqlite"));
+        assert!(!full_paths.contains(&"installation_id"));
+    }
+
+    #[test]
+    fn encrypted_export_bundle_round_trips_and_rejects_wrong_password() {
+        let dir = tempdir().unwrap();
+        let bundle_path = dir.path().join("codex-switcher.zip.enc");
+        write_text(&dir.path().join("config.toml"), "model = \"gpt-5.5\"");
+        write_text(&dir.path().join("rules/default.rules"), "allow");
+        let payload = bundle_payload_with_profile(dir.path(), false);
+        let zip_bytes = zip_payload(&payload).unwrap();
+        let encrypted = encrypt_export(&zip_bytes, "strong-password").unwrap();
+        fs::write(&bundle_path, serde_json::to_vec(&encrypted).unwrap()).unwrap();
+
+        let restored = read_bundle(bundle_path.to_str().unwrap(), "strong-password").unwrap();
+
+        assert_eq!(restored.manifest.profile_count, 1);
+        assert_eq!(
+            restored.profiles[0].summary.email.as_deref(),
+            Some("one@example.com")
+        );
+        assert!(restored.files.iter().any(|f| f.path == "config.toml"));
+        assert!(read_bundle(bundle_path.to_str().unwrap(), "").is_err());
+        assert!(read_bundle(bundle_path.to_str().unwrap(), "wrong-password").is_err());
+    }
+
+    #[test]
+    fn plaintext_export_bundle_round_trips_without_password() {
+        let dir = tempdir().unwrap();
+        let bundle_path = dir.path().join("codex-switcher.zip");
+        write_text(&dir.path().join("config.toml"), "model = \"gpt-5.5\"");
+        let payload = bundle_payload_with_profile(dir.path(), false);
+        let zip_bytes = zip_payload(&payload).unwrap();
+        fs::write(&bundle_path, zip_bytes).unwrap();
+
+        let restored = read_bundle(bundle_path.to_str().unwrap(), "").unwrap();
+
+        assert_eq!(restored.manifest.profile_count, 1);
+        assert_eq!(
+            restored.profiles[0].summary.email.as_deref(),
+            Some("one@example.com")
+        );
+        assert!(restored.files.iter().any(|f| f.path == "config.toml"));
+    }
+
+    #[test]
+    fn backup_replace_and_restore_auth_file() {
+        let dir = tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+        write_text(&auth_path, "old-auth");
+
+        let backup = backup_auth_file(&auth_path).unwrap().unwrap();
+        replace_file_with_rollback(&auth_path, b"new-auth", Some(&backup)).unwrap();
+        assert_eq!(fs::read_to_string(&auth_path).unwrap(), "new-auth");
+
+        let latest = latest_backup(dir.path()).unwrap();
+        fs::copy(latest, &auth_path).unwrap();
+        assert_eq!(fs::read_to_string(&auth_path).unwrap(), "old-auth");
+    }
+
+    #[test]
+    fn import_bundle_payload_semantics_are_safe() {
+        let dir = tempdir().unwrap();
+        write_text(&dir.path().join("config.toml"), "model = \"gpt-5.5\"");
+        let mut payload = bundle_payload_with_profile(dir.path(), true);
+        payload.files.push(BundleFile {
+            path: "sessions/session-1.jsonl".to_string(),
+            sha256: hex_sha256(b"conversation"),
+            bytes_base64: STANDARD.encode(b"conversation"),
+        });
+        payload.files.push(BundleFile {
+            path: "installation_id".to_string(),
+            sha256: hex_sha256(b"bad"),
+            bytes_base64: STANDARD.encode(b"bad"),
+        });
+        let target = tempdir().unwrap();
+        let mut restored = 0usize;
+        let mut skipped = 0usize;
+
+        for file in payload.files {
+            if is_conversation_path(&file.path) {
+                skipped += 1;
+                continue;
+            }
+            if is_excluded_path(&file.path) {
+                continue;
+            }
+            let bytes = STANDARD.decode(&file.bytes_base64).unwrap();
+            assert_eq!(hex_sha256(&bytes), file.sha256);
+            let out = target.path().join(safe_relative_path(&file.path).unwrap());
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(out, bytes).unwrap();
+            restored += 1;
+        }
+
+        assert_eq!(restored, 1);
+        assert_eq!(skipped, 1);
+        assert!(target.path().join("config.toml").exists());
+        assert!(!target.path().join("sessions/session-1.jsonl").exists());
+        assert!(!target.path().join("installation_id").exists());
+    }
+
+    #[test]
+    fn push_event_keeps_latest_100_entries() {
+        let mut store = AppStore::default();
+
+        for i in 0..150 {
+            push_event(&mut store, "info", &format!("event-{i}"));
+        }
+
+        assert_eq!(store.events.len(), 100);
+        assert_eq!(store.events[0].message, "event-149");
+        assert_eq!(store.events[99].message, "event-50");
+    }
+
+    #[test]
+    fn legacy_app_data_migration_copies_old_identifier_dir_once() {
+        let root = tempdir().unwrap();
+        let legacy = root.path().join(LEGACY_APP_IDENTIFIER);
+        let new = root.path().join("local.codex.account-switcher");
+        write_text(&legacy.join(STORE_FILE), r#"{"profiles":[]}"#);
+        write_text(&legacy.join(LOCAL_KEY_FILE), "legacy-key");
+
+        migrate_legacy_app_data_dir(&new).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(new.join(STORE_FILE)).unwrap(),
+            r#"{"profiles":[]}"#
+        );
+        assert_eq!(
+            fs::read_to_string(new.join(LOCAL_KEY_FILE)).unwrap(),
+            "legacy-key"
+        );
+
+        write_text(&legacy.join(STORE_FILE), r#"{"profiles":["changed"]}"#);
+        migrate_legacy_app_data_dir(&new).unwrap();
+        assert_eq!(
+            fs::read_to_string(new.join(STORE_FILE)).unwrap(),
+            r#"{"profiles":[]}"#
+        );
+    }
+
+    #[test]
+    fn normalizes_and_validates_probe_proxy_urls() {
+        assert_eq!(
+            normalize_proxy_url("127.0.0.1:7890").unwrap(),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_url(" socks5://127.0.0.1:7890 ").unwrap(),
+            "socks5://127.0.0.1:7890"
+        );
+        assert!(normalize_proxy_url("ftp://127.0.0.1:21").is_err());
+        assert_eq!(normalize_proxy_url("").unwrap(), "");
+    }
+
+    #[test]
+    fn builds_probe_client_with_proxy_settings() {
+        assert!(build_probe_client(&ProxySettings::default()).is_ok());
+        assert!(build_probe_client(&ProxySettings {
+            enabled: true,
+            url: "http://127.0.0.1:7890".to_string(),
+        })
+        .is_ok());
+        assert!(build_probe_client(&ProxySettings {
+            enabled: true,
+            url: "".to_string(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn clamps_auto_refresh_intervals() {
+        assert_eq!(clamp_interval(1), 30);
+        assert_eq!(clamp_interval(60), 60);
+        assert_eq!(clamp_interval(99_999), 86_400);
+        assert_eq!(clamp_background_token_refresh_interval(60), 3_600);
+        assert_eq!(clamp_background_token_refresh_interval(7_200), 7_200);
+        assert_eq!(clamp_background_token_refresh_interval(999_999), 604_800);
+        assert_eq!(clamp_token_refresh_threshold(0), 0);
+        assert_eq!(clamp_token_refresh_threshold(60), 60);
+        assert_eq!(clamp_token_refresh_threshold(86_400), 86_400);
+    }
+
+    #[test]
+    fn refresh_due_defaults_to_expired_or_unknown_access_token() {
+        let now = Utc::now().timestamp();
+
+        assert!(should_refresh_access_token(None, 0));
+        assert!(should_refresh_access_token(Some(now - 1), 0));
+        assert!(!should_refresh_access_token(Some(now + 3_600), 0));
+        assert!(should_refresh_access_token(Some(now + 3_600), 3_600));
+    }
+
+    #[test]
+    fn applies_token_refresh_response_without_losing_existing_refresh_token() {
+        let original = fake_auth("acc-1", "one@example.com");
+        let new_access = fake_jwt(serde_json::json!({
+            "client_id": "app_test",
+            "sub": "user-123",
+            "exp": 4102449999_i64
+        }));
+        let updated = apply_token_refresh_response(
+            &original,
+            &serde_json::json!({
+                "access_token": new_access
+            }),
+        )
+        .unwrap();
+        let auth: Value = serde_json::from_str(&updated).unwrap();
+
+        assert_eq!(
+            auth.pointer("/tokens/access_token").and_then(Value::as_str),
+            Some(new_access.as_str())
+        );
+        assert_eq!(
+            auth.pointer("/tokens/refresh_token")
+                .and_then(Value::as_str),
+            Some("rt_test")
+        );
+        assert!(auth.get("last_refresh").and_then(Value::as_str).is_some());
+        assert_eq!(
+            summarize_auth(&updated).unwrap().access_token_exp,
+            Some(4102449999)
+        );
+    }
+
+    #[test]
+    fn applies_rotated_refresh_token_when_present() {
+        let original = fake_auth("acc-1", "one@example.com");
+        let new_access = fake_jwt(serde_json::json!({
+            "client_id": "app_test",
+            "sub": "user-123",
+            "exp": 4102449999_i64
+        }));
+        let updated = apply_token_refresh_response(
+            &original,
+            &serde_json::json!({
+                "access_token": new_access,
+                "refresh_token": "rt_new"
+            }),
+        )
+        .unwrap();
+        let auth: Value = serde_json::from_str(&updated).unwrap();
+
+        assert_eq!(
+            auth.pointer("/tokens/refresh_token")
+                .and_then(Value::as_str),
+            Some("rt_new")
+        );
+    }
+
+    #[test]
+    fn detects_usage_limits_from_nested_probe_body() {
+        let body = serde_json::json!({
+            "rate_limits": [
+                {"window": "3h", "used": 12, "limit": 80, "remaining": 68, "reset_at": "2026-05-06T16:00:00Z"},
+                {"period": "day", "usage": 30, "quota": 300, "available": 270}
+            ]
+        });
+
+        let detected = detect_usage_limits(&body);
+
+        assert_eq!(detected.len(), 2);
+        assert!(detected
+            .iter()
+            .any(|item| item.window == "hour" && item.used == Some(12) && item.limit == Some(80)));
+        assert!(detected
+            .iter()
+            .any(|item| item.window == "day" && item.used == Some(30) && item.limit == Some(300)));
+    }
+
+    #[test]
+    fn detects_codex_wham_rate_limit_windows() {
+        let body = serde_json::json!({
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 53,
+                    "limit_window_seconds": 18000,
+                    "reset_at": 1778051942
+                },
+                "secondary_window": {
+                    "used_percent": 8,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1778638742
+                }
+            }
+        });
+
+        let detected = detect_usage_limits(&body);
+
+        assert!(detected.iter().any(|item| {
+            item.window == "5小时"
+                && item.used_percent == Some(53)
+                && item.remaining_percent == Some(47)
+                && item.reset_at.is_some()
+        }));
+        assert!(detected.iter().any(|item| {
+            item.window == "1周"
+                && item.used_percent == Some(8)
+                && item.remaining_percent == Some(92)
+        }));
+    }
+
+    #[test]
+    fn applies_probe_body_to_profile_usage_and_rules() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let mut profile = AccountProfile {
+            id: "profile-1".to_string(),
+            alias: "primary".to_string(),
+            enabled: true,
+            priority: 100,
+            cooldown_until: None,
+            quota_rule: QuotaRule::default(),
+            summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
+            encrypted_auth_json: encrypt_secret(
+                fake_auth("acc-1", "one@example.com").as_bytes(),
+                &key,
+            )
+            .unwrap(),
+            usage: UsageStats::default(),
+            created_at: now_string(),
+            updated_at: now_string(),
+        };
+        let body = serde_json::json!({
+            "hourly": {"used": 9, "limit": 50},
+            "daily": {"remaining": 120, "limit": 200, "reset_at": "2026-05-07T00:00:00Z"}
+        });
+
+        apply_usage_probe_body(&mut profile, &body);
+
+        assert_eq!(profile.usage.hourly_used, 9);
+        assert_eq!(profile.quota_rule.hourly_limit, Some(50));
+        assert_eq!(profile.usage.daily_used, 80);
+        assert_eq!(profile.quota_rule.daily_limit, Some(200));
+        assert_eq!(profile.usage.detected_limits.len(), 2);
+        assert!(profile
+            .usage
+            .detected_summary
+            .as_deref()
+            .unwrap()
+            .contains("hour"));
+    }
+}
