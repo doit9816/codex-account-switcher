@@ -6,6 +6,10 @@ Codex Account Switcher is a Tauri v2 desktop utility for managing multiple Codex
 
 > This tool manages account files you already own. It does not automate login, bypass verification, or bypass platform limits.
 
+## Screenshot
+
+![Dashboard screenshot](docs/screenshots/dashboard.svg)
+
 ## Features
 
 - Manage multiple account profiles with alias, enabled state, priority, cooldown, and quota rules.

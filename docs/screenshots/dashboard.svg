@@ -1,0 +1,118 @@
+<svg width="1248" height="810" viewBox="0 0 1248 810" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1248" height="810" fill="#EEF2F5"/>
+  <rect x="0.5" y="0.5" width="1247" height="809" stroke="#D6DEE7"/>
+  <rect x="0" y="0" width="1248" height="36" fill="#FFFFFF"/>
+  <circle cx="16" cy="18" r="8" fill="#1F5BCB"/>
+  <text x="34" y="23" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#1A2430">Codex Account Switcher</text>
+  <rect x="1180" y="12" width="14" height="2" fill="#1A2430"/>
+  <rect x="1208" y="10" width="10" height="10" stroke="#1A2430" stroke-width="1.5"/>
+  <path d="M1233 9L1242 18M1242 9L1233 18" stroke="#1A2430" stroke-width="1.5"/>
+
+  <text x="24" y="84" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="800" fill="#101B28">Codex Account Switcher</text>
+  <text x="24" y="118" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#617083">Multi-account usage overview, global switching, and encrypted migration</text>
+
+  <rect x="912" y="64" width="204" height="48" rx="8" fill="#DDE6EF" stroke="#C8D5E2"/>
+  <rect x="918" y="70" width="102" height="36" rx="7" fill="#FFFFFF" stroke="#C9D4DF"/>
+  <text x="952" y="94" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#1B2A3A">Dashboard</text>
+  <text x="1044" y="94" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#5C6877">Settings</text>
+  <rect x="1128" y="64" width="96" height="48" rx="8" fill="#2357C6"/>
+  <text x="1164" y="94" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#FFFFFF">Refresh</text>
+
+  <rect x="24" y="142" width="1200" height="654" rx="8" fill="#FFFFFF" stroke="#D4DDE7"/>
+  <text x="42" y="184" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="800" fill="#172231">Accounts</text>
+  <text x="42" y="212" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#697789">2 / 2 profiles</text>
+
+  <rect x="660" y="166" width="226" height="40" rx="6" fill="#FBFCFD" stroke="#CBD5DF"/>
+  <text x="674" y="192" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#7A8797">Search account / quota / state</text>
+  <rect x="898" y="166" width="170" height="40" rx="6" fill="#FBFCFD" stroke="#CBD5DF"/>
+  <text x="912" y="192" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#7A8797">Import alias</text>
+  <rect x="1080" y="166" width="120" height="40" rx="6" fill="#FFFFFF" stroke="#C8D4E0"/>
+  <text x="1140" y="192" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Import Current</text>
+
+  <rect x="42" y="228" width="1158" height="176" rx="7" fill="#FFFFFF" stroke="#D8E1EA"/>
+  <rect x="42" y="228" width="1158" height="38" rx="7" fill="#F1F5F8"/>
+  <rect x="42" y="260" width="1158" height="1" fill="#D8E1EA"/>
+  <text x="58" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">ACCOUNT</text>
+  <text x="290" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">PLAN</text>
+  <text x="374" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">STATE</text>
+  <text x="464" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">QUOTA</text>
+  <text x="638" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">PRIORITY</text>
+  <text x="724" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">ACCESS EXPIRES</text>
+  <text x="854" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">TOKEN</text>
+  <text x="944" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">PROBE</text>
+  <text x="1048" y="252" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="800" fill="#5E6C7C">ACTIONS</text>
+
+  <rect x="42" y="266" width="1158" height="68" fill="#FFFFFF"/>
+  <text x="58" y="295" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="800" fill="#101B28">primary@example.com</text>
+  <text x="58" y="318" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#687789">primary@example.com</text>
+  <text x="290" y="305" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#101B28">chatgpt</text>
+  <rect x="374" y="284" width="46" height="26" rx="13" fill="#DFF7E8"/>
+  <text x="397" y="302" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#166236">OK</text>
+  <text x="464" y="306" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="800" fill="#244264">1 week 0%</text>
+  <text x="638" y="306" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#1C2733">100</text>
+  <text x="724" y="295" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#1C2733">2026/5/16</text>
+  <text x="724" y="317" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#1C2733">20:37:45</text>
+  <text x="854" y="306" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#1C2733">Normal</text>
+  <text x="944" y="306" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#1C2733">401</text>
+  <rect x="1048" y="286" width="52" height="32" rx="6" fill="#FFFFFF" stroke="#C8D4E0"/>
+  <text x="1074" y="307" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Probe</text>
+  <rect x="1108" y="286" width="56" height="32" rx="6" fill="#2357C6"/>
+  <text x="1136" y="307" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">Switch</text>
+
+  <rect x="42" y="334" width="1158" height="68" fill="#EAF1FF"/>
+  <text x="58" y="363" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="800" fill="#101B28">backup@example.com</text>
+  <text x="58" y="386" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#687789">backup@example.com</text>
+  <text x="290" y="373" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#101B28">chatgpt</text>
+  <rect x="374" y="352" width="46" height="26" rx="13" fill="#DFF7E8"/>
+  <text x="397" y="370" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#166236">OK</text>
+  <text x="464" y="374" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="800" fill="#244264">5h 1% / 1w 80%</text>
+  <text x="638" y="374" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#1C2733">100</text>
+  <text x="724" y="363" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#1C2733">2026/5/17</text>
+  <text x="724" y="385" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#1C2733">09:56:57</text>
+  <text x="854" y="374" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#1C2733">Normal</text>
+  <text x="944" y="374" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#1C2733">200</text>
+  <rect x="1048" y="354" width="52" height="32" rx="6" fill="#FFFFFF" stroke="#C8D4E0"/>
+  <text x="1074" y="375" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Probe</text>
+  <rect x="1108" y="354" width="56" height="32" rx="6" fill="#2357C6"/>
+  <text x="1136" y="375" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">Switch</text>
+
+  <rect x="42" y="420" width="1158" height="1" fill="#E1E7EE"/>
+  <text x="42" y="458" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172231">Selected Account Rules</text>
+  <text x="42" y="486" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#687789">backup@example.com</text>
+  <rect x="1104" y="452" width="88" height="28" rx="14" fill="#DFF7E8"/>
+  <text x="1148" y="471" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#166236">Current</text>
+
+  <rect x="42" y="502" width="1158" height="108" rx="6" fill="#F7F9FB" stroke="#E0E6ED"/>
+  <text x="58" y="532" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#687789">Probe Summary</text>
+  <text x="58" y="558" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="800" fill="#1F2C39">5 hours: 1% remaining · 22:42; 1 week: 80% remaining · 10:02</text>
+  <rect x="58" y="574" width="146" height="28" rx="14" fill="#EEF6FF" stroke="#C8DFF7"/>
+  <text x="131" y="593" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#24547D">5h: 1% 22:42</text>
+  <rect x="214" y="574" width="142" height="28" rx="14" fill="#EEF6FF" stroke="#C8DFF7"/>
+  <text x="285" y="593" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#24547D">1w: 80% 5/14</text>
+
+  <text x="42" y="642" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#4D5A68">Hourly limit</text>
+  <text x="334" y="642" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#4D5A68">Daily limit</text>
+  <text x="626" y="642" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#4D5A68">Cooldown minutes</text>
+  <text x="918" y="642" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#4D5A68">Priority</text>
+  <rect x="42" y="650" width="280" height="40" rx="6" fill="#FBFCFD" stroke="#CBD5DF"/>
+  <rect x="334" y="650" width="280" height="40" rx="6" fill="#FBFCFD" stroke="#CBD5DF"/>
+  <rect x="626" y="650" width="280" height="40" rx="6" fill="#FBFCFD" stroke="#CBD5DF"/>
+  <text x="642" y="676" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#101B28">180</text>
+  <rect x="918" y="650" width="280" height="40" rx="6" fill="#FBFCFD" stroke="#CBD5DF"/>
+  <text x="934" y="676" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#101B28">100</text>
+
+  <rect x="46" y="714" width="18" height="18" rx="3" fill="#2484DA"/>
+  <path d="M50 723L54 727L61 718" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="74" y="728" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Enabled</text>
+  <rect x="146" y="714" width="18" height="18" rx="3" fill="#FFFFFF" stroke="#9AA7B5"/>
+  <text x="174" y="728" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Force switch</text>
+
+  <rect x="42" y="742" width="120" height="38" rx="6" fill="#FFFFFF" stroke="#C9D3DF"/>
+  <text x="102" y="766" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Save Rules</text>
+  <rect x="174" y="742" width="120" height="38" rx="6" fill="#FFFFFF" stroke="#C9D3DF"/>
+  <text x="234" y="766" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Probe</text>
+  <rect x="306" y="742" width="90" height="38" rx="6" fill="#2357C6"/>
+  <text x="351" y="766" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">Switch</text>
+  <rect x="408" y="742" width="120" height="38" rx="6" fill="#FFFFFF" stroke="#C9D3DF"/>
+  <text x="468" y="766" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#263342">Auto Select</text>
+</svg>
