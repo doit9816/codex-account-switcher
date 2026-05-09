@@ -18,7 +18,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -47,6 +48,33 @@ button:disabled {
   align-items: center;
   display: flex;
   gap: 12px;
+}
+
+.language-select {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.language-select span {
+  color: #506072;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.language-select select {
+  background: #fbfcfd;
+  border: 1px solid #cbd5df;
+  border-radius: 6px;
+  color: #17202a;
+  height: 38px;
+  outline: none;
+  padding: 0 10px;
+}
+
+.language-select select:focus {
+  border-color: #4676df;
+  box-shadow: 0 0 0 3px rgba(70, 118, 223, 0.14);
 }
 
 .page-tabs {

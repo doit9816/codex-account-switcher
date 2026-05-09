@@ -21,6 +21,7 @@ Codex 多账号切换器是一个 Tauri v2 桌面工具，用来管理多个 Cod
 - 一键迁移所有账号、规则、应用设置和指定 `.codex` 配置文件。
 - 可选迁移对话记录：`sessions/`、`session_index.jsonl`、`logs_2.sqlite*`、`state_5.sqlite*`。
 - 支持系统托盘和右键快捷操作。
+- 界面语言可跟随系统，也可手动选择简体中文、English、繁體中文。
 - GitHub Actions 自动构建 Windows、macOS、Linux 版本。
 
 ## 安全说明

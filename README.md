@@ -21,6 +21,7 @@ Codex Account Switcher is a Tauri v2 desktop utility for managing multiple Codex
 - One-click migration of all profiles, rules, app settings, and selected `.codex` files.
 - Optional conversation migration for `sessions/`, `session_index.jsonl`, `logs_2.sqlite*`, and `state_5.sqlite*`.
 - System tray support with quick actions.
+- UI language can follow the system language or be set to Simplified Chinese, English, or Traditional Chinese.
 - Windows, macOS, and Linux builds via GitHub Actions.
 
 ## Security Model
