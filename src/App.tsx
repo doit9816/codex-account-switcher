@@ -256,6 +256,8 @@ const messages = {
     refreshed: "刷新",
     skipped: "跳过",
     failed: "失败",
+    fiveHours: "5小时",
+    oneWeek: "1周",
     tokenInvalidatedHint: "认证已失效，需要重新登录该账号",
     refreshTokenReusedHint: "refresh token 已被其他会话使用，需要重新登录"
   },
@@ -372,6 +374,8 @@ const messages = {
     refreshed: "refreshed",
     skipped: "skipped",
     failed: "failed",
+    fiveHours: "5h",
+    oneWeek: "1w",
     tokenInvalidatedHint: "Authentication is invalid. Sign in to this account again.",
     refreshTokenReusedHint: "Refresh token was used by another session. Sign in again."
   },
@@ -488,6 +492,8 @@ const messages = {
     refreshed: "刷新",
     skipped: "跳過",
     failed: "失敗",
+    fiveHours: "5小時",
+    oneWeek: "1週",
     tokenInvalidatedHint: "認證已失效，需要重新登入該帳號",
     refreshTokenReusedHint: "refresh token 已被其他會話使用，需要重新登入"
   }
@@ -1411,7 +1417,7 @@ function formatUsage(used?: number, limit?: number, t: I18n = messages["zh-CN"])
 }
 
 function formatLimitChip(item: DetectedLimit, t: I18n) {
-  const label = item.label || item.window;
+  const label = localizedLimitLabel(item.label || item.window, t);
   if (item.remainingPercent !== undefined) {
     return `${label}: ${t.remaining} ${item.remainingPercent}%${item.resetAt ? ` ${formatReset(item.resetAt)}` : ""}`;
   }
@@ -1427,14 +1433,14 @@ function quotaSummary(profile: Profile, t: I18n) {
     return items
       .slice(0, 2)
       .map((item) => {
-        const label = item.label || item.window;
+        const label = localizedLimitLabel(item.label || item.window, t);
         if (item.remainingPercent !== undefined) return `${label} ${item.remainingPercent}%`;
         if (item.usedPercent !== undefined) return `${label} ${t.used}${item.usedPercent}%`;
         return `${label} ${formatUsage(item.used, item.limit, t)}`;
       })
       .join(" / ");
   }
-  if (profile.usage.detectedSummary) return profile.usage.detectedSummary.replace(/^unparsed:\s*/, "").slice(0, 36);
+  if (profile.usage.detectedSummary) return localizeDetectedText(profile.usage.detectedSummary.replace(/^unparsed:\s*/, ""), t).slice(0, 36);
   return `${formatUsage(profile.usage.hourlyUsed, profile.quotaRule.hourlyLimit, t)} / ${formatUsage(profile.usage.dailyUsed, profile.quotaRule.dailyLimit, t)}`;
 }
 
@@ -1486,7 +1492,10 @@ function tokenState(profile: Profile, t: I18n) {
 
 function friendlyProbeSummary(profile: Profile | undefined, t: I18n) {
   if (!profile) return t.noParsedQuota;
-  const summary = profile.usage.detectedSummary || "";
+  if (profile.usage.detectedLimits?.length) {
+    return profile.usage.detectedLimits.slice(0, 2).map((item) => formatLimitChip(item, t)).join("; ");
+  }
+  const summary = localizeDetectedText(profile.usage.detectedSummary || "", t);
   const error = profile.usage.lastError || profile.usage.lastTokenRefreshError || "";
   if (summary.includes("token_invalidated") || error.includes("token_invalidated")) {
     return t.tokenInvalidatedHint;
@@ -1495,6 +1504,37 @@ function friendlyProbeSummary(profile: Profile | undefined, t: I18n) {
     return t.refreshTokenReusedHint;
   }
   return summary || t.noParsedQuota;
+}
+
+function localizedLimitLabel(label: string, t: I18n) {
+  const normalized = label.toLowerCase().replace(/\s+/g, "");
+  if (
+    normalized.includes("5小时") ||
+    normalized.includes("5小時") ||
+    normalized.includes("5hour") ||
+    normalized.includes("5-hour") ||
+    normalized === "5h"
+  ) {
+    return t.fiveHours;
+  }
+  if (
+    normalized.includes("1周") ||
+    normalized.includes("1週") ||
+    normalized.includes("week") ||
+    normalized.includes("7day") ||
+    normalized === "1w"
+  ) {
+    return t.oneWeek;
+  }
+  return label;
+}
+
+function localizeDetectedText(text: string, t: I18n) {
+  return text
+    .replace(/5小时|5小時|5h/gi, t.fiveHours)
+    .replace(/1周|1週|1w/gi, t.oneWeek)
+    .replace(/剩余|剩餘|remaining/gi, t.remaining)
+    .replace(/已用|used/gi, t.used);
 }
 
 function profileScore(profile: Profile) {
