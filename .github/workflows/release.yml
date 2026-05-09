@@ -77,6 +77,12 @@ jobs:
           releaseBody: |
             Download the installer or bundle for your platform from the assets below.
 
-            These builds are unsigned by default.
+            These builds are unsigned by default. On macOS, Gatekeeper may show "Codex Account Switcher is damaged and can't be opened". This usually means the app is not Apple-notarized.
+
+            Workaround for unsigned macOS builds:
+            ```bash
+            xattr -dr com.apple.quarantine ~/Downloads/Codex.Account.Switcher_*.dmg
+            open ~/Downloads/Codex.Account.Switcher_*.dmg
+            ```
           releaseDraft: false
           prerelease: false

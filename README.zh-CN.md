@@ -182,6 +182,24 @@ tools/codex-account-switcher/scripts/publish-to-github.ps1 `
 ## 注意事项
 
 - GitHub Actions 生成的 macOS 和 Windows 包默认未签名。
-- 未签名 macOS 应用首次运行时可能需要在系统设置中手动允许。
+- 未签名 macOS 应用首次运行时可能被 Gatekeeper 提示“已损坏，无法打开”。这通常不是下载损坏，而是缺少 Apple Developer 签名和 notarization。
 - 未签名 Windows 安装包可能触发 SmartScreen 提示。
 - 当前未附带开源许可证。如果要公开授权他人使用，请补充 `LICENSE` 文件。
+
+### macOS 显示“已损坏，无法打开”时
+
+当前发布包未做 Apple 公证，下载后可以先移除 quarantine 标记再打开：
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/Codex.Account.Switcher_0.1.2_aarch64.dmg
+open ~/Downloads/Codex.Account.Switcher_0.1.2_aarch64.dmg
+```
+
+如果已经拖到应用程序目录，再执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Codex Account Switcher.app"
+open "/Applications/Codex Account Switcher.app"
+```
+
+后续如果配置 Apple Developer 证书和 notarization，macOS 就不需要这一步。
