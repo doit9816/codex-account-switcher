@@ -15,6 +15,7 @@ import {
   RotateCcw,
   Settings,
   ShieldCheck,
+  Trash2,
   Upload,
   X,
   Zap
@@ -185,13 +186,18 @@ const messages = {
     probe: "探测",
     actions: "操作",
     switch: "切换",
+    deleteAccount: "删除账号",
     noMatchedAccounts: "没有匹配的账号",
     unknownAccount: "未知账号",
     notProbed: "未探测",
     selectedRules: "选中账号规则",
     selectAccount: "选择一个账号",
     currentGlobal: "当前全局账号",
+    currentUsing: "当前",
     notWrittenGlobal: "未写入全局",
+    deleteAccountConfirm: "只删除工具内保存的账号 profile，不会删除当前 ~/.codex/auth.json。确定删除？",
+    deleteCurrentAccountConfirm: "这个账号正在写入全局使用。删除只会移除工具内保存的 profile，不会删除当前 ~/.codex/auth.json。确定删除？",
+    deletedAccount: "已删除账号",
     probeSummary: "探测摘要",
     noParsedQuota: "暂无可解析额度数据",
     hourlyLimit: "每小时限额",
@@ -303,13 +309,18 @@ const messages = {
     probe: "Probe",
     actions: "Actions",
     switch: "Switch",
+    deleteAccount: "Delete account",
     noMatchedAccounts: "No matching accounts",
     unknownAccount: "Unknown account",
     notProbed: "Not probed",
     selectedRules: "Selected account rules",
     selectAccount: "Select an account",
     currentGlobal: "Current global account",
+    currentUsing: "Current",
     notWrittenGlobal: "Not written globally",
+    deleteAccountConfirm: "This only deletes the saved profile in this tool. It will not delete the current ~/.codex/auth.json. Delete it?",
+    deleteCurrentAccountConfirm: "This account is currently written globally. Deleting only removes the saved profile in this tool and will not delete ~/.codex/auth.json. Delete it?",
+    deletedAccount: "Account deleted",
     probeSummary: "Probe summary",
     noParsedQuota: "No parsed quota data",
     hourlyLimit: "Hourly limit",
@@ -421,13 +432,18 @@ const messages = {
     probe: "探測",
     actions: "操作",
     switch: "切換",
+    deleteAccount: "刪除帳號",
     noMatchedAccounts: "沒有符合的帳號",
     unknownAccount: "未知帳號",
     notProbed: "未探測",
     selectedRules: "選中帳號規則",
     selectAccount: "選擇一個帳號",
     currentGlobal: "目前全域帳號",
+    currentUsing: "目前",
     notWrittenGlobal: "未寫入全域",
+    deleteAccountConfirm: "只刪除工具內儲存的帳號 profile，不會刪除目前 ~/.codex/auth.json。確定刪除？",
+    deleteCurrentAccountConfirm: "這個帳號正在寫入全域使用。刪除只會移除工具內儲存的 profile，不會刪除目前 ~/.codex/auth.json。確定刪除？",
+    deletedAccount: "已刪除帳號",
     probeSummary: "探測摘要",
     noParsedQuota: "暫無可解析額度資料",
     hourlyLimit: "每小時限額",
@@ -547,6 +563,14 @@ export default function App() {
     () => store?.profiles.find((profile) => profile.id === selectedId),
     [store, selectedId]
   );
+  const currentGlobalProfileId = useMemo(() => {
+    const currentAuth = scan?.currentAuth;
+    if (currentAuth) {
+      const matched = store?.profiles.find((profile) => authSummariesMatch(profile.summary, currentAuth));
+      if (matched) return matched.id;
+    }
+    return store?.settings.currentProfileId;
+  }, [scan?.currentAuth, store?.profiles, store?.settings.currentProfileId]);
   const filteredProfiles = useMemo(() => {
     const profiles = store?.profiles || [];
     const query = accountFilter.trim().toLowerCase();
@@ -560,11 +584,12 @@ export default function App() {
         profile.summary.authMode,
         accountState(profile, t),
         quotaSummary(profile, t),
-        tokenState(profile, t)
+        tokenState(profile, t),
+        currentGlobalProfileId === profile.id ? t.currentUsing : ""
       ];
       return values.some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [store?.profiles, accountFilter, t]);
+  }, [store?.profiles, accountFilter, currentGlobalProfileId, t]);
   const passwordTooShort = password.length > 0 && password.length < 8;
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
@@ -873,6 +898,26 @@ export default function App() {
     await probeProfile();
   }
 
+  async function deleteProfile(profileId = selectedId) {
+    const profile = store?.profiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    const isCurrent = currentGlobalProfileId === profile.id;
+    const confirmed = window.confirm(
+      `${isCurrent ? t.deleteCurrentAccountConfirm : t.deleteAccountConfirm}\n\n${profile.alias}`
+    );
+    if (!confirmed) return;
+    await run(async () => {
+      const view = await invoke<StoreView>("delete_profile", {
+        profileId: profile.id
+      });
+      setStore(view);
+      if (selectedId === profile.id) {
+        setSelectedId(view.settings.currentProfileId || view.profiles[0]?.id || "");
+      }
+      return view;
+    }, t.deletedAccount);
+  }
+
   async function exportBundle() {
     if (passwordTooShort) {
       setNotice({ kind: "warn", text: t.passwordTooShortExport });
@@ -1149,15 +1194,20 @@ export default function App() {
               <span>{t.probe}</span>
               <span>{t.actions}</span>
             </div>
-            {filteredProfiles.map((profile) => (
+            {filteredProfiles.map((profile) => {
+              const isCurrent = currentGlobalProfileId === profile.id;
+              return (
               <div
                 key={profile.id}
-                className={`account-row ${selectedId === profile.id ? "selected" : ""}`}
+                className={`account-row ${selectedId === profile.id ? "selected" : ""} ${isCurrent ? "current" : ""}`}
                 onClick={() => setSelectedId(profile.id)}
                 role="row"
               >
                 <span>
-                  <strong>{profile.alias}</strong>
+                  <strong>
+                    {profile.alias}
+                    {isCurrent && <em className="current-badge">{t.currentUsing}</em>}
+                  </strong>
                   <small>{profile.summary.email || profile.summary.accountId || t.unknownAccount}</small>
                 </span>
                 <span>{profile.summary.plan || profile.summary.authMode || "-"}</span>
@@ -1192,9 +1242,22 @@ export default function App() {
                   >
                     {t.switch}
                   </button>
+                  <button
+                    className="mini-button danger icon-only"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void deleteProfile(profile.id);
+                    }}
+                    disabled={busy}
+                    title={t.deleteAccount}
+                    aria-label={t.deleteAccount}
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </span>
               </div>
-            ))}
+              );
+            })}
             {filteredProfiles.length === 0 && (
               <div className="account-empty">{t.noMatchedAccounts}</div>
             )}
@@ -1207,8 +1270,8 @@ export default function App() {
                 <p>{selectedProfile?.summary.email || selectedProfile?.alias || t.selectAccount}</p>
               </div>
               <StatusPill
-                ok={store?.settings.currentProfileId === selectedProfile?.id}
-                text={store?.settings.currentProfileId === selectedProfile?.id ? t.currentGlobal : t.notWrittenGlobal}
+                ok={currentGlobalProfileId === selectedProfile?.id}
+                text={currentGlobalProfileId === selectedProfile?.id ? t.currentGlobal : t.notWrittenGlobal}
               />
             </div>
             <div className="probe-box compact-probe">
@@ -1488,6 +1551,13 @@ function tokenState(profile: Profile, t: I18n) {
   if (profile.usage.lastTokenRefreshStatus === "error") return t.keepaliveFailed;
   if (profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now()) return t.expired;
   return t.normal;
+}
+
+function authSummariesMatch(left: AuthSummary, right: AuthSummary) {
+  if (left.accountId && right.accountId && left.accountId === right.accountId) return true;
+  if (left.userId && right.userId && left.userId === right.userId) return true;
+  if (left.email && right.email && left.email.toLowerCase() === right.email.toLowerCase()) return true;
+  return false;
 }
 
 function friendlyProbeSummary(profile: Profile | undefined, t: I18n) {

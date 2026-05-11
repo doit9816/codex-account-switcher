@@ -338,7 +338,7 @@ input:focus {
   color: #1c2733;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(210px, 1.35fr) 70px 72px minmax(150px, 1fr) 72px 118px 78px 76px 128px;
+  grid-template-columns: minmax(220px, 1.35fr) 70px 72px minmax(150px, 1fr) 72px 118px 78px 76px 150px;
   min-height: 58px;
   padding: 10px 12px;
   text-align: left;
@@ -362,6 +362,10 @@ input:focus {
   background: #eaf1ff;
 }
 
+.account-row.current {
+  box-shadow: inset 3px 0 0 #2f9e5b;
+}
+
 .account-row strong,
 .account-row small {
   display: block;
@@ -373,6 +377,20 @@ input:focus {
 .account-row small {
   color: #687687;
   margin-top: 3px;
+}
+
+.current-badge {
+  background: #dff6e8;
+  border-radius: 999px;
+  color: #116938;
+  display: inline-flex;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+  line-height: 1;
+  margin-left: 8px;
+  padding: 4px 7px;
+  vertical-align: 1px;
 }
 
 .account-empty {
@@ -414,6 +432,23 @@ input:focus {
   background: #2357c6;
   border-color: #2357c6;
   color: #ffffff;
+}
+
+.mini-button.danger {
+  border-color: #f0b8b8;
+  color: #b42323;
+}
+
+.mini-button.danger:hover {
+  background: #fff1f1;
+}
+
+.mini-button.icon-only {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  padding: 0;
+  width: 30px;
 }
 
 .inline-detail {

@@ -450,6 +450,15 @@ fn save_quota_rule(
 }
 
 #[tauri::command]
+fn delete_profile(app: AppHandle, profile_id: String) -> Result<StoreView, String> {
+    let mut store = load_store(&app)?;
+    let alias = delete_profile_from_store(&mut store, &profile_id)?;
+    push_event(&mut store, "info", &format!("已删除账号 profile {}", alias));
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
 fn save_proxy_settings(app: AppHandle, enabled: bool, url: String) -> Result<StoreView, String> {
     let mut store = load_store(&app)?;
     let normalized = normalize_proxy_url(&url)?;
@@ -569,8 +578,8 @@ fn sync_current_auth_into_profile(
         return Ok(None);
     }
 
-    let auth_json = fs::read_to_string(&auth_path)
-        .map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
+    let auth_json =
+        fs::read_to_string(&auth_path).map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
     let summary = summarize_auth(&auth_json)?;
     let profile_summary = store.profiles[idx].summary.clone();
 
@@ -1104,6 +1113,20 @@ fn store_view(store: AppStore) -> StoreView {
             .collect(),
         events: store.events,
     }
+}
+
+fn delete_profile_from_store(store: &mut AppStore, profile_id: &str) -> Result<String, String> {
+    let idx = store
+        .profiles
+        .iter()
+        .position(|p| p.id == profile_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let alias = store.profiles[idx].alias.clone();
+    store.profiles.remove(idx);
+    if store.settings.current_profile_id.as_deref() == Some(profile_id) {
+        store.settings.current_profile_id = None;
+    }
+    Ok(alias)
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -2096,6 +2119,7 @@ fn main() {
             switch_profile,
             probe_usage,
             save_quota_rule,
+            delete_profile,
             save_proxy_settings,
             open_codex_home,
             save_auto_settings,
@@ -2225,6 +2249,24 @@ mod tests {
         .to_string()
     }
 
+    fn test_profile(id: &str, account_id: &str, email: &str) -> AccountProfile {
+        let key = [7u8; 32];
+        let auth = fake_auth(account_id, email);
+        AccountProfile {
+            id: id.to_string(),
+            alias: email.to_string(),
+            enabled: true,
+            priority: 100,
+            cooldown_until: None,
+            quota_rule: QuotaRule::default(),
+            summary: summarize_auth(&auth).unwrap(),
+            encrypted_auth_json: encrypt_secret(auth.as_bytes(), &key).unwrap(),
+            usage: UsageStats::default(),
+            created_at: now_string(),
+            updated_at: now_string(),
+        }
+    }
+
     fn write_text(path: &Path, value: &str) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
@@ -2351,27 +2393,9 @@ mod tests {
 
     #[test]
     fn store_view_omits_encrypted_auth_json() {
-        let mut key = [0u8; 32];
-        OsRng.fill_bytes(&mut key);
         let store = AppStore {
             settings: AppSettings::default(),
-            profiles: vec![AccountProfile {
-                id: "profile-1".to_string(),
-                alias: "primary".to_string(),
-                enabled: true,
-                priority: 100,
-                cooldown_until: None,
-                quota_rule: QuotaRule::default(),
-                summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
-                encrypted_auth_json: encrypt_secret(
-                    fake_auth("acc-1", "one@example.com").as_bytes(),
-                    &key,
-                )
-                .unwrap(),
-                usage: UsageStats::default(),
-                created_at: now_string(),
-                updated_at: now_string(),
-            }],
+            profiles: vec![test_profile("profile-1", "acc-1", "one@example.com")],
             events: vec![],
         };
 
@@ -2380,6 +2404,32 @@ mod tests {
         assert!(json.contains("one@example.com"));
         assert!(!json.contains("encryptedAuthJson"));
         assert!(!json.contains("rt_test"));
+    }
+
+    #[test]
+    fn delete_profile_clears_current_selection_without_touching_others() {
+        let mut store = AppStore::default();
+        store.settings.current_profile_id = Some("profile-1".to_string());
+        store.profiles = vec![
+            test_profile("profile-1", "acc-1", "one@example.com"),
+            test_profile("profile-2", "acc-2", "two@example.com"),
+        ];
+
+        let deleted_alias = delete_profile_from_store(&mut store, "profile-1").unwrap();
+
+        assert_eq!(deleted_alias, "one@example.com");
+        assert_eq!(store.settings.current_profile_id, None);
+        assert_eq!(store.profiles.len(), 1);
+        assert_eq!(store.profiles[0].id, "profile-2");
+    }
+
+    #[test]
+    fn delete_profile_rejects_missing_profile() {
+        let mut store = AppStore::default();
+
+        let result = delete_profile_from_store(&mut store, "missing");
+
+        assert!(result.is_err());
     }
 
     #[test]
