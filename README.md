@@ -126,13 +126,31 @@ This repository includes workflows for CI and release builds.
 - `.github/workflows/release.yml`
   - Builds Windows, macOS, and Linux desktop artifacts.
   - Runs manually or when pushing tags like `codex-account-switcher-v0.1.1`.
-  - On version tags, uploads installers to a GitHub Release.
+  - On version tags, uploads installers, updater signatures, and `latest.json` to a GitHub Release.
+
+### Auto Update Setup
+
+CodexSwitcher uses the Tauri v2 updater with GitHub Releases:
+
+- Update endpoint: `https://github.com/doit9816/codex-account-switcher/releases/latest/download/latest.json`
+- The public updater key is stored in `src-tauri/tauri.conf.json`.
+- The private updater key must stay secret and be configured in GitHub Actions secrets:
+  - `TAURI_SIGNING_PRIVATE_KEY`
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` can be empty if the generated key has no password.
+
+Generate or rotate an updater key with:
+
+```bash
+npm run tauri signer generate -- --ci -w ~/.codexswitcher-updater.key
+```
+
+When publishing a new version, update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, then push a version tag. Installed apps will find the new stable release through the in-app update checker.
 
 Create a release:
 
 ```bash
-git tag codex-account-switcher-v0.1.1
-git push origin codex-account-switcher-v0.1.1
+git tag codex-account-switcher-v0.1.3
+git push origin codex-account-switcher-v0.1.3
 ```
 
 If release upload fails with a token permission error, set the repository's GitHub Actions workflow permissions to **Read and write permissions**.
@@ -163,8 +181,8 @@ tools/codex-account-switcher/scripts/publish-to-github.ps1 `
 Then push a version tag to trigger release builds:
 
 ```bash
-git tag codex-account-switcher-v0.1.1
-git push origin codex-account-switcher-v0.1.1
+git tag codex-account-switcher-v0.1.3
+git push origin codex-account-switcher-v0.1.3
 ```
 
 ## Notes
@@ -179,8 +197,8 @@ git push origin codex-account-switcher-v0.1.1
 The current release artifacts are not Apple-notarized. If macOS says the app is damaged, remove the quarantine flag before opening the DMG:
 
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
-open ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
+xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_0.1.3_aarch64.dmg
+open ~/Downloads/CodexSwitcher_0.1.3_aarch64.dmg
 ```
 
 If you already copied the app to Applications, run:

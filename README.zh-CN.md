@@ -124,15 +124,33 @@ src-tauri/target/release/bundle/
 - `.github/workflows/ci.yml`
   - 在 push、pull request、手动触发时运行前端构建和 Rust 测试。
 - `.github/workflows/release.yml`
-- 手动触发或推送 `codex-account-switcher-v0.1.1` 这类 tag 时运行。
+  - 手动触发或推送 `codex-account-switcher-v0.1.1` 这类 tag 时运行。
   - 自动构建 Windows、Linux、macOS Apple Silicon、macOS Intel 版本。
-  - tag 构建会生成 GitHub Release 草稿并上传安装包。
+  - tag 构建会生成 GitHub Release，并上传安装包、更新签名和 `latest.json`。
+
+### 自动升级配置
+
+CodexSwitcher 使用 Tauri v2 updater 和 GitHub Releases：
+
+- 更新地址：`https://github.com/doit9816/codex-account-switcher/releases/latest/download/latest.json`
+- updater 公钥保存在 `src-tauri/tauri.conf.json`。
+- updater 私钥必须保密，并配置到 GitHub Actions Secrets：
+  - `TAURI_SIGNING_PRIVATE_KEY`
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 如果生成 key 时没有密码可以留空。
+
+生成或轮换 updater key：
+
+```bash
+npm run tauri signer generate -- --ci -w ~/.codexswitcher-updater.key
+```
+
+发布新版本时，需要同步更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处版本号，然后推送版本 tag。已安装客户端会通过软件内“检查更新”发现新的 stable release。
 
 创建发版 tag：
 
 ```bash
-git tag codex-account-switcher-v0.1.1
-git push origin codex-account-switcher-v0.1.1
+git tag codex-account-switcher-v0.1.3
+git push origin codex-account-switcher-v0.1.3
 ```
 
 如果 Release 上传失败，通常是仓库权限问题。到 GitHub 仓库设置：
@@ -191,8 +209,8 @@ tools/codex-account-switcher/scripts/publish-to-github.ps1 `
 当前发布包未做 Apple 公证，下载后可以先移除 quarantine 标记再打开：
 
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
-open ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
+xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_0.1.3_aarch64.dmg
+open ~/Downloads/CodexSwitcher_0.1.3_aarch64.dmg
 ```
 
 如果已经拖到应用程序目录，再执行：

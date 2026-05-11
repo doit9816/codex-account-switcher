@@ -180,6 +180,7 @@ button:disabled {
 .toolbar-band,
 .proxy-band,
 .auto-band,
+.update-band,
 .migration-band {
   align-items: center;
   background: #ffffff;
@@ -201,6 +202,89 @@ button:disabled {
   flex-wrap: wrap;
   justify-content: flex-start;
   margin-top: -2px;
+}
+
+.update-band {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-top: -2px;
+}
+
+.update-copy {
+  min-width: 260px;
+}
+
+.update-copy h2 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.update-copy p {
+  color: #657283;
+  margin: 5px 0 0;
+  max-width: 460px;
+}
+
+.update-status {
+  background: #f8fafc;
+  border: 1px solid #d8e0e8;
+  border-radius: 7px;
+  min-width: 132px;
+  padding: 10px 12px;
+}
+
+.update-status span {
+  color: #667587;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.update-status strong {
+  color: #122033;
+  display: block;
+  font-size: 15px;
+}
+
+.update-notes {
+  background: #f8fafc;
+  border: 1px solid #d8e0e8;
+  border-radius: 7px;
+  color: #344458;
+  flex-basis: 100%;
+  line-height: 1.45;
+  max-height: 120px;
+  overflow: auto;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
+.update-progress {
+  align-items: center;
+  display: flex;
+  flex-basis: 100%;
+  gap: 12px;
+}
+
+.update-progress div {
+  background: #e4ebf3;
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+  width: min(360px, 100%);
+}
+
+.update-progress span {
+  background: #2357c6;
+  display: block;
+  height: 100%;
+  min-width: 16px;
+}
+
+.update-progress strong {
+  color: #465668;
+  font-size: 13px;
 }
 
 .proxy-input {
@@ -693,6 +777,7 @@ input:focus {
   .toolbar-band,
   .proxy-band,
   .auto-band,
+  .update-band,
   .migration-band,
   .topbar {
     align-items: stretch;

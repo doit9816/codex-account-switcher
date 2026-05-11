@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import {
   Archive,
   CheckCircle2,
@@ -171,6 +174,20 @@ const messages = {
     saveAutoRefresh: "保存自动刷新",
     keepaliveNow: "立即保活",
     autoHint: "默认到期后刷新；提前刷新可能被服务端拒绝。其他账号保活只更新各自加密 profile。",
+    softwareUpdate: "软件更新",
+    currentVersion: "当前版本",
+    checkUpdate: "检查更新",
+    updateAvailable: "发现新版本",
+    updateDate: "发布时间",
+    upToDate: "已是最新版本",
+    updateNotChecked: "尚未检查更新",
+    downloadAndInstall: "下载并安装",
+    installingUpdate: "正在下载并安装",
+    updateInstalled: "更新已安装，重启后生效",
+    relaunchNow: "立即重启",
+    updateCheckFailed: "检查更新失败",
+    updateInstallFailed: "安装更新失败",
+    updateHint: "使用 GitHub Release stable 通道。发现新版本后需要手动确认安装。",
     accounts: "账号",
     profiles: "个 profile",
     searchPlaceholder: "搜索账号/额度/状态",
@@ -294,6 +311,20 @@ const messages = {
     saveAutoRefresh: "Save auto refresh",
     keepaliveNow: "Keepalive now",
     autoHint: "Default is refresh after expiry. Early refresh can be rejected. Other-account keepalive only updates encrypted profiles.",
+    softwareUpdate: "Software update",
+    currentVersion: "Current version",
+    checkUpdate: "Check for updates",
+    updateAvailable: "Update available",
+    updateDate: "Release date",
+    upToDate: "You are up to date",
+    updateNotChecked: "Not checked yet",
+    downloadAndInstall: "Download and install",
+    installingUpdate: "Downloading and installing",
+    updateInstalled: "Update installed. Relaunch to apply it.",
+    relaunchNow: "Relaunch now",
+    updateCheckFailed: "Update check failed",
+    updateInstallFailed: "Update install failed",
+    updateHint: "Uses the GitHub Release stable channel. New versions require manual confirmation before install.",
     accounts: "Accounts",
     profiles: "profiles",
     searchPlaceholder: "Search account / quota / state",
@@ -417,6 +448,20 @@ const messages = {
     saveAutoRefresh: "儲存自動刷新",
     keepaliveNow: "立即保活",
     autoHint: "預設到期後刷新；提前刷新可能被服務端拒絕。其他帳號保活只更新各自加密 profile。",
+    softwareUpdate: "軟體更新",
+    currentVersion: "目前版本",
+    checkUpdate: "檢查更新",
+    updateAvailable: "發現新版本",
+    updateDate: "發布時間",
+    upToDate: "已是最新版本",
+    updateNotChecked: "尚未檢查更新",
+    downloadAndInstall: "下載並安裝",
+    installingUpdate: "正在下載並安裝",
+    updateInstalled: "更新已安裝，重新啟動後生效",
+    relaunchNow: "立即重新啟動",
+    updateCheckFailed: "檢查更新失敗",
+    updateInstallFailed: "安裝更新失敗",
+    updateHint: "使用 GitHub Release stable 通道。發現新版本後需要手動確認安裝。",
     accounts: "帳號",
     profiles: "個 profile",
     searchPlaceholder: "搜尋帳號/額度/狀態",
@@ -552,6 +597,14 @@ export default function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
   const [activePage, setActivePage] = useState<"dashboard" | "settings">("dashboard");
+  const [appVersion, setAppVersion] = useState("");
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [updateChecked, setUpdateChecked] = useState(false);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateInstalled, setUpdateInstalled] = useState(false);
+  const [updateDownloaded, setUpdateDownloaded] = useState(0);
+  const [updateTotal, setUpdateTotal] = useState<number | undefined>(undefined);
   const [languageSetting, setLanguageSetting] = useState<LanguageSetting>(() => {
     const saved = localStorage.getItem("codex-account-switcher-language");
     return saved === "zh-CN" || saved === "en" || saved === "zh-TW" || saved === "system" ? saved : "system";
@@ -571,6 +624,9 @@ export default function App() {
     }
     return store?.settings.currentProfileId;
   }, [scan?.currentAuth, store?.profiles, store?.settings.currentProfileId]);
+  const updateProgressPercent = updateTotal
+    ? Math.min(100, Math.round((updateDownloaded / updateTotal) * 100))
+    : undefined;
   const filteredProfiles = useMemo(() => {
     const profiles = store?.profiles || [];
     const query = accountFilter.trim().toLowerCase();
@@ -597,6 +653,11 @@ export default function App() {
 
   useEffect(() => {
     void refresh();
+    void getVersion().then(setAppVersion).catch(() => setAppVersion(""));
+    const updateTimer = window.setTimeout(() => {
+      void checkForUpdate(false);
+    }, 3500);
+    return () => window.clearTimeout(updateTimer);
   }, []);
 
   useEffect(() => {
@@ -783,6 +844,59 @@ export default function App() {
       setStore(view);
       return view;
     }, t.savedAuto);
+  }
+
+  async function checkForUpdate(manual = true) {
+    setUpdateChecking(true);
+    try {
+      const update = await check({ timeout: 15000 });
+      setUpdateChecked(true);
+      setAvailableUpdate(update);
+      setUpdateInstalled(false);
+      setUpdateDownloaded(0);
+      setUpdateTotal(undefined);
+      if (manual) {
+        setNotice({
+          kind: update ? "ok" : "info",
+          text: update ? `${t.updateAvailable}: ${update.version}` : t.upToDate
+        });
+      } else if (update) {
+        setNotice({ kind: "info", text: `${t.updateAvailable}: ${update.version}` });
+      }
+      return update;
+    } catch (error) {
+      if (manual) setNotice({ kind: "error", text: `${t.updateCheckFailed}: ${String(error)}` });
+      return null;
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+
+  async function installAvailableUpdate() {
+    if (!availableUpdate) return;
+    setUpdateInstalling(true);
+    setUpdateDownloaded(0);
+    setUpdateTotal(undefined);
+    try {
+      let totalBytes: number | undefined;
+      await availableUpdate.downloadAndInstall((event: DownloadEvent) => {
+        if (event.event === "Started") {
+          totalBytes = event.data.contentLength;
+          setUpdateDownloaded(0);
+          setUpdateTotal(totalBytes);
+        } else if (event.event === "Progress") {
+          setUpdateDownloaded((value) => value + event.data.chunkLength);
+        } else if (event.event === "Finished") {
+          setUpdateDownloaded((value) => totalBytes || value);
+        }
+      });
+      setUpdateInstalled(true);
+      setNotice({ kind: "ok", text: t.updateInstalled });
+    } catch (error) {
+      setNotice({ kind: "error", text: `${t.updateInstallFailed}: ${String(error)}` });
+    } finally {
+      setUpdateInstalling(false);
+    }
   }
 
   async function autoProbeTick() {
@@ -1148,6 +1262,59 @@ export default function App() {
           {t.keepaliveNow}
         </button>
         <span className="proxy-hint">{t.autoHint}</span>
+      </section>
+
+      <section className="update-band">
+        <div className="update-copy">
+          <h2>{t.softwareUpdate}</h2>
+          <p>{t.updateHint}</p>
+        </div>
+        <div className="update-status">
+          <span>{t.currentVersion}</span>
+          <strong>{appVersion || "-"}</strong>
+        </div>
+        <div className="update-status">
+          <span>{availableUpdate ? t.updateAvailable : updateChecked ? t.upToDate : t.updateNotChecked}</span>
+          <strong>{availableUpdate?.version || "-"}</strong>
+        </div>
+        {availableUpdate?.date && (
+          <div className="update-status">
+            <span>{t.updateDate}</span>
+            <strong>{formatDate(availableUpdate.date)}</strong>
+          </div>
+        )}
+        {availableUpdate?.body && <div className="update-notes">{availableUpdate.body}</div>}
+        {updateInstalling && (
+          <div className="update-progress" aria-label={t.installingUpdate}>
+            <div>
+              <span style={{ width: `${updateProgressPercent ?? 35}%` }} />
+            </div>
+            <strong>
+              {updateProgressPercent !== undefined
+                ? `${t.installingUpdate} ${updateProgressPercent}%`
+                : t.installingUpdate}
+            </strong>
+          </div>
+        )}
+        <div className="action-row">
+          <button className="icon-button" onClick={() => void checkForUpdate(true)} disabled={updateChecking || updateInstalling} title={t.checkUpdate}>
+            <RefreshCcw size={17} />
+            {updateChecking ? t.checkUpdate : t.checkUpdate}
+          </button>
+          <button
+            className="icon-button primary"
+            onClick={() => void installAvailableUpdate()}
+            disabled={!availableUpdate || updateInstalling || updateInstalled}
+            title={t.downloadAndInstall}
+          >
+            <Download size={17} />
+            {t.downloadAndInstall}
+          </button>
+          <button className="icon-button" onClick={() => void relaunch()} disabled={!updateInstalled} title={t.relaunchNow}>
+            <RotateCcw size={17} />
+            {t.relaunchNow}
+          </button>
+        </div>
       </section>
         </>
       ) : (
