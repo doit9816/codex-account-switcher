@@ -1562,25 +1562,63 @@ fn latest_backup(codex_home: &Path) -> Option<PathBuf> {
 }
 
 fn is_codex_running() -> bool {
+    let current_exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     #[cfg(windows)]
     {
-        Command::new("tasklist")
+        Command::new("wmic")
+            .args([
+                "process",
+                "get",
+                "Name,ExecutablePath,CommandLine",
+                "/FORMAT:LIST",
+            ])
             .output()
             .map(|o| {
                 String::from_utf8_lossy(&o.stdout)
-                    .to_ascii_lowercase()
-                    .contains("codex")
+                    .lines()
+                    .any(|line| looks_like_codex_process(line, &current_exe))
             })
             .unwrap_or(false)
     }
     #[cfg(not(windows))]
     {
         Command::new("pgrep")
-            .args(["-f", "codex"])
-            .status()
-            .map(|s| s.success())
+            .args(["-af", "codex"])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|line| looks_like_codex_process(line, &current_exe))
+            })
             .unwrap_or(false)
     }
+}
+
+fn looks_like_codex_process(line: &str, current_exe: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("codex") {
+        return false;
+    }
+    if !current_exe.is_empty() && lower.contains(current_exe) {
+        return false;
+    }
+    let own_process_markers = [
+        "codexswitcher",
+        "codex switcher",
+        "codex-account-switcher",
+        "codex_account_switcher",
+        "local.codex.account-switcher",
+    ];
+    if own_process_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return false;
+    }
+    true
 }
 
 fn collect_bundle_files(
@@ -2430,6 +2468,30 @@ mod tests {
         let result = delete_profile_from_store(&mut store, "missing");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn codex_process_detection_excludes_switcher_processes() {
+        assert!(!looks_like_codex_process(
+            r#"CodexSwitcher.exe 123 Console"#,
+            ""
+        ));
+        assert!(!looks_like_codex_process(
+            r#"D:\go\src\cmsCloud\tools\codex-account-switcher\target\debug\codex-account-switcher.exe"#,
+            ""
+        ));
+        assert!(!looks_like_codex_process(
+            r#"CommandLine=target/debug/codex_account_switcher.exe"#,
+            ""
+        ));
+        assert!(looks_like_codex_process(
+            r#"CommandLine=C:\Users\me\AppData\Roaming\npm\codex.cmd"#,
+            ""
+        ));
+        assert!(looks_like_codex_process(
+            "9821 /usr/local/bin/codex --model gpt-5.5",
+            ""
+        ));
     }
 
     #[test]

@@ -993,7 +993,7 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <h1>Codex Account Switcher</h1>
+          <h1>CodexSwitcher</h1>
           <p>{t.appSubtitle}</p>
         </div>
         <div className="topbar-actions">

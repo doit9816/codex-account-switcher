@@ -1,8 +1,8 @@
-# Codex Account Switcher
+# CodexSwitcher
 
 [中文说明](README.zh-CN.md)
 
-Codex Account Switcher is a Tauri v2 desktop utility for managing multiple Codex / ChatGPT account profiles on one machine. It can import the current `~/.codex/auth.json`, save it as an encrypted local profile, probe usage, switch the global Codex auth file, and migrate all account profiles to another computer.
+CodexSwitcher is a Tauri v2 desktop utility for managing multiple Codex / ChatGPT account profiles on one machine. It can import the current `~/.codex/auth.json`, save it as an encrypted local profile, probe usage, switch the global Codex auth file, and migrate all account profiles to another computer.
 
 > This tool manages account files you already own. It does not automate login, bypass verification, or bypass platform limits.
 
@@ -147,7 +147,7 @@ One direct flow:
 cd tools/codex-account-switcher
 git init
 git add .
-git commit -m "Initial Codex Account Switcher release"
+git commit -m "Initial CodexSwitcher release"
 git branch -M main
 git remote add origin git@github.com:<owner>/<repo>.git
 git push -u origin main
@@ -179,15 +179,15 @@ git push origin codex-account-switcher-v0.1.1
 The current release artifacts are not Apple-notarized. If macOS says the app is damaged, remove the quarantine flag before opening the DMG:
 
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/Codex.Account.Switcher_0.1.2_aarch64.dmg
-open ~/Downloads/Codex.Account.Switcher_0.1.2_aarch64.dmg
+xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
+open ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
 ```
 
 If you already copied the app to Applications, run:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Codex Account Switcher.app"
-open "/Applications/Codex Account Switcher.app"
+xattr -dr com.apple.quarantine "/Applications/CodexSwitcher.app"
+open "/Applications/CodexSwitcher.app"
 ```
 
 Once Apple Developer signing and notarization are configured, this workaround is no longer needed.

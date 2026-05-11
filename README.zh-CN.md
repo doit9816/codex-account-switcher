@@ -1,6 +1,6 @@
-# Codex 多账号切换器
+# CodexSwitcher
 
-Codex 多账号切换器是一个 Tauri v2 桌面工具，用来管理多个 Codex / ChatGPT 账号 profile。它可以导入当前 `~/.codex/auth.json`，保存为本地加密 profile，探测额度，切换全局 Codex 授权文件，并把所有账号信息迁移到另一台电脑。
+CodexSwitcher 是一个 Tauri v2 桌面工具，用来管理多个 Codex / ChatGPT 账号 profile。它可以导入当前 `~/.codex/auth.json`，保存为本地加密 profile，探测额度，切换全局 Codex 授权文件，并把所有账号信息迁移到另一台电脑。
 
 [English README](README.md)
 
@@ -151,7 +151,7 @@ Settings -> Actions -> General -> Workflow permissions -> Read and write permiss
 cd tools/codex-account-switcher
 git init
 git add .
-git commit -m "Initial Codex Account Switcher release"
+git commit -m "Initial CodexSwitcher release"
 git branch -M main
 git remote add origin git@github.com:<owner>/<repo>.git
 git push -u origin main
@@ -191,15 +191,15 @@ tools/codex-account-switcher/scripts/publish-to-github.ps1 `
 当前发布包未做 Apple 公证，下载后可以先移除 quarantine 标记再打开：
 
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/Codex.Account.Switcher_0.1.2_aarch64.dmg
-open ~/Downloads/Codex.Account.Switcher_0.1.2_aarch64.dmg
+xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
+open ~/Downloads/CodexSwitcher_0.1.2_aarch64.dmg
 ```
 
 如果已经拖到应用程序目录，再执行：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Codex Account Switcher.app"
-open "/Applications/Codex Account Switcher.app"
+xattr -dr com.apple.quarantine "/Applications/CodexSwitcher.app"
+open "/Applications/CodexSwitcher.app"
 ```
 
 后续如果配置 Apple Developer 证书和 notarization，macOS 就不需要这一步。
