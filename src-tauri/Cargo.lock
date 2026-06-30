@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "codex-account-switcher"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes-gcm",
  "argon2",

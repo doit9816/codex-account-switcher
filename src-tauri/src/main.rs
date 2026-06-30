@@ -167,6 +167,8 @@ struct UsageStats {
     last_token_refresh_status: Option<String>,
     #[serde(default)]
     last_token_refresh_error: Option<String>,
+    #[serde(default)]
+    available_reset_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -262,6 +264,15 @@ struct UsageProbeResult {
     status: String,
     http_status: Option<u16>,
     raw_json: Option<Value>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageResetResult {
+    profile_id: String,
+    outcome: String,
+    available_reset_count: Option<i64>,
     message: String,
 }
 
@@ -814,9 +825,26 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
                 return Err(message.to_string());
             }
         } else {
-            auth_json = refresh_auth_json_with_client(&client, &auth_json)
-                .await
-                .map_err(|e| format!("账号 token 已过期且刷新失败：{}", e))?;
+            auth_json = match refresh_auth_json_with_client(&client, &auth_json).await {
+                Ok(updated) => updated,
+                Err(error) => {
+                    let message = format!("账号 token 已过期且刷新失败：{error}");
+                    store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
+                    store.profiles[idx].usage.last_token_refresh_status = Some(
+                        if refresh_error_requires_relogin(&error) {
+                            "relogin_required"
+                        } else {
+                            "error"
+                        }
+                        .to_string(),
+                    );
+                    store.profiles[idx].usage.last_token_refresh_error = Some(error);
+                    store.profiles[idx].usage.last_error = Some(message.clone());
+                    push_event(&mut store, "warn", &message);
+                    save_store(&app, &store)?;
+                    return Err(message);
+                }
+            };
             store.profiles[idx].summary = summarize_auth(&auth_json)?;
             store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
             store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
@@ -884,6 +912,98 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
             })
         }
     }
+}
+
+#[tauri::command]
+async fn consume_usage_reset(
+    app: AppHandle,
+    profile_id: String,
+) -> Result<UsageResetResult, String> {
+    let mut store = load_store(&app)?;
+    let key = load_master_key(&app)?;
+    let idx = store
+        .profiles
+        .iter()
+        .position(|profile| profile.id == profile_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    if store.profiles[idx].usage.available_reset_count == Some(0) {
+        return Err("没有可用的用量重置次数".to_string());
+    }
+
+    let auth_json = String::from_utf8(decrypt_secret(
+        &store.profiles[idx].encrypted_auth_json,
+        &key,
+    )?)
+    .map_err(|error| error.to_string())?;
+    let auth: Value = serde_json::from_str(&auth_json).map_err(display_err)?;
+    let access_token = auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "账号凭据中没有 access_token，无法重置用量".to_string())?;
+    let client = build_probe_client(&store.settings.probe_proxy)?;
+    let idempotency_key = Uuid::new_v4().to_string();
+    let response = client
+        .post("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "redeem_request_id": idempotency_key }))
+        .send()
+        .await
+        .map_err(|error| format!("用量重置请求失败: {error}"))?;
+    let status = response.status();
+    let body = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("无法解析用量重置响应: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "用量重置失败（HTTP {}）: {}",
+            status.as_u16(),
+            body
+        ));
+    }
+
+    let outcome = body
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    match outcome.as_str() {
+        "reset" | "already_redeemed" => {}
+        "nothing_to_reset" => return Err("当前用量窗口尚不需要重置".to_string()),
+        "no_credit" => {
+            store.profiles[idx].usage.available_reset_count = Some(0);
+            save_store(&app, &store)?;
+            return Err("没有可用的用量重置次数".to_string());
+        }
+        _ => return Err(format!("服务端返回未知的重置结果: {outcome}")),
+    }
+
+    let usage_response = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .bearer_auth(access_token)
+        .send()
+        .await;
+    if let Ok(response) = usage_response {
+        if let Ok(usage_body) = response.json::<Value>().await {
+            apply_usage_probe_body(&mut store.profiles[idx], &usage_body);
+        } else {
+            store.profiles[idx].usage.available_reset_count = None;
+        }
+    } else {
+        store.profiles[idx].usage.available_reset_count = None;
+    }
+    store.profiles[idx].usage.last_probe_at = Some(now_string());
+    store.profiles[idx].updated_at = now_string();
+    let available_reset_count = store.profiles[idx].usage.available_reset_count;
+    push_event(&mut store, "info", "已使用一次 Codex 用量重置并刷新额度");
+    save_store(&app, &store)?;
+
+    Ok(UsageResetResult {
+        profile_id,
+        outcome,
+        available_reset_count,
+        message: "用量已重置".to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1434,6 +1554,14 @@ fn compact_error_body(body: &str) -> String {
     }
 }
 
+fn refresh_error_requires_relogin(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("refresh_token_reused")
+        || normalized.contains("token_invalidated")
+        || normalized.contains("invalid_grant")
+        || normalized.contains("invalid refresh token")
+}
+
 fn normalize_proxy_url(value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1769,6 +1897,10 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 fn apply_usage_probe_body(profile: &mut AccountProfile, body: &Value) {
+    profile.usage.available_reset_count = body
+        .pointer("/rate_limit_reset_credits/available_count")
+        .or_else(|| body.pointer("/rateLimitResetCredits/availableCount"))
+        .and_then(Value::as_i64);
     let detected = detect_usage_limits(body);
     if detected.is_empty() {
         profile.usage.detected_summary = Some(summarize_usage_body(body));
@@ -2158,6 +2290,7 @@ fn main() {
             import_current_auth_as_profile,
             switch_profile,
             probe_usage,
+            consume_usage_reset,
             save_quota_rule,
             delete_profile,
             save_proxy_settings,
@@ -2781,6 +2914,16 @@ mod tests {
     }
 
     #[test]
+    fn classifies_terminal_refresh_errors_as_relogin_required() {
+        assert!(refresh_error_requires_relogin("refresh_token_reused"));
+        assert!(refresh_error_requires_relogin(
+            r#"{\"error\":\"invalid_grant\"}"#
+        ));
+        assert!(refresh_error_requires_relogin("token_invalidated"));
+        assert!(!refresh_error_requires_relogin("network timeout"));
+    }
+
+    #[test]
     fn detects_usage_limits_from_nested_probe_body() {
         let body = serde_json::json!({
             "rate_limits": [
@@ -2832,6 +2975,37 @@ mod tests {
                 && item.used_percent == Some(8)
                 && item.remaining_percent == Some(92)
         }));
+    }
+
+    #[test]
+    fn applies_available_usage_reset_count() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let mut profile = AccountProfile {
+            id: "profile-1".to_string(),
+            alias: "primary".to_string(),
+            enabled: true,
+            priority: 100,
+            cooldown_until: None,
+            quota_rule: QuotaRule::default(),
+            summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
+            encrypted_auth_json: encrypt_secret(
+                fake_auth("acc-1", "one@example.com").as_bytes(),
+                &key,
+            )
+            .unwrap(),
+            usage: UsageStats::default(),
+            created_at: now_string(),
+            updated_at: now_string(),
+        };
+        let body = serde_json::json!({
+            "rate_limit": { "allowed": true, "limit_reached": false },
+            "rate_limit_reset_credits": { "available_count": 2 }
+        });
+
+        apply_usage_probe_body(&mut profile, &body);
+
+        assert_eq!(profile.usage.available_reset_count, Some(2));
     }
 
     #[test]

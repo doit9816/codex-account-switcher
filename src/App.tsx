@@ -55,6 +55,7 @@ type UsageStats = {
   lastTokenRefreshAt?: string;
   lastTokenRefreshStatus?: string;
   lastTokenRefreshError?: string;
+  availableResetCount?: number;
 };
 
 type DetectedLimit = {
@@ -282,7 +283,11 @@ const messages = {
     fiveHours: "5小时",
     oneWeek: "1周",
     tokenInvalidatedHint: "认证已失效，需要重新登录该账号",
-    refreshTokenReusedHint: "refresh token 已被其他会话使用，需要重新登录"
+    refreshTokenReusedHint: "refresh token 已被其他会话使用，需要重新登录",
+    usageResets: "可用重置",
+    useReset: "使用重置",
+    useResetConfirm: "确定使用一次重置吗？这会重置当前适用的 Codex 用量窗口。",
+    usageResetDone: "用量已重置"
   },
   en: {
     appSubtitle: "Multi-account usage overview, global switching, and encrypted migration",
@@ -419,7 +424,11 @@ const messages = {
     fiveHours: "5h",
     oneWeek: "1w",
     tokenInvalidatedHint: "Authentication is invalid. Sign in to this account again.",
-    refreshTokenReusedHint: "Refresh token was used by another session. Sign in again."
+    refreshTokenReusedHint: "Refresh token was used by another session. Sign in again.",
+    usageResets: "Resets available",
+    useReset: "Use reset",
+    useResetConfirm: "Use one reset now? This resets the currently eligible Codex usage windows.",
+    usageResetDone: "Usage reset"
   },
   "zh-TW": {
     appSubtitle: "多帳號額度觀察、全域切換和一鍵加密遷移",
@@ -556,7 +565,11 @@ const messages = {
     fiveHours: "5小時",
     oneWeek: "1週",
     tokenInvalidatedHint: "認證已失效，需要重新登入該帳號",
-    refreshTokenReusedHint: "refresh token 已被其他會話使用，需要重新登入"
+    refreshTokenReusedHint: "refresh token 已被其他會話使用，需要重新登入",
+    usageResets: "可用重置",
+    useReset: "使用重置",
+    useResetConfirm: "確定使用一次重置嗎？這會重置目前適用的 Codex 用量視窗。",
+    usageResetDone: "用量已重置"
   }
 } as const;
 
@@ -1012,6 +1025,23 @@ export default function App() {
     await probeProfile();
   }
 
+  async function consumeUsageReset(profileId = selectedId) {
+    const profile = store?.profiles.find((item) => item.id === profileId);
+    if (!profile || !window.confirm(t.useResetConfirm)) return;
+    await run(async () => {
+      const result = await invoke<{ message: string; outcome: string; availableResetCount?: number }>(
+        "consume_usage_reset",
+        { profileId: profile.id }
+      );
+      await refresh();
+      setNotice({
+        kind: "ok",
+        text: `${t.usageResetDone}${result.availableResetCount != null ? ` · ${t.usageResets}: ${result.availableResetCount}` : ""}`
+      });
+      return result;
+    });
+  }
+
   async function deleteProfile(profileId = selectedId) {
     const profile = store?.profiles.find((item) => item.id === profileId);
     if (!profile) return;
@@ -1453,6 +1483,21 @@ export default function App() {
                     {item.remaining != null ? ` ${t.remaining} ${item.remaining}` : ""}
                   </span>
                 ))}
+                {selectedProfile?.usage.availableResetCount != null && (
+                  <span className="limit-chip">
+                    {t.usageResets}: {selectedProfile.usage.availableResetCount}
+                  </span>
+                )}
+                {(selectedProfile?.usage.availableResetCount || 0) > 0 && (
+                  <button
+                    className="mini-button primary"
+                    onClick={() => void consumeUsageReset(selectedProfile?.id)}
+                    disabled={busy}
+                    title={t.useReset}
+                  >
+                    {t.useReset}
+                  </button>
+                )}
               </div>
             </div>
             <div className="form-grid">
@@ -1660,7 +1705,7 @@ function formatLimitChip(item: DetectedLimit, t: I18n) {
 function quotaSummary(profile: Profile, t: I18n) {
   const items = profile.usage.detectedLimits || [];
   if (items.length > 0) {
-    return items
+    const limits = items
       .slice(0, 2)
       .map((item) => {
         const label = localizedLimitLabel(item.label || item.window, t);
@@ -1669,6 +1714,9 @@ function quotaSummary(profile: Profile, t: I18n) {
         return `${label} ${formatUsage(item.used, item.limit, t)}`;
       })
       .join(" / ");
+    return profile.usage.availableResetCount != null
+      ? `${limits} · ${t.usageResets} ${profile.usage.availableResetCount}`
+      : limits;
   }
   if (profile.usage.detectedSummary) return localizeDetectedText(profile.usage.detectedSummary.replace(/^unparsed:\s*/, ""), t).slice(0, 36);
   return `${formatUsage(profile.usage.hourlyUsed, profile.quotaRule.hourlyLimit, t)} / ${formatUsage(profile.usage.dailyUsed, profile.quotaRule.dailyLimit, t)}`;
@@ -1713,7 +1761,11 @@ function accountState(profile: Profile, t: I18n) {
 function tokenState(profile: Profile, t: I18n) {
   const error = profile.usage.lastTokenRefreshError || profile.usage.lastError || "";
   if (error.includes("token_invalidated")) return t.authInvalid;
-  if (error.includes("refresh_token_reused")) return t.reloginRequired;
+  if (
+    profile.usage.lastTokenRefreshStatus === "relogin_required" ||
+    error.includes("refresh_token_reused") ||
+    error.includes("invalid_grant")
+  ) return t.reloginRequired;
   if (profile.usage.lastTokenRefreshStatus === "ok") return t.keptAlive;
   if (profile.usage.lastTokenRefreshStatus === "error") return t.keepaliveFailed;
   if (profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now()) return t.expired;
@@ -1737,7 +1789,13 @@ function friendlyProbeSummary(profile: Profile | undefined, t: I18n) {
   if (summary.includes("token_invalidated") || error.includes("token_invalidated")) {
     return t.tokenInvalidatedHint;
   }
-  if (summary.includes("refresh_token_reused") || error.includes("refresh_token_reused")) {
+  if (
+    profile.usage.lastTokenRefreshStatus === "relogin_required" ||
+    summary.includes("refresh_token_reused") ||
+    error.includes("refresh_token_reused") ||
+    summary.includes("invalid_grant") ||
+    error.includes("invalid_grant")
+  ) {
     return t.refreshTokenReusedHint;
   }
   return summary || t.noParsedQuota;
