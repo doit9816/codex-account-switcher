@@ -435,6 +435,7 @@ fn import_current_auth_as_profile(
 fn save_quota_rule(
     app: AppHandle,
     profile_id: String,
+    alias: String,
     hourly_limit: Option<u32>,
     daily_limit: Option<u32>,
     cooldown_minutes: u32,
@@ -447,6 +448,11 @@ fn save_quota_rule(
         .iter_mut()
         .find(|p| p.id == profile_id)
         .ok_or_else(|| "账号不存在".to_string())?;
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return Err("账号备注不能为空".to_string());
+    }
+    profile.alias = alias.to_string();
     profile.quota_rule = QuotaRule {
         hourly_limit,
         daily_limit,
@@ -1428,9 +1434,12 @@ fn summarize_auth(auth_json: &str) -> Result<AuthSummary, String> {
             .map(String::from),
         plan: id_claims
             .as_ref()
-            .and_then(|v| v.get("chatgpt_plan_type").or_else(|| v.get("plan_type")))
-            .and_then(Value::as_str)
-            .map(String::from),
+            .and_then(extract_plan_type_from_claims)
+            .or_else(|| {
+                access_claims
+                    .as_ref()
+                    .and_then(extract_plan_type_from_claims)
+            }),
         account_id: auth
             .pointer("/tokens/account_id")
             .and_then(Value::as_str)
@@ -1458,6 +1467,20 @@ fn summarize_auth(auth_json: &str) -> Result<AuthSummary, String> {
             .and_then(Value::as_str)
             .map(String::from),
     })
+}
+
+fn extract_plan_type_from_claims(claims: &Value) -> Option<String> {
+    claims
+        .get("chatgpt_plan_type")
+        .or_else(|| claims.get("plan_type"))
+        .or_else(|| {
+            claims.get("https://api.openai.com/auth").and_then(|auth| {
+                auth.get("chatgpt_plan_type")
+                    .or_else(|| auth.get("plan_type"))
+            })
+        })
+        .and_then(Value::as_str)
+        .map(String::from)
 }
 
 fn decode_jwt_claims(token: &str) -> Option<Value> {
@@ -1897,6 +1920,13 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 fn apply_usage_probe_body(profile: &mut AccountProfile, body: &Value) {
+    if let Some(plan_type) = body
+        .get("plan_type")
+        .or_else(|| body.get("planType"))
+        .and_then(Value::as_str)
+    {
+        profile.summary.plan = Some(plan_type.to_string());
+    }
     profile.usage.available_reset_count = body
         .pointer("/rate_limit_reset_credits/available_count")
         .or_else(|| body.pointer("/rateLimitResetCredits/availableCount"))
@@ -2545,6 +2575,20 @@ mod tests {
     }
 
     #[test]
+    fn extracts_plan_from_namespaced_jwt_claims() {
+        let claims = serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "pro"
+            }
+        });
+
+        assert_eq!(
+            extract_plan_type_from_claims(&claims).as_deref(),
+            Some("pro")
+        );
+    }
+
+    #[test]
     fn scans_codex_home_without_reading_secrets_into_output() {
         let dir = tempdir().unwrap();
         write_text(
@@ -2999,6 +3043,7 @@ mod tests {
             updated_at: now_string(),
         };
         let body = serde_json::json!({
+            "plan_type": "plus",
             "rate_limit": { "allowed": true, "limit_reached": false },
             "rate_limit_reset_credits": { "available_count": 2 }
         });
@@ -3006,6 +3051,7 @@ mod tests {
         apply_usage_probe_body(&mut profile, &body);
 
         assert_eq!(profile.usage.available_reset_count, Some(2));
+        assert_eq!(profile.summary.plan.as_deref(), Some("plus"));
     }
 
     #[test]

@@ -200,11 +200,15 @@ const messages = {
     quota: "额度",
     priority: "优先级",
     accessExpires: "Access 过期",
+    loginValidity: "登录有效期",
+    validityExpired: "已过期",
+    pendingPlan: "待探测",
     token: "Token",
     probe: "探测",
     actions: "操作",
     switch: "切换",
     deleteAccount: "删除账号",
+    accountNote: "账号备注",
     noMatchedAccounts: "没有匹配的账号",
     unknownAccount: "未知账号",
     notProbed: "未探测",
@@ -341,11 +345,15 @@ const messages = {
     quota: "Quota",
     priority: "Priority",
     accessExpires: "Access expires",
+    loginValidity: "Login validity",
+    validityExpired: "Expired",
+    pendingPlan: "Pending",
     token: "Token",
     probe: "Probe",
     actions: "Actions",
     switch: "Switch",
     deleteAccount: "Delete account",
+    accountNote: "Account note",
     noMatchedAccounts: "No matching accounts",
     unknownAccount: "Unknown account",
     notProbed: "Not probed",
@@ -482,11 +490,15 @@ const messages = {
     quota: "額度",
     priority: "優先級",
     accessExpires: "Access 過期",
+    loginValidity: "登入有效期",
+    validityExpired: "已過期",
+    pendingPlan: "待探測",
     token: "Token",
     probe: "探測",
     actions: "操作",
     switch: "切換",
     deleteAccount: "刪除帳號",
+    accountNote: "帳號備註",
     noMatchedAccounts: "沒有符合的帳號",
     unknownAccount: "未知帳號",
     notProbed: "未探測",
@@ -605,6 +617,7 @@ export default function App() {
   const [autoProbeEnabled, setAutoProbeEnabled] = useState(true);
   const [autoProbeIntervalSecs, setAutoProbeIntervalSecs] = useState(60);
   const [quotaDraft, setQuotaDraft] = useState<QuotaRule>(emptyQuota);
+  const [aliasDraft, setAliasDraft] = useState("");
   const [priorityDraft, setPriorityDraft] = useState(100);
   const [enabledDraft, setEnabledDraft] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -720,6 +733,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedProfile) return;
     setQuotaDraft(selectedProfile.quotaRule);
+    setAliasDraft(selectedProfile.alias);
     setPriorityDraft(selectedProfile.priority);
     setEnabledDraft(selectedProfile.enabled);
   }, [selectedProfile]);
@@ -821,6 +835,7 @@ export default function App() {
     await run(async () => {
       const view = await invoke<StoreView>("save_quota_rule", {
         profileId: selectedProfile.id,
+        alias: aliasDraft.trim(),
         hourlyLimit: normalizeNumber(quotaDraft.hourlyLimit),
         dailyLimit: normalizeNumber(quotaDraft.dailyLimit),
         cooldownMinutes: quotaDraft.cooldownMinutes || 180,
@@ -1379,44 +1394,76 @@ export default function App() {
             </div>
           </div>
 
-          <div className="account-table" role="table">
-            <div className="account-row header" role="row">
-              <span>{t.account}</span>
-              <span>{t.plan}</span>
-              <span>{t.state}</span>
-              <span>{t.quota}</span>
-              <span>{t.priority}</span>
-              <span>{t.accessExpires}</span>
-              <span>{t.token}</span>
-              <span>{t.probe}</span>
-              <span>{t.actions}</span>
-            </div>
+          <div className="account-card-grid">
             {filteredProfiles.map((profile) => {
               const isCurrent = currentGlobalProfileId === profile.id;
+              const limits = profile.usage.detectedLimits || [];
               return (
-              <div
-                key={profile.id}
-                className={`account-row ${selectedId === profile.id ? "selected" : ""} ${isCurrent ? "current" : ""}`}
-                onClick={() => setSelectedId(profile.id)}
-                role="row"
-              >
-                <span>
-                  <strong>
-                    {profile.alias}
-                    {isCurrent && <em className="current-badge">{t.currentUsing}</em>}
-                  </strong>
-                  <small>{profile.summary.email || profile.summary.accountId || t.unknownAccount}</small>
-                </span>
-                <span>{profile.summary.plan || profile.summary.authMode || "-"}</span>
-                <span>
-                  <StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} />
-                </span>
-                <span className="quota-cell">{quotaSummary(profile, t)}</span>
-                <span>{profile.priority}</span>
-                <span>{formatUnix(profile.summary.accessTokenExp)}</span>
-                <span>{tokenState(profile, t)}</span>
-                <span>{profile.usage.lastProbeStatus || t.notProbed}</span>
-                <span className="row-actions">
+                <article
+                  key={profile.id}
+                  className={`account-card ${selectedId === profile.id ? "selected" : ""} ${isCurrent ? "current" : ""}`}
+                  onClick={() => setSelectedId(profile.id)}
+                >
+                  <div className="account-card-head">
+                    <div className="account-card-title">
+                      <strong>{profile.alias}</strong>
+                      <small>{profile.summary.email || profile.summary.accountId || t.unknownAccount}</small>
+                    </div>
+                    <div className="account-card-badges">
+                      {isCurrent && <em className="current-badge">{t.currentUsing}</em>}
+                      <span className="plan-badge">{planBadge(profile, t)}</span>
+                    </div>
+                  </div>
+
+                  <div className="account-card-meta">
+                    <StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} />
+                    <span>{t.token}: {tokenState(profile, t)}</span>
+                    {profile.usage.availableResetCount != null && (
+                      <span>{t.usageResets}: {profile.usage.availableResetCount}</span>
+                    )}
+                  </div>
+
+                  <div className="account-limit-list">
+                    {limits.slice(0, 2).map((item, index) => {
+                      const remainingPercent = limitRemainingPercent(item);
+                      return (
+                        <div className="account-limit" key={`${item.window}-${index}`}>
+                          <div className="account-limit-head">
+                            <span>{localizedLimitLabel(item.label || item.window, t)}</span>
+                            <strong>{remainingPercent != null ? `${remainingPercent}%` : formatUsage(item.used, item.limit, t)}</strong>
+                          </div>
+                          <div className="account-limit-track">
+                            <i style={{ width: `${remainingPercent ?? 0}%` }} />
+                          </div>
+                          <small>{item.resetAt ? formatReset(item.resetAt) : t.notProbed}</small>
+                        </div>
+                      );
+                    })}
+                    {limits.length === 0 && <div className="account-limit-empty">{t.noParsedQuota}</div>}
+                  </div>
+
+                  <div className={`account-validity ${credentialExpiryState(profile).expired ? "expired" : ""}`}>
+                    <span>{t.loginValidity}</span>
+                    <strong>{formatCredentialValidity(profile, t)}</strong>
+                    <small>{formatUnix(credentialExpiry(profile))}</small>
+                  </div>
+
+                  <div className="account-card-foot">
+                    <small>{profile.usage.lastProbeAt ? `${t.probe}: ${formatReset(profile.usage.lastProbeAt)}` : t.notProbed}</small>
+                    <span className="row-actions">
+                      {(profile.usage.availableResetCount || 0) > 0 && (
+                        <button
+                          className="mini-button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void consumeUsageReset(profile.id);
+                          }}
+                          disabled={busy}
+                          title={t.useReset}
+                        >
+                          <RotateCcw size={14} /> {t.useReset}
+                        </button>
+                      )}
                   <button
                     className="mini-button"
                     onClick={(event) => {
@@ -1426,7 +1473,7 @@ export default function App() {
                     disabled={busy}
                     title={t.probeQuota}
                   >
-                    {t.probe}
+                    <RefreshCcw size={14} /> {t.probe}
                   </button>
                   <button
                     className="mini-button primary"
@@ -1437,10 +1484,10 @@ export default function App() {
                     disabled={busy}
                     title={t.switch}
                   >
-                    {t.switch}
+                    <Zap size={14} /> {t.switch}
                   </button>
                   <button
-                    className="mini-button danger icon-only"
+                    className="mini-button danger"
                     onClick={(event) => {
                       event.stopPropagation();
                       void deleteProfile(profile.id);
@@ -1449,10 +1496,11 @@ export default function App() {
                     title={t.deleteAccount}
                     aria-label={t.deleteAccount}
                   >
-                    <Trash2 size={15} />
+                    <Trash2 size={15} /> {t.deleteAccount}
                   </button>
-                </span>
-              </div>
+                    </span>
+                  </div>
+                </article>
               );
             })}
             {filteredProfiles.length === 0 && (
@@ -1501,6 +1549,14 @@ export default function App() {
               </div>
             </div>
             <div className="form-grid">
+            <label>
+              {t.accountNote}
+              <input
+                value={aliasDraft}
+                onChange={(event) => setAliasDraft(event.target.value)}
+                title={t.accountNote}
+              />
+            </label>
             <label>
               {t.hourlyLimit}
               <input
@@ -1700,6 +1756,46 @@ function formatLimitChip(item: DetectedLimit, t: I18n) {
     return `${label}: ${t.used} ${item.usedPercent}%${item.resetAt ? ` ${formatReset(item.resetAt)}` : ""}`;
   }
   return `${label}: ${formatUsage(item.used, item.limit, t)}`;
+}
+
+function limitRemainingPercent(item: DetectedLimit) {
+  if (item.remainingPercent != null) return Math.max(0, Math.min(100, item.remainingPercent));
+  if (item.usedPercent != null) return Math.max(0, Math.min(100, 100 - item.usedPercent));
+  if (item.remaining != null && item.limit && item.limit > 0) {
+    return Math.max(0, Math.min(100, Math.round((item.remaining / item.limit) * 100)));
+  }
+  if (item.used != null && item.limit && item.limit > 0) {
+    return Math.max(0, Math.min(100, Math.round(((item.limit - item.used) / item.limit) * 100)));
+  }
+  return undefined;
+}
+
+function planBadge(profile: Profile, t: I18n) {
+  const plan = profile.summary.plan?.trim();
+  return plan ? plan.toUpperCase().replace(/_/g, " ") : t.pendingPlan;
+}
+
+function credentialExpiry(profile: Profile) {
+  const candidates = [profile.summary.accessTokenExp, profile.summary.idTokenExp]
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return candidates.length ? Math.max(...candidates) : undefined;
+}
+
+function credentialExpiryState(profile: Profile) {
+  const expiresAt = credentialExpiry(profile);
+  const remainingSeconds = expiresAt == null ? undefined : expiresAt - Math.floor(Date.now() / 1000);
+  return { expiresAt, remainingSeconds, expired: remainingSeconds != null && remainingSeconds <= 0 };
+}
+
+function formatCredentialValidity(profile: Profile, t: I18n) {
+  const { remainingSeconds, expired } = credentialExpiryState(profile);
+  if (remainingSeconds == null) return "-";
+  if (expired) return t.validityExpired;
+  const days = Math.floor(remainingSeconds / 86400);
+  const hours = Math.floor((remainingSeconds % 86400) / 3600);
+  if (days > 0) return `${days}d ${hours}h`;
+  const minutes = Math.max(0, Math.floor((remainingSeconds % 3600) / 60));
+  return `${hours}h ${minutes}m`;
 }
 
 function quotaSummary(profile: Profile, t: I18n) {

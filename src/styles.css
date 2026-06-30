@@ -414,6 +414,204 @@ input:focus {
   overflow: hidden;
 }
 
+.account-card-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+}
+
+.account-card {
+  background: linear-gradient(145deg, #ffffff, #f8fbff);
+  border: 1px solid #d9e3ee;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(33, 51, 72, 0.07);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  min-width: 0;
+  padding: 18px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.account-card:hover {
+  border-color: #9bb8df;
+  transform: translateY(-1px);
+}
+
+.account-card.selected {
+  border-color: #3977e9;
+  box-shadow: 0 0 0 2px rgba(57, 119, 233, 0.13), 0 12px 28px rgba(33, 78, 145, 0.12);
+}
+
+.account-card.current {
+  background: linear-gradient(145deg, #ffffff, #f4fff9);
+}
+
+.account-card-head,
+.account-card-foot,
+.account-card-meta,
+.account-limit-head,
+.account-card-badges {
+  align-items: center;
+  display: flex;
+}
+
+.account-card-head,
+.account-card-foot,
+.account-limit-head {
+  justify-content: space-between;
+}
+
+.account-card-title {
+  min-width: 0;
+}
+
+.account-card-title strong,
+.account-card-title small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-card-title strong {
+  color: #162234;
+  font-size: 17px;
+}
+
+.account-card-title small,
+.account-card-foot > small,
+.account-limit small {
+  color: #738195;
+}
+
+.account-card-title small {
+  margin-top: 4px;
+}
+
+.account-card-badges,
+.account-card-meta,
+.row-actions {
+  gap: 7px;
+}
+
+.plan-badge {
+  background: #d9fbef;
+  border: 1px solid #8de0c6;
+  border-radius: 999px;
+  color: #0c7059;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 5px 9px;
+}
+
+.account-card-meta {
+  color: #607083;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.account-card-meta > span:not(.status-pill) {
+  background: #f0f4f8;
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.account-limit-list {
+  display: grid;
+  gap: 14px;
+}
+
+.account-limit {
+  display: grid;
+  gap: 6px;
+}
+
+.account-limit-head {
+  color: #415269;
+  font-size: 13px;
+}
+
+.account-limit-head strong {
+  color: #13a65a;
+  font-size: 15px;
+}
+
+.account-limit-track {
+  background: #e7edf4;
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.account-limit-track i {
+  background: linear-gradient(90deg, #24c66b, #0fab57);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 2px;
+}
+
+.account-limit small {
+  font-size: 11px;
+  text-align: right;
+}
+
+.account-limit-empty {
+  align-items: center;
+  background: #f5f8fb;
+  border: 1px dashed #cbd6e2;
+  border-radius: 9px;
+  color: #718095;
+  display: flex;
+  justify-content: center;
+  min-height: 82px;
+}
+
+.account-validity {
+  align-items: center;
+  background: #eefaf4;
+  border: 1px solid #bce8d1;
+  border-radius: 10px;
+  color: #257251;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto 1fr auto;
+  padding: 10px 12px;
+}
+
+.account-validity strong {
+  text-align: center;
+}
+
+.account-validity small {
+  color: #526b62;
+}
+
+.account-validity.expired {
+  background: #fff3ed;
+  border-color: #f1c3ad;
+  color: #b24b21;
+}
+
+.account-card-foot {
+  border-top: 1px solid #e4eaf1;
+  gap: 12px;
+  padding-top: 13px;
+}
+
+.account-card-foot .row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.account-card .mini-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
 .account-row {
   align-items: center;
   background: #ffffff;
