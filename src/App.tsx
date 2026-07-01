@@ -77,6 +77,12 @@ type Profile = {
   cooldownUntil?: string;
   quotaRule: QuotaRule;
   summary: AuthSummary;
+  apiConfig?: {
+    providerId: string;
+    baseUrl: string;
+    model: string;
+    wireApi: string;
+  };
   usage: UsageStats;
   createdAt: string;
   updatedAt: string;
@@ -116,6 +122,18 @@ type CodexScan = {
   currentAuth?: AuthSummary;
   migratable: string[];
   excluded: string[];
+};
+
+type ConfigFileView = {
+  path: string;
+  exists: boolean;
+  content: string;
+};
+
+type CodexConfigFiles = {
+  codexHome: string;
+  authJson: ConfigFileView;
+  configToml: ConfigFileView;
 };
 
 type BundleManifest = {
@@ -194,6 +212,26 @@ const messages = {
     searchPlaceholder: "搜索账号/额度/状态",
     importAlias: "导入别名",
     importCurrent: "导入当前",
+    apiProvider: "API Provider",
+    apiProviderName: "Provider 名称",
+    providerId: "Provider ID",
+    apiBaseUrl: "API Base URL（可空）",
+    apiModel: "模型",
+    apiKey: "API Key",
+    addApiProvider: "添加 API Provider",
+    apiResponsesHint: "Base URL 不填默认使用官方 https://api.openai.com/v1；当前支持 Codex Responses API 兼容接口，Chat Completions 接口需要协议路由。",
+    apiProviderAdded: "API Provider 已添加",
+    codexConfig: "Codex 配置",
+    codexConfigHint: "查看和编辑当前 Codex Home 下的 auth.json 与 config.toml；保存前会校验并自动备份旧文件。",
+    loadConfig: "加载配置",
+    formatConfig: "格式化",
+    saveConfig: "保存配置",
+    authJsonConfig: "auth.json（JSON）",
+    configTomlConfig: "config.toml（TOML）",
+    configMissing: "文件不存在，保存后会创建",
+    configLoaded: "Codex 配置已加载",
+    configSaved: "Codex 配置已保存",
+    configFormatted: "配置格式化完成",
     account: "账号",
     plan: "计划",
     state: "状态",
@@ -339,6 +377,26 @@ const messages = {
     searchPlaceholder: "Search account / quota / state",
     importAlias: "Import alias",
     importCurrent: "Import current",
+    apiProvider: "API Provider",
+    apiProviderName: "Provider name",
+    providerId: "Provider ID",
+    apiBaseUrl: "API Base URL (optional)",
+    apiModel: "Model",
+    apiKey: "API Key",
+    addApiProvider: "Add API Provider",
+    apiResponsesHint: "Leave Base URL empty to use official https://api.openai.com/v1. Supports Codex Responses API-compatible endpoints; Chat Completions endpoints require protocol routing.",
+    apiProviderAdded: "API Provider added",
+    codexConfig: "Codex config",
+    codexConfigHint: "View and edit auth.json and config.toml under the current Codex Home. Saves validate content and back up old files first.",
+    loadConfig: "Load config",
+    formatConfig: "Format",
+    saveConfig: "Save config",
+    authJsonConfig: "auth.json (JSON)",
+    configTomlConfig: "config.toml (TOML)",
+    configMissing: "File is missing; saving will create it",
+    configLoaded: "Codex config loaded",
+    configSaved: "Codex config saved",
+    configFormatted: "Config formatted",
     account: "Account",
     plan: "Plan",
     state: "State",
@@ -484,6 +542,26 @@ const messages = {
     searchPlaceholder: "搜尋帳號/額度/狀態",
     importAlias: "匯入別名",
     importCurrent: "匯入目前",
+    apiProvider: "API Provider",
+    apiProviderName: "Provider 名稱",
+    providerId: "Provider ID",
+    apiBaseUrl: "API Base URL（可空）",
+    apiModel: "模型",
+    apiKey: "API Key",
+    addApiProvider: "新增 API Provider",
+    apiResponsesHint: "Base URL 不填預設使用官方 https://api.openai.com/v1；目前支援 Codex Responses API 相容端點，Chat Completions 端點需要協議路由。",
+    apiProviderAdded: "API Provider 已新增",
+    codexConfig: "Codex 配置",
+    codexConfigHint: "查看和編輯目前 Codex Home 下的 auth.json 與 config.toml；保存前會校驗並自動備份舊文件。",
+    loadConfig: "載入配置",
+    formatConfig: "格式化",
+    saveConfig: "保存配置",
+    authJsonConfig: "auth.json（JSON）",
+    configTomlConfig: "config.toml（TOML）",
+    configMissing: "文件不存在，保存後會建立",
+    configLoaded: "Codex 配置已載入",
+    configSaved: "Codex 配置已保存",
+    configFormatted: "配置格式化完成",
     account: "帳號",
     plan: "方案",
     state: "狀態",
@@ -605,6 +683,14 @@ export default function App() {
   const [codexHome, setCodexHome] = useState("");
   const [alias, setAlias] = useState("");
   const [accountFilter, setAccountFilter] = useState("");
+  const [apiProviderName, setApiProviderName] = useState("");
+  const [apiProviderId, setApiProviderId] = useState("");
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
+  const [apiModel, setApiModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [codexConfig, setCodexConfig] = useState<CodexConfigFiles | null>(null);
+  const [authJsonDraft, setAuthJsonDraft] = useState("");
+  const [configTomlDraft, setConfigTomlDraft] = useState("");
   const [password, setPassword] = useState("");
   const [includeConversations, setIncludeConversations] = useState(false);
   const [restoreConversations, setRestoreConversations] = useState(false);
@@ -626,6 +712,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateChecked, setUpdateChecked] = useState(false);
+  const [updateError, setUpdateError] = useState("");
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateInstalled, setUpdateInstalled] = useState(false);
@@ -643,6 +730,9 @@ export default function App() {
     [store, selectedId]
   );
   const currentGlobalProfileId = useMemo(() => {
+    const configuredId = store?.settings.currentProfileId;
+    const configuredProfile = store?.profiles.find((profile) => profile.id === configuredId);
+    if (configuredProfile?.apiConfig) return configuredProfile.id;
     const currentAuth = scan?.currentAuth;
     if (currentAuth) {
       const matched = store?.profiles.find((profile) => authSummariesMatch(profile.summary, currentAuth));
@@ -879,6 +969,7 @@ export default function App() {
     try {
       const update = await check({ timeout: 15000 });
       setUpdateChecked(true);
+      setUpdateError("");
       setAvailableUpdate(update);
       setUpdateInstalled(false);
       setUpdateDownloaded(0);
@@ -893,7 +984,11 @@ export default function App() {
       }
       return update;
     } catch (error) {
-      if (manual) setNotice({ kind: "error", text: `${t.updateCheckFailed}: ${String(error)}` });
+      const message = String(error);
+      setUpdateChecked(true);
+      setAvailableUpdate(null);
+      setUpdateError(message);
+      if (manual) setNotice({ kind: "error", text: `${t.updateCheckFailed}: ${message}` });
       return null;
     } finally {
       setUpdateChecking(false);
@@ -1038,6 +1133,66 @@ export default function App() {
 
   async function probeSelected() {
     await probeProfile();
+  }
+
+  async function addApiProvider() {
+    await run(async () => {
+      const view = await invoke<StoreView>("add_api_profile", {
+        alias: apiProviderName,
+        providerId: apiProviderId,
+        baseUrl: apiBaseUrl,
+        model: apiModel,
+        apiKey
+      });
+      setStore(view);
+      setSelectedId(view.profiles[view.profiles.length - 1]?.id || "");
+      setApiProviderName("");
+      setApiProviderId("");
+      setApiBaseUrl("");
+      setApiModel("");
+      setApiKey("");
+      return view;
+    }, t.apiProviderAdded);
+  }
+
+  async function loadCodexConfigFiles() {
+    await run(async () => {
+      const files = await invoke<CodexConfigFiles>("load_codex_config_files", {
+        codexHome: codexHome || undefined
+      });
+      setCodexConfig(files);
+      setCodexHome(files.codexHome);
+      setAuthJsonDraft(files.authJson.content);
+      setConfigTomlDraft(files.configToml.content);
+      return files;
+    }, t.configLoaded);
+  }
+
+  async function formatCodexConfig(fileName: "auth.json" | "config.toml") {
+    const content = fileName === "auth.json" ? authJsonDraft : configTomlDraft;
+    await run(async () => {
+      const formatted = await invoke<string>("format_codex_config_file", { fileName, content });
+      if (fileName === "auth.json") setAuthJsonDraft(formatted);
+      else setConfigTomlDraft(formatted);
+      return formatted;
+    }, t.configFormatted);
+  }
+
+  async function saveCodexConfig(fileName: "auth.json" | "config.toml") {
+    const content = fileName === "auth.json" ? authJsonDraft : configTomlDraft;
+    await run(async () => {
+      const files = await invoke<CodexConfigFiles>("save_codex_config_file", {
+        codexHome: codexHome || undefined,
+        fileName,
+        content
+      });
+      setCodexConfig(files);
+      setCodexHome(files.codexHome);
+      setAuthJsonDraft(files.authJson.content);
+      setConfigTomlDraft(files.configToml.content);
+      await refresh();
+      return files;
+    }, t.configSaved);
   }
 
   async function consumeUsageReset(profileId = selectedId) {
@@ -1319,9 +1474,10 @@ export default function App() {
           <strong>{appVersion || "-"}</strong>
         </div>
         <div className="update-status">
-          <span>{availableUpdate ? t.updateAvailable : updateChecked ? t.upToDate : t.updateNotChecked}</span>
+          <span>{updateError ? t.updateCheckFailed : availableUpdate ? t.updateAvailable : updateChecked ? t.upToDate : t.updateNotChecked}</span>
           <strong>{availableUpdate?.version || "-"}</strong>
         </div>
+        {updateError && <div className="update-error">{updateError}</div>}
         {availableUpdate?.date && (
           <div className="update-status">
             <span>{t.updateDate}</span>
@@ -1394,6 +1550,107 @@ export default function App() {
             </div>
           </div>
 
+          <details className="codex-config-panel">
+            <summary>{t.codexConfig}</summary>
+            <p>{t.codexConfigHint}</p>
+            <div className="config-toolbar">
+              <button className="icon-button" onClick={() => void loadCodexConfigFiles()} disabled={busy}>
+                <FileSearch size={16} /> {t.loadConfig}
+              </button>
+              <span>{codexConfig?.codexHome || codexHome || "~/.codex"}</span>
+            </div>
+            <div className="config-editor-grid">
+              <section className="config-editor-card">
+                <div className="config-editor-head">
+                  <div>
+                    <strong>{t.authJsonConfig}</strong>
+                    <small>{codexConfig?.authJson.exists === false ? t.configMissing : codexConfig?.authJson.path || "auth.json"}</small>
+                  </div>
+                  <div className="row-actions">
+                    <button className="mini-button" onClick={() => void formatCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
+                      {t.formatConfig}
+                    </button>
+                    <button className="mini-button primary" onClick={() => void saveCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
+                      {t.saveConfig}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="config-editor"
+                  spellCheck={false}
+                  value={authJsonDraft}
+                  onChange={(event) => setAuthJsonDraft(event.target.value)}
+                  placeholder={'{\n  "tokens": {}\n}'}
+                />
+              </section>
+              <section className="config-editor-card">
+                <div className="config-editor-head">
+                  <div>
+                    <strong>{t.configTomlConfig}</strong>
+                    <small>{codexConfig?.configToml.exists === false ? t.configMissing : codexConfig?.configToml.path || "config.toml"}</small>
+                  </div>
+                  <div className="row-actions">
+                    <button className="mini-button" onClick={() => void formatCodexConfig("config.toml")} disabled={busy}>
+                      {t.formatConfig}
+                    </button>
+                    <button className="mini-button primary" onClick={() => void saveCodexConfig("config.toml")} disabled={busy}>
+                      {t.saveConfig}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="config-editor"
+                  spellCheck={false}
+                  value={configTomlDraft}
+                  onChange={(event) => setConfigTomlDraft(event.target.value)}
+                  placeholder={'model = "gpt-5"\nmodel_provider = "openai"'}
+                />
+              </section>
+            </div>
+          </details>
+
+          <details className="api-provider-panel">
+            <summary>{t.apiProvider}</summary>
+            <p>{t.apiResponsesHint}</p>
+            <div className="api-provider-form">
+              <label>
+                {t.apiProviderName}
+                <input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} />
+              </label>
+              <label>
+                {t.providerId}
+                <input
+                  value={apiProviderId}
+                  onChange={(event) => setApiProviderId(event.target.value)}
+                  placeholder="openai-compatible"
+                />
+              </label>
+              <label>
+                {t.apiBaseUrl}
+                <input
+                  value={apiBaseUrl}
+                  onChange={(event) => setApiBaseUrl(event.target.value)}
+                  placeholder="默认 https://api.openai.com/v1"
+                />
+              </label>
+              <label>
+                {t.apiModel}
+                <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" />
+              </label>
+              <label>
+                {t.apiKey}
+                <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+              </label>
+              <button
+                className="icon-button primary"
+                onClick={() => void addApiProvider()}
+                disabled={busy || !apiProviderName.trim() || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}
+              >
+                <KeyRound size={16} /> {t.addApiProvider}
+              </button>
+            </div>
+          </details>
+
           <div className="account-card-grid">
             {filteredProfiles.map((profile) => {
               const isCurrent = currentGlobalProfileId === profile.id;
@@ -1423,7 +1680,15 @@ export default function App() {
                     )}
                   </div>
 
-                  <div className="account-limit-list">
+                  {profile.apiConfig && (
+                    <div className="api-provider-summary">
+                      <strong>{profile.apiConfig.model}</strong>
+                      <small>{profile.apiConfig.baseUrl}</small>
+                      <span>Responses API</span>
+                    </div>
+                  )}
+
+                  {!profile.apiConfig && <div className="account-limit-list">
                     {limits.slice(0, 2).map((item, index) => {
                       const remainingPercent = limitRemainingPercent(item);
                       return (
@@ -1440,13 +1705,13 @@ export default function App() {
                       );
                     })}
                     {limits.length === 0 && <div className="account-limit-empty">{t.noParsedQuota}</div>}
-                  </div>
+                  </div>}
 
-                  <div className={`account-validity ${credentialExpiryState(profile).expired ? "expired" : ""}`}>
+                  {!profile.apiConfig && <div className={`account-validity ${credentialExpiryState(profile).expired ? "expired" : ""}`}>
                     <span>{t.loginValidity}</span>
                     <strong>{formatCredentialValidity(profile, t)}</strong>
                     <small>{formatUnix(credentialExpiry(profile))}</small>
-                  </div>
+                  </div>}
 
                   <div className="account-card-foot">
                     <small>{profile.usage.lastProbeAt ? `${t.probe}: ${formatReset(profile.usage.lastProbeAt)}` : t.notProbed}</small>

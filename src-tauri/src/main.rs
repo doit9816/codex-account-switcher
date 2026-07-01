@@ -32,6 +32,7 @@ const KEYRING_SERVICE: &str = "codex-account-switcher";
 const KEYRING_USER: &str = "profiles";
 const LEGACY_APP_IDENTIFIER: &str = "cn.cmscloud.codex-account-switcher";
 const CHATGPT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -125,9 +126,20 @@ struct AccountProfile {
     quota_rule: QuotaRule,
     summary: AuthSummary,
     encrypted_auth_json: SecretEnvelope,
+    #[serde(default)]
+    api_config: Option<ApiProviderConfig>,
     usage: UsageStats,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiProviderConfig {
+    provider_id: String,
+    base_url: String,
+    model: String,
+    wire_api: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +255,7 @@ struct AccountProfileView {
     cooldown_until: Option<String>,
     quota_rule: QuotaRule,
     summary: AuthSummary,
+    api_config: Option<ApiProviderConfig>,
     usage: UsageStats,
     created_at: String,
     updated_at: String,
@@ -283,6 +296,22 @@ struct TokenRefreshBatchResult {
     skipped: u32,
     failed: u32,
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexConfigFiles {
+    codex_home: String,
+    auth_json: ConfigFileView,
+    config_toml: ConfigFileView,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigFileView {
+    path: String,
+    exists: bool,
+    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -344,6 +373,8 @@ struct ExportProfile {
     quota_rule: QuotaRule,
     summary: AuthSummary,
     auth_json: String,
+    #[serde(default)]
+    api_config: Option<ApiProviderConfig>,
     usage: UsageStats,
     created_at: String,
     updated_at: String,
@@ -412,6 +443,7 @@ fn import_current_auth_as_profile(
             .unwrap_or_default(),
         summary,
         encrypted_auth_json: encrypt_secret(auth_json.as_bytes(), &key)?,
+        api_config: None,
         usage: existing_index
             .map(|idx| store.profiles[idx].usage.clone())
             .unwrap_or_default(),
@@ -427,6 +459,73 @@ fn import_current_auth_as_profile(
         store.profiles.push(profile);
     }
     push_event(&mut store, "info", "已导入当前 auth.json 为账号 profile");
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn add_api_profile(
+    app: AppHandle,
+    alias: String,
+    provider_id: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<StoreView, String> {
+    let alias = alias.trim();
+    let provider_id = normalize_provider_id(&provider_id)?;
+    let base_url = normalize_api_base_url(&base_url)?;
+    let model = model.trim();
+    let api_key = api_key.trim();
+    if alias.is_empty() || model.is_empty() || api_key.is_empty() {
+        return Err("名称、模型和 API Key 不能为空".to_string());
+    }
+
+    let auth_json = serde_json::to_string_pretty(&serde_json::json!({
+        "auth_mode": "apikey",
+        "OPENAI_API_KEY": api_key,
+    }))
+    .map_err(display_err)?;
+    let key = load_master_key(&app)?;
+    let mut store = load_store(&app)?;
+    if store.profiles.iter().any(|profile| {
+        profile
+            .api_config
+            .as_ref()
+            .is_some_and(|config| config.provider_id == provider_id)
+    }) {
+        return Err(format!("Provider ID {provider_id} 已存在"));
+    }
+    let now = now_string();
+    store.profiles.push(AccountProfile {
+        id: Uuid::new_v4().to_string(),
+        alias: alias.to_string(),
+        enabled: true,
+        priority: 100,
+        cooldown_until: None,
+        quota_rule: QuotaRule::default(),
+        summary: AuthSummary {
+            email: None,
+            plan: Some("api_key".to_string()),
+            account_id: None,
+            user_id: None,
+            organization_id: None,
+            access_token_exp: None,
+            id_token_exp: None,
+            auth_mode: Some("apikey".to_string()),
+        },
+        encrypted_auth_json: encrypt_secret(auth_json.as_bytes(), &key)?,
+        api_config: Some(ApiProviderConfig {
+            provider_id,
+            base_url,
+            model: model.to_string(),
+            wire_api: "responses".to_string(),
+        }),
+        usage: UsageStats::default(),
+        created_at: now.clone(),
+        updated_at: now,
+    });
+    push_event(&mut store, "info", "已添加 Codex API Provider");
     save_store(&app, &store)?;
     Ok(store_view(store))
 }
@@ -469,7 +568,19 @@ fn save_quota_rule(
 #[tauri::command]
 fn delete_profile(app: AppHandle, profile_id: String) -> Result<StoreView, String> {
     let mut store = load_store(&app)?;
+    let deleting_active_api = store.settings.current_profile_id.as_deref() == Some(&profile_id)
+        && store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.api_config.as_ref())
+            .is_some();
+    let codex_home = store.settings.codex_home.clone();
     let alias = delete_profile_from_store(&mut store, &profile_id)?;
+    if deleting_active_api {
+        let path = resolve_codex_home(&app, codex_home)?;
+        restore_api_config_backup(&path)?;
+    }
     push_event(&mut store, "info", &format!("已删除账号 profile {}", alias));
     save_store(&app, &store)?;
     Ok(store_view(store))
@@ -655,6 +766,10 @@ async fn refresh_all_profile_tokens(
             skipped += 1;
             continue;
         }
+        if store.profiles[idx].api_config.is_some() {
+            skipped += 1;
+            continue;
+        }
         if !should_refresh_access_token(store.profiles[idx].summary.access_token_exp, threshold) {
             skipped += 1;
             continue;
@@ -757,7 +872,9 @@ async fn switch_profile(
 
     let mut auth_json = String::from_utf8(decrypt_secret(&profile.encrypted_auth_json, &key)?)
         .map_err(|e| e.to_string())?;
-    if should_refresh_access_token(profile.summary.access_token_exp, 0) {
+    if profile.api_config.is_none()
+        && should_refresh_access_token(profile.summary.access_token_exp, 0)
+    {
         let client = build_probe_client(&store.settings.probe_proxy)?;
         auth_json = refresh_auth_json_with_client(&client, &auth_json)
             .await
@@ -769,8 +886,46 @@ async fn switch_profile(
         store.profiles[idx].usage.last_token_refresh_error = None;
     }
     let auth_path = path.join("auth.json");
-    let backup_path = backup_auth_file(&auth_path)?;
-    replace_file_with_rollback(&auth_path, auth_json.as_bytes(), backup_path.as_deref())?;
+    let config_path = path.join("config.toml");
+    let config_backup_path = path.join("config.toml.account-switcher.backup");
+    let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
+        if !config_backup_path.exists() {
+            if config_path.exists() {
+                fs::copy(&config_path, &config_backup_path).map_err(display_err)?;
+            } else {
+                fs::write(&config_backup_path, []).map_err(display_err)?;
+            }
+        }
+        let api_key = serde_json::from_str::<Value>(&auth_json)
+            .map_err(display_err)?
+            .get("OPENAI_API_KEY")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "API Provider 缺少 OPENAI_API_KEY".to_string())?
+            .to_string();
+        let managed_provider_ids = store
+            .profiles
+            .iter()
+            .filter_map(|profile| {
+                profile
+                    .api_config
+                    .as_ref()
+                    .map(|config| config.provider_id.clone())
+            })
+            .collect::<Vec<_>>();
+        write_api_provider_config(
+            &config_path,
+            api_config,
+            &api_key,
+            &profile.alias,
+            &managed_provider_ids,
+        )?;
+        None
+    } else {
+        restore_api_config_backup(&path)?;
+        let backup_path = backup_auth_file(&auth_path)?;
+        replace_file_with_rollback(&auth_path, auth_json.as_bytes(), backup_path.as_deref())?;
+        backup_path
+    };
 
     store.settings.codex_home = Some(path.to_string_lossy().to_string());
     store.settings.current_profile_id = Some(profile_id.clone());
@@ -810,6 +965,54 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
     )?)
     .map_err(|e| e.to_string())?;
     let client = build_probe_client(&store.settings.probe_proxy)?;
+    if let Some(api_config) = store.profiles[idx].api_config.clone() {
+        let auth: Value = serde_json::from_str(&auth_json).map_err(display_err)?;
+        let api_key = auth
+            .get("OPENAI_API_KEY")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "API Provider 缺少 OPENAI_API_KEY".to_string())?;
+        let response = client
+            .get(format!("{}/models", api_config.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .await;
+        let now = now_string();
+        return match response {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.json::<Value>().await.ok();
+                store.profiles[idx].usage.last_probe_at = Some(now);
+                store.profiles[idx].usage.last_probe_status = Some(status.to_string());
+                store.profiles[idx].usage.last_error =
+                    (status >= 400).then(|| format!("API HTTP {status}"));
+                save_store(&app, &store)?;
+                Ok(UsageProbeResult {
+                    profile_id,
+                    status: if status < 400 { "ok" } else { "http_error" }.to_string(),
+                    http_status: Some(status),
+                    raw_json: body,
+                    message: if status < 400 {
+                        "API Provider 连接正常".to_string()
+                    } else {
+                        "API Provider 连接失败".to_string()
+                    },
+                })
+            }
+            Err(error) => {
+                store.profiles[idx].usage.last_probe_at = Some(now);
+                store.profiles[idx].usage.last_probe_status = Some("network_error".to_string());
+                store.profiles[idx].usage.last_error = Some(error.to_string());
+                save_store(&app, &store)?;
+                Ok(UsageProbeResult {
+                    profile_id,
+                    status: "network_error".to_string(),
+                    http_status: None,
+                    raw_json: None,
+                    message: format!("API Provider 连接失败: {error}"),
+                })
+            }
+        };
+    }
     if should_refresh_access_token(store.profiles[idx].summary.access_token_exp, 0) {
         let is_current_profile =
             store.settings.current_profile_id.as_deref() == Some(profile_id.as_str());
@@ -1040,6 +1243,7 @@ fn export_all_accounts_bundle(
                 quota_rule: p.quota_rule.clone(),
                 summary: p.summary.clone(),
                 auth_json,
+                api_config: p.api_config.clone(),
                 usage: p.usage.clone(),
                 created_at: p.created_at.clone(),
                 updated_at: p.updated_at.clone(),
@@ -1120,6 +1324,7 @@ fn import_accounts_bundle(
             quota_rule: profile.quota_rule,
             summary: profile.summary,
             encrypted_auth_json,
+            api_config: profile.api_config,
             usage: profile.usage,
             created_at: profile.created_at,
             updated_at: now_string(),
@@ -1195,6 +1400,43 @@ fn restore_backup(
     Ok(format!("已恢复备份 {}", backup.to_string_lossy()))
 }
 
+#[tauri::command]
+fn load_codex_config_files(
+    app: AppHandle,
+    codex_home: Option<String>,
+) -> Result<CodexConfigFiles, String> {
+    let home = resolve_codex_home(&app, codex_home)?;
+    fs::create_dir_all(&home).map_err(display_err)?;
+    let auth_path = home.join("auth.json");
+    let config_path = home.join("config.toml");
+    Ok(CodexConfigFiles {
+        codex_home: home.to_string_lossy().to_string(),
+        auth_json: read_config_file_view(&auth_path)?,
+        config_toml: read_config_file_view(&config_path)?,
+    })
+}
+
+#[tauri::command]
+fn save_codex_config_file(
+    app: AppHandle,
+    codex_home: Option<String>,
+    file_name: String,
+    content: String,
+) -> Result<CodexConfigFiles, String> {
+    let home = resolve_codex_home(&app, codex_home)?;
+    fs::create_dir_all(&home).map_err(display_err)?;
+    let formatted = format_codex_config_content(&file_name, &content)?;
+    let target = home.join(&file_name);
+    let backup = backup_codex_config_file(&target)?;
+    replace_file_with_rollback(&target, formatted.as_bytes(), backup.as_deref())?;
+    load_codex_config_files(app, Some(home.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn format_codex_config_file(file_name: String, content: String) -> Result<String, String> {
+    format_codex_config_content(&file_name, &content)
+}
+
 fn scan_codex_home_path(path: &Path) -> Result<CodexHomeScan, String> {
     let auth_path = path.join("auth.json");
     let current_auth = if auth_path.exists() {
@@ -1232,6 +1474,7 @@ fn store_view(store: AppStore) -> StoreView {
                 cooldown_until: p.cooldown_until,
                 quota_rule: p.quota_rule,
                 summary: p.summary,
+                api_config: p.api_config,
                 usage: p.usage,
                 created_at: p.created_at,
                 updated_at: p.updated_at,
@@ -1585,6 +1828,93 @@ fn refresh_error_requires_relogin(error: &str) -> bool {
         || normalized.contains("invalid refresh token")
 }
 
+fn normalize_provider_id(value: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err("Provider ID 仅支持字母、数字、- 和 _".to_string());
+    }
+    Ok(normalized)
+}
+
+fn normalize_api_base_url(value: &str) -> Result<String, String> {
+    let normalized = if value.trim().is_empty() {
+        DEFAULT_API_BASE_URL.to_string()
+    } else {
+        value.trim().trim_end_matches('/').to_string()
+    };
+    let lower = normalized.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("API Base URL 必须以 http:// 或 https:// 开头".to_string());
+    }
+    Ok(normalized)
+}
+
+fn write_api_provider_config(
+    config_path: &Path,
+    api_config: &ApiProviderConfig,
+    api_key: &str,
+    display_name: &str,
+    managed_provider_ids: &[String],
+) -> Result<(), String> {
+    let current = fs::read_to_string(config_path).unwrap_or_default();
+    let mut document = if current.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        current
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| format!("config.toml 解析失败: {error}"))?
+    };
+    document["model"] = toml_edit::value(&api_config.model);
+    document["model_provider"] = toml_edit::value(&api_config.provider_id);
+    if !document.as_table().contains_key("model_providers")
+        || !document["model_providers"].is_table()
+    {
+        document["model_providers"] = toml_edit::table();
+    }
+    let providers = document["model_providers"]
+        .as_table_mut()
+        .ok_or_else(|| "model_providers 不是有效表".to_string())?;
+    for provider_id in managed_provider_ids {
+        if provider_id != &api_config.provider_id {
+            providers.remove(provider_id);
+        }
+    }
+    if !providers.contains_key(&api_config.provider_id) {
+        providers.insert(&api_config.provider_id, toml_edit::table());
+    }
+    let provider = providers
+        .get_mut(&api_config.provider_id)
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| "Provider 配置不是有效表".to_string())?;
+    provider["name"] = toml_edit::value(display_name);
+    provider["base_url"] = toml_edit::value(&api_config.base_url);
+    provider["wire_api"] = toml_edit::value(&api_config.wire_api);
+    provider["experimental_bearer_token"] = toml_edit::value(api_key);
+    replace_file_with_rollback(config_path, document.to_string().as_bytes(), None)
+}
+
+fn restore_api_config_backup(codex_home: &Path) -> Result<bool, String> {
+    let config_path = codex_home.join("config.toml");
+    let backup_path = codex_home.join("config.toml.account-switcher.backup");
+    if !backup_path.exists() {
+        return Ok(false);
+    }
+    let backup = fs::read(&backup_path).map_err(display_err)?;
+    if backup.is_empty() {
+        if config_path.exists() {
+            fs::remove_file(&config_path).map_err(display_err)?;
+        }
+    } else {
+        replace_file_with_rollback(&config_path, &backup, None)?;
+    }
+    fs::remove_file(&backup_path).map_err(display_err)?;
+    Ok(true)
+}
+
 fn normalize_proxy_url(value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1679,6 +2009,60 @@ fn backup_auth_file(auth_path: &Path) -> Result<Option<PathBuf>, String> {
     let backup = backup_dir.join(format!("auth-{}.json", Utc::now().format("%Y%m%d%H%M%S")));
     fs::copy(auth_path, &backup).map_err(display_err)?;
     Ok(Some(backup))
+}
+
+fn backup_codex_config_file(path: &Path) -> Result<Option<PathBuf>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "配置文件名无效".to_string())?;
+    let backup_dir = path
+        .parent()
+        .ok_or_else(|| "配置文件路径无父目录".to_string())?
+        .join(".account-switcher-backups");
+    fs::create_dir_all(&backup_dir).map_err(display_err)?;
+    let backup = backup_dir.join(format!(
+        "{}-{}-{}",
+        name,
+        Utc::now().format("%Y%m%d%H%M%S"),
+        Uuid::new_v4()
+    ));
+    fs::copy(path, &backup).map_err(display_err)?;
+    Ok(Some(backup))
+}
+
+fn read_config_file_view(path: &Path) -> Result<ConfigFileView, String> {
+    let content = if path.exists() {
+        fs::read_to_string(path).map_err(display_err)?
+    } else {
+        String::new()
+    };
+    Ok(ConfigFileView {
+        path: path.to_string_lossy().to_string(),
+        exists: path.exists(),
+        content,
+    })
+}
+
+fn format_codex_config_content(file_name: &str, content: &str) -> Result<String, String> {
+    match file_name {
+        "auth.json" => {
+            let value: Value = serde_json::from_str(content)
+                .map_err(|error| format!("auth.json JSON 解析失败: {error}"))?;
+            let formatted = serde_json::to_string_pretty(&value).map_err(display_err)?;
+            Ok(format!("{formatted}\n"))
+        }
+        "config.toml" => {
+            let document = content
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|error| format!("config.toml TOML 解析失败: {error}"))?;
+            Ok(document.to_string())
+        }
+        _ => Err("仅支持编辑 auth.json 和 config.toml".to_string()),
+    }
 }
 
 fn replace_file_with_rollback(
@@ -2318,6 +2702,7 @@ fn main() {
             get_store,
             scan_codex_home,
             import_current_auth_as_profile,
+            add_api_profile,
             switch_profile,
             probe_usage,
             consume_usage_reset,
@@ -2331,7 +2716,10 @@ fn main() {
             export_all_accounts_bundle,
             preview_bundle,
             import_accounts_bundle,
-            restore_backup
+            restore_backup,
+            load_codex_config_files,
+            save_codex_config_file,
+            format_codex_config_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running Codex Account Switcher");
@@ -2464,6 +2852,7 @@ mod tests {
             quota_rule: QuotaRule::default(),
             summary: summarize_auth(&auth).unwrap(),
             encrypted_auth_json: encrypt_secret(auth.as_bytes(), &key).unwrap(),
+            api_config: None,
             usage: UsageStats::default(),
             created_at: now_string(),
             updated_at: now_string(),
@@ -2522,6 +2911,7 @@ mod tests {
                 quota_rule: QuotaRule::default(),
                 summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
                 auth_json: fake_auth("acc-1", "one@example.com"),
+                api_config: None,
                 usage: UsageStats::default(),
                 created_at: now_string(),
                 updated_at: now_string(),
@@ -2862,6 +3252,98 @@ mod tests {
     }
 
     #[test]
+    fn writes_api_provider_without_removing_mcp_config() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text(
+            &config_path,
+            "[mcp_servers.demo]\ncommand = \"demo-server\"\n\n[model_providers.old-provider]\nexperimental_bearer_token = \"old-secret\"\n",
+        );
+        let api_config = ApiProviderConfig {
+            provider_id: "my-provider".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "gpt-custom".to_string(),
+            wire_api: "responses".to_string(),
+        };
+
+        write_api_provider_config(
+            &config_path,
+            &api_config,
+            "sk-secret",
+            "My API",
+            &["old-provider".to_string(), "my-provider".to_string()],
+        )
+        .unwrap();
+
+        let text = fs::read_to_string(config_path).unwrap();
+        let document = text.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["model"].as_str(), Some("gpt-custom"));
+        assert_eq!(document["model_provider"].as_str(), Some("my-provider"));
+        assert_eq!(
+            document["model_providers"]["my-provider"]["experimental_bearer_token"].as_str(),
+            Some("sk-secret")
+        );
+        assert_eq!(
+            document["mcp_servers"]["demo"]["command"].as_str(),
+            Some("demo-server")
+        );
+        assert!(document["model_providers"]
+            .as_table()
+            .unwrap()
+            .get("old-provider")
+            .is_none());
+    }
+
+    #[test]
+    fn validates_api_provider_identifiers_and_urls() {
+        assert_eq!(normalize_provider_id(" My-API ").unwrap(), "my-api");
+        assert!(normalize_provider_id("bad provider").is_err());
+        assert_eq!(
+            normalize_api_base_url("https://api.example.com/v1/").unwrap(),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(normalize_api_base_url("").unwrap(), DEFAULT_API_BASE_URL);
+        assert_eq!(normalize_api_base_url("   ").unwrap(), DEFAULT_API_BASE_URL);
+        assert!(normalize_api_base_url("ftp://api.example.com").is_err());
+    }
+
+    #[test]
+    fn formats_codex_config_files_and_rejects_unknown_targets() {
+        let auth =
+            format_codex_config_content("auth.json", "{\"tokens\":{\"access_token\":\"a\"}}")
+                .unwrap();
+        assert!(auth.contains("\n  \"tokens\""));
+        assert!(format_codex_config_content("auth.json", "{bad").is_err());
+
+        let config = format_codex_config_content(
+            "config.toml",
+            "model = \"gpt-5\"\n[model_providers.openai]\nbase_url = \"https://api.openai.com/v1\"\n",
+        )
+        .unwrap();
+        assert!(config.contains("model = \"gpt-5\""));
+        assert!(format_codex_config_content("settings.json", "{}").is_err());
+    }
+
+    #[test]
+    fn reads_config_file_view_and_creates_timestamped_backup() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text(&config_path, "model = \"gpt-5\"");
+
+        let view = read_config_file_view(&config_path).unwrap();
+        assert!(view.exists);
+        assert!(view.content.contains("gpt-5"));
+
+        let backup = backup_codex_config_file(&config_path).unwrap().unwrap();
+        assert!(backup.exists());
+        assert!(backup
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("config.toml-"));
+    }
+
+    #[test]
     fn builds_probe_client_with_proxy_settings() {
         assert!(build_probe_client(&ProxySettings::default()).is_ok());
         assert!(build_probe_client(&ProxySettings {
@@ -3038,6 +3520,7 @@ mod tests {
                 &key,
             )
             .unwrap(),
+            api_config: None,
             usage: UsageStats::default(),
             created_at: now_string(),
             updated_at: now_string(),
@@ -3071,6 +3554,7 @@ mod tests {
                 &key,
             )
             .unwrap(),
+            api_config: None,
             usage: UsageStats::default(),
             created_at: now_string(),
             updated_at: now_string(),

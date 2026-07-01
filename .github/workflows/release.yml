@@ -66,6 +66,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Verify updater signing secret
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Repository secret TAURI_SIGNING_PRIVATE_KEY is missing. Tauri updater artifacts cannot be signed."
+            exit 1
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -89,3 +99,24 @@ jobs:
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
+
+  verify-updater-manifest:
+    name: Verify updater manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for latest.json
+        shell: bash
+        run: |
+          endpoint="https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --location --silent --show-error "$endpoint" --output latest.json; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::Updater manifest was not published at $endpoint"
+              exit 1
+            fi
+            sleep 10
+          done
+          node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync("latest.json","utf8")); if(!data.version || !data.platforms || !Object.keys(data.platforms).length) throw new Error("latest.json is missing version or platforms"); console.log(`verified updater manifest ${data.version}`)'

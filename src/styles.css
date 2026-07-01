@@ -414,10 +414,168 @@ input:focus {
   overflow: hidden;
 }
 
+.update-error {
+  background: #fff1f0;
+  border: 1px solid #ffc9c4;
+  border-radius: 8px;
+  color: #b42318;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding: 9px 11px;
+}
+
 .account-card-grid {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+}
+
+.api-provider-panel {
+  background: #f7faff;
+  border: 1px solid #d7e3f1;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+}
+
+.api-provider-panel summary {
+  color: #244b82;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.api-provider-panel > p {
+  color: #687a90;
+  font-size: 12px;
+  margin: 8px 0 12px;
+}
+
+.api-provider-form {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.api-provider-form label {
+  color: #536477;
+  display: grid;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.api-provider-summary {
+  background: #effcf9;
+  border: 1px solid #bce8dc;
+  border-radius: 10px;
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+}
+
+.api-provider-summary strong {
+  color: #176a5a;
+}
+
+.api-provider-summary small {
+  color: #64778a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-provider-summary span {
+  color: #18826d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.codex-config-panel {
+  background: #fffaf2;
+  border: 1px solid #f0d7ac;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+}
+
+.codex-config-panel summary {
+  color: #8a5a13;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.codex-config-panel > p {
+  color: #7a6a52;
+  font-size: 12px;
+  margin: 8px 0 12px;
+}
+
+.config-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.config-toolbar span {
+  color: #7b8794;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-editor-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.config-editor-card {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid #ead8b8;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.config-editor-head {
+  align-items: start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.config-editor-head div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.config-editor-head strong {
+  color: #243044;
+}
+
+.config-editor-head small {
+  color: #7a8797;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-editor {
+  background: #101828;
+  border-color: #26354f;
+  color: #e7edf7;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  min-height: 240px;
+  resize: vertical;
 }
 
 .account-card {
