@@ -177,6 +177,228 @@ button:disabled {
   background: rgba(25, 33, 42, 0.08);
 }
 
+.update-dialog-backdrop {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.48);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 1100;
+}
+
+.update-dialog {
+  background: #ffffff;
+  border: 1px solid #d9e3ee;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  display: grid;
+  gap: 16px;
+  max-height: calc(100vh - 48px);
+  max-width: 580px;
+  overflow: auto;
+  padding: 22px;
+  width: 100%;
+}
+
+.update-dialog-head {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.update-dialog-head span,
+.update-dialog-versions span,
+.update-dialog > small {
+  color: #6b7788;
+  font-size: 12px;
+}
+
+.update-dialog-head h2 {
+  font-size: 22px;
+  margin: 4px 0 0;
+}
+
+.update-dialog-versions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.update-dialog-versions div {
+  background: #f4f7fb;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  padding: 11px 13px;
+}
+
+.update-dialog-notes {
+  background: #f8fafc;
+  border: 1px solid #e3e9f0;
+  border-radius: 10px;
+  color: #4d5b6c;
+  max-height: 180px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.update-dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.add-account-dialog {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.3);
+  display: grid;
+  gap: 16px;
+  max-height: calc(100vh - 48px);
+  max-width: 720px;
+  overflow: auto;
+  padding: 22px;
+  width: 100%;
+}
+
+.add-account-dialog h2 {
+  margin: 0;
+}
+
+.add-account-tabs {
+  background: #eef3f8;
+  border: 1px solid #d5dee9;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 4px;
+}
+
+.add-account-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: #526276;
+  font-weight: 700;
+  min-height: 38px;
+}
+
+.add-account-tabs button.active {
+  background: linear-gradient(135deg, #2864e8, #13aa9c);
+  color: #ffffff;
+}
+
+.add-account-field,
+.add-account-content {
+  display: grid;
+  gap: 10px;
+}
+
+.add-account-field {
+  color: #526276;
+  font-size: 12px;
+}
+
+.add-account-content p {
+  color: #607086;
+  margin: 0;
+}
+
+.auth-json-input {
+  background: #101828;
+  border-color: #26354f;
+  color: #e7edf7;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  min-height: 230px;
+  resize: vertical;
+}
+
+.wide-button {
+  justify-content: center;
+  width: 100%;
+}
+
+.oauth-session-status {
+  align-items: center;
+  background: #eef5ff;
+  border: 1px solid #cbdcf8;
+  border-radius: 9px;
+  color: #2456a6;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.oauth-session-status.exchanging {
+  background: #effaf7;
+  border-color: #bce8dc;
+  color: #17705e;
+}
+
+.oauth-session-status.error,
+.oauth-session-status.timeout,
+.oauth-error {
+  background: #fff1f0;
+  border-color: #ffc9c4;
+  color: #b42318;
+}
+
+.oauth-url-row,
+.oauth-callback-row,
+.oauth-action-row {
+  display: flex;
+  gap: 8px;
+}
+
+.oauth-url-row input,
+.oauth-callback-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.oauth-error {
+  border: 1px solid #ffc9c4;
+  border-radius: 9px;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+}
+
+.oauth-action-row {
+  justify-content: flex-end;
+}
+
+.oauth-cli-fallback {
+  border-top: 1px solid #e2e8f0;
+  margin-top: 4px;
+  padding-top: 10px;
+}
+
+.oauth-cli-fallback summary {
+  color: #526276;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.oauth-cli-fallback p {
+  margin: 10px 0;
+}
+
+@media (max-width: 720px) {
+  .add-account-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oauth-url-row,
+  .oauth-callback-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .toolbar-band,
 .proxy-band,
 .auto-band,

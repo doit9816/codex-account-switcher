@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Download,
   FileSearch,
+  FileText,
   FolderOpen,
   Gauge,
   HardDriveUpload,
@@ -28,6 +29,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type AuthSummary = {
   email?: string;
   plan?: string;
+  subscriptionActiveStart?: string;
+  subscriptionActiveUntil?: string;
+  subscriptionLastChecked?: string;
   accountId?: string;
   userId?: string;
   organizationId?: string;
@@ -136,6 +140,17 @@ type CodexConfigFiles = {
   configToml: ConfigFileView;
 };
 
+type OAuthLoginSession = {
+  loginId: string;
+  authUrl: string;
+  callbackUrl: string;
+  expiresAt: string;
+};
+
+type OAuthEvent = {
+  loginId: string;
+};
+
 type BundleManifest = {
   exportedAt: string;
   platform: string;
@@ -212,6 +227,33 @@ const messages = {
     searchPlaceholder: "搜索账号/额度/状态",
     importAlias: "导入别名",
     importCurrent: "导入当前",
+    addAccount: "添加账号",
+    oauthLogin: "OAuth 授权",
+    tokenJson: "Token / JSON",
+    apiKeyAccount: "API Key",
+    importAccount: "导入当前",
+    oauthLoginHint: "使用应用内原生 OAuth，在浏览器完成 ChatGPT 授权后自动添加账号。",
+    startOAuthLogin: "开始 OAuth 授权",
+    oauthImportDone: "我已完成授权，导入当前账号",
+    oauthStarting: "正在创建安全授权会话",
+    oauthWaiting: "等待浏览器授权",
+    oauthExchanging: "正在交换并加密保存 Token",
+    oauthTimedOut: "授权会话已超时，请重新开始",
+    authorizationUrl: "授权链接",
+    copyLink: "复制链接",
+    openAgain: "重新打开",
+    manualCallback: "手动粘贴回调地址",
+    submitCallback: "提交回调",
+    retryExchange: "重试 Token 交换",
+    cancelOAuth: "取消授权",
+    cliFallback: "Codex CLI 备用登录",
+    cliFallbackHint: "原生 OAuth 无法使用时，启动官方 codex login，完成后再导入当前账号。",
+    startCliLogin: "启动 codex login",
+    secondsRemaining: "秒后超时",
+    copied: "已复制",
+    authJsonPlaceholder: "粘贴完整的 Codex auth.json 内容",
+    addFromJson: "添加 Token / JSON 账号",
+    accountAdded: "账号已添加",
     apiProvider: "API Provider",
     apiProviderName: "Provider 名称",
     providerId: "Provider ID",
@@ -238,7 +280,7 @@ const messages = {
     quota: "额度",
     priority: "优先级",
     accessExpires: "Access 过期",
-    loginValidity: "登录有效期",
+    loginValidity: "订阅有效期",
     validityExpired: "已过期",
     pendingPlan: "待探测",
     token: "Token",
@@ -377,6 +419,33 @@ const messages = {
     searchPlaceholder: "Search account / quota / state",
     importAlias: "Import alias",
     importCurrent: "Import current",
+    addAccount: "Add account",
+    oauthLogin: "OAuth",
+    tokenJson: "Token / JSON",
+    apiKeyAccount: "API Key",
+    importAccount: "Import current",
+    oauthLoginHint: "Use native OAuth and automatically add the account after ChatGPT authorization in your browser.",
+    startOAuthLogin: "Start OAuth",
+    oauthImportDone: "Authorization complete, import account",
+    oauthStarting: "Creating a secure authorization session",
+    oauthWaiting: "Waiting for browser authorization",
+    oauthExchanging: "Exchanging and encrypting tokens",
+    oauthTimedOut: "Authorization timed out. Start again.",
+    authorizationUrl: "Authorization URL",
+    copyLink: "Copy URL",
+    openAgain: "Open again",
+    manualCallback: "Paste callback URL manually",
+    submitCallback: "Submit callback",
+    retryExchange: "Retry token exchange",
+    cancelOAuth: "Cancel authorization",
+    cliFallback: "Codex CLI fallback",
+    cliFallbackHint: "If native OAuth is unavailable, run official codex login and then import the current account.",
+    startCliLogin: "Run codex login",
+    secondsRemaining: "seconds remaining",
+    copied: "Copied",
+    authJsonPlaceholder: "Paste the complete Codex auth.json content",
+    addFromJson: "Add Token / JSON account",
+    accountAdded: "Account added",
     apiProvider: "API Provider",
     apiProviderName: "Provider name",
     providerId: "Provider ID",
@@ -403,7 +472,7 @@ const messages = {
     quota: "Quota",
     priority: "Priority",
     accessExpires: "Access expires",
-    loginValidity: "Login validity",
+    loginValidity: "Subscription validity",
     validityExpired: "Expired",
     pendingPlan: "Pending",
     token: "Token",
@@ -542,6 +611,33 @@ const messages = {
     searchPlaceholder: "搜尋帳號/額度/狀態",
     importAlias: "匯入別名",
     importCurrent: "匯入目前",
+    addAccount: "新增帳號",
+    oauthLogin: "OAuth 授權",
+    tokenJson: "Token / JSON",
+    apiKeyAccount: "API Key",
+    importAccount: "匯入目前",
+    oauthLoginHint: "使用應用程式內原生 OAuth，在瀏覽器完成 ChatGPT 授權後自動新增帳號。",
+    startOAuthLogin: "開始 OAuth 授權",
+    oauthImportDone: "我已完成授權，匯入目前帳號",
+    oauthStarting: "正在建立安全授權工作階段",
+    oauthWaiting: "等待瀏覽器授權",
+    oauthExchanging: "正在交換並加密儲存 Token",
+    oauthTimedOut: "授權工作階段已逾時，請重新開始",
+    authorizationUrl: "授權連結",
+    copyLink: "複製連結",
+    openAgain: "重新開啟",
+    manualCallback: "手動貼上回呼地址",
+    submitCallback: "提交回呼",
+    retryExchange: "重試 Token 交換",
+    cancelOAuth: "取消授權",
+    cliFallback: "Codex CLI 備用登入",
+    cliFallbackHint: "原生 OAuth 無法使用時，啟動官方 codex login，完成後再匯入目前帳號。",
+    startCliLogin: "啟動 codex login",
+    secondsRemaining: "秒後逾時",
+    copied: "已複製",
+    authJsonPlaceholder: "貼上完整的 Codex auth.json 內容",
+    addFromJson: "新增 Token / JSON 帳號",
+    accountAdded: "帳號已新增",
     apiProvider: "API Provider",
     apiProviderName: "Provider 名稱",
     providerId: "Provider ID",
@@ -568,7 +664,7 @@ const messages = {
     quota: "額度",
     priority: "優先級",
     accessExpires: "Access 過期",
-    loginValidity: "登入有效期",
+    loginValidity: "訂閱有效期",
     validityExpired: "已過期",
     pendingPlan: "待探測",
     token: "Token",
@@ -682,6 +778,14 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [codexHome, setCodexHome] = useState("");
   const [alias, setAlias] = useState("");
+  const [showAddAccountDialog, setShowAddAccountDialog] = useState(false);
+  const [addAccountTab, setAddAccountTab] = useState<"oauth" | "json" | "api" | "import">("oauth");
+  const [authJsonInput, setAuthJsonInput] = useState("");
+  const [oauthSession, setOauthSession] = useState<OAuthLoginSession | null>(null);
+  const [oauthStatus, setOauthStatus] = useState<"idle" | "starting" | "waiting" | "exchanging" | "error" | "timeout">("idle");
+  const [oauthError, setOauthError] = useState("");
+  const [oauthCallbackInput, setOauthCallbackInput] = useState("");
+  const [oauthRemainingSeconds, setOauthRemainingSeconds] = useState(0);
   const [accountFilter, setAccountFilter] = useState("");
   const [apiProviderName, setApiProviderName] = useState("");
   const [apiProviderId, setApiProviderId] = useState("");
@@ -711,6 +815,7 @@ export default function App() {
   const [activePage, setActivePage] = useState<"dashboard" | "settings">("dashboard");
   const [appVersion, setAppVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [updateChecked, setUpdateChecked] = useState(false);
   const [updateError, setUpdateError] = useState("");
   const [updateChecking, setUpdateChecking] = useState(false);
@@ -766,6 +871,8 @@ export default function App() {
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
   const backgroundTokenBusyRef = useRef(false);
+  const aliasRef = useRef("");
+  const oauthCompletingRef = useRef(false);
 
   useEffect(() => {
     void refresh();
@@ -779,6 +886,55 @@ export default function App() {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    aliasRef.current = alias;
+  }, [alias]);
+
+  useEffect(() => {
+    let unlistenCompleted: (() => void) | undefined;
+    let unlistenTimeout: (() => void) | undefined;
+    void listen<OAuthEvent>("codex-oauth-login-completed", (event) => {
+      void completeNativeOAuth(event.payload.loginId);
+    }).then((unlisten) => {
+      unlistenCompleted = unlisten;
+    });
+    void listen<OAuthEvent>("codex-oauth-login-timeout", (event) => {
+      setOauthSession((current) => current?.loginId === event.payload.loginId ? null : current);
+      setOauthStatus("timeout");
+      setOauthError(t.oauthTimedOut);
+    }).then((unlisten) => {
+      unlistenTimeout = unlisten;
+    });
+    return () => {
+      unlistenCompleted?.();
+      unlistenTimeout?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (showAddAccountDialog && addAccountTab === "oauth" && !oauthSession && oauthStatus === "idle") {
+      void beginNativeOAuth();
+    }
+  }, [showAddAccountDialog, addAccountTab, oauthSession, oauthStatus]);
+
+  useEffect(() => {
+    if (!oauthSession) {
+      setOauthRemainingSeconds(0);
+      return;
+    }
+    const updateRemaining = () => {
+      const remaining = Math.max(0, Math.ceil((new Date(oauthSession.expiresAt).getTime() - Date.now()) / 1000));
+      setOauthRemainingSeconds(remaining);
+      if (remaining === 0 && oauthStatus === "waiting") {
+        setOauthStatus("timeout");
+        setOauthError(t.oauthTimedOut);
+      }
+    };
+    updateRemaining();
+    const id = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(id);
+  }, [oauthSession, oauthStatus, t.oauthTimedOut]);
 
   useEffect(() => {
     localStorage.setItem("codex-account-switcher-language", languageSetting);
@@ -908,7 +1064,7 @@ export default function App() {
   }
 
   async function importCurrentAuth() {
-    await run(async () => {
+    const result = await run(async () => {
       const view = await invoke<StoreView>("import_current_auth_as_profile", {
         codexHome: codexHome || undefined,
         alias: alias || undefined
@@ -918,6 +1074,124 @@ export default function App() {
       setAlias("");
       return view;
     }, t.importedCurrent);
+    if (result) setShowAddAccountDialog(false);
+  }
+
+  async function startCliOAuthLogin() {
+    await run(() => invoke<string>("start_codex_oauth_login"));
+  }
+
+  async function beginNativeOAuth() {
+    setOauthStatus("starting");
+    setOauthError("");
+    setOauthCallbackInput("");
+    try {
+      const session = await invoke<OAuthLoginSession>("codex_oauth_login_start");
+      setOauthSession(session);
+      setOauthStatus("waiting");
+    } catch (error) {
+      setOauthStatus("error");
+      setOauthError(String(error));
+    }
+  }
+
+  async function completeNativeOAuth(loginId: string) {
+    if (oauthCompletingRef.current) return;
+    oauthCompletingRef.current = true;
+    setOauthStatus("exchanging");
+    setOauthError("");
+    try {
+      const view = await invoke<StoreView>("codex_oauth_login_complete", {
+        loginId,
+        alias: aliasRef.current || undefined
+      });
+      setStore(view);
+      setSelectedId(view.profiles[view.profiles.length - 1]?.id || "");
+      setAlias("");
+      setOauthSession(null);
+      setOauthStatus("idle");
+      setOauthCallbackInput("");
+      setShowAddAccountDialog(false);
+      setNotice({ kind: "ok", text: t.accountAdded });
+    } catch (error) {
+      setOauthStatus("error");
+      setOauthError(String(error));
+    } finally {
+      oauthCompletingRef.current = false;
+    }
+  }
+
+  async function submitOAuthCallback() {
+    if (!oauthSession || !oauthCallbackInput.trim()) return;
+    setOauthError("");
+    try {
+      await invoke("codex_oauth_submit_callback_url", {
+        loginId: oauthSession.loginId,
+        callbackUrl: oauthCallbackInput
+      });
+    } catch (error) {
+      setOauthStatus("error");
+      setOauthError(String(error));
+    }
+  }
+
+  async function reopenOAuthUrl() {
+    if (!oauthSession) return;
+    try {
+      await invoke("codex_oauth_open_auth_url", { loginId: oauthSession.loginId });
+    } catch (error) {
+      setOauthError(String(error));
+    }
+  }
+
+  async function copyOAuthUrl() {
+    if (!oauthSession) return;
+    try {
+      await navigator.clipboard.writeText(oauthSession.authUrl);
+      setNotice({ kind: "ok", text: t.copied });
+    } catch (error) {
+      setOauthError(String(error));
+    }
+  }
+
+  async function cancelNativeOAuth(nextStatus: "idle" | "error" = "error") {
+    const loginId = oauthSession?.loginId;
+    setOauthSession(null);
+    setOauthStatus(nextStatus);
+    setOauthError("");
+    setOauthCallbackInput("");
+    if (loginId) {
+      try {
+        await invoke("codex_oauth_login_cancel", { loginId });
+      } catch {
+        // Session may already be completed or timed out.
+      }
+    }
+  }
+
+  function closeAddAccountDialog() {
+    if (addAccountTab === "oauth") void cancelNativeOAuth("idle");
+    setShowAddAccountDialog(false);
+  }
+
+  function selectAddAccountTab(tab: "oauth" | "json" | "api" | "import") {
+    if (addAccountTab === "oauth" && tab !== "oauth") void cancelNativeOAuth("idle");
+    setAddAccountTab(tab);
+  }
+
+  async function addAuthJsonAccount() {
+    const result = await run(async () => {
+      const view = await invoke<StoreView>("add_auth_json_profile", {
+        alias: alias || undefined,
+        authJson: authJsonInput
+      });
+      setStore(view);
+      setSelectedId(view.profiles[view.profiles.length - 1]?.id || "");
+      setAlias("");
+      setAuthJsonInput("");
+      return view;
+    }, t.accountAdded);
+    if (result) setShowAddAccountDialog(false);
   }
 
   async function saveQuota() {
@@ -971,6 +1245,7 @@ export default function App() {
       setUpdateChecked(true);
       setUpdateError("");
       setAvailableUpdate(update);
+      if (update) setShowUpdateDialog(true);
       setUpdateInstalled(false);
       setUpdateDownloaded(0);
       setUpdateTotal(undefined);
@@ -1136,9 +1411,9 @@ export default function App() {
   }
 
   async function addApiProvider() {
-    await run(async () => {
+    const result = await run(async () => {
       const view = await invoke<StoreView>("add_api_profile", {
-        alias: apiProviderName,
+        alias: apiProviderName || alias,
         providerId: apiProviderId,
         baseUrl: apiBaseUrl,
         model: apiModel,
@@ -1147,12 +1422,14 @@ export default function App() {
       setStore(view);
       setSelectedId(view.profiles[view.profiles.length - 1]?.id || "");
       setApiProviderName("");
+      setAlias("");
       setApiProviderId("");
       setApiBaseUrl("");
       setApiModel("");
       setApiKey("");
       return view;
     }, t.apiProviderAdded);
+    if (result) setShowAddAccountDialog(false);
   }
 
   async function loadCodexConfigFiles() {
@@ -1360,6 +1637,169 @@ export default function App() {
         </div>
       )}
 
+      {showUpdateDialog && availableUpdate && (
+        <div className="update-dialog-backdrop" role="presentation">
+          <section
+            className="update-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="update-dialog-title"
+          >
+            <div className="update-dialog-head">
+              <div>
+                <span>{t.softwareUpdate}</span>
+                <h2 id="update-dialog-title">{t.updateAvailable}: {availableUpdate.version}</h2>
+              </div>
+              <button
+                className="notice-close"
+                onClick={() => setShowUpdateDialog(false)}
+                disabled={updateInstalling}
+                title={t.closeNotice}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="update-dialog-versions">
+              <div><span>{t.currentVersion}</span><strong>{appVersion || "-"}</strong></div>
+              <div><span>{t.updateAvailable}</span><strong>{availableUpdate.version}</strong></div>
+            </div>
+            {availableUpdate.date && <small>{t.updateDate}: {formatDate(availableUpdate.date)}</small>}
+            {availableUpdate.body && <div className="update-dialog-notes">{availableUpdate.body}</div>}
+            {updateInstalling && (
+              <div className="update-progress" aria-label={t.installingUpdate}>
+                <div><span style={{ width: `${updateProgressPercent ?? 35}%` }} /></div>
+                <strong>{updateProgressPercent !== undefined ? `${t.installingUpdate} ${updateProgressPercent}%` : t.installingUpdate}</strong>
+              </div>
+            )}
+            <div className="update-dialog-actions">
+              {!updateInstalled && (
+                <button className="icon-button" onClick={() => setShowUpdateDialog(false)} disabled={updateInstalling}>
+                  {t.closeNotice}
+                </button>
+              )}
+              {!updateInstalled ? (
+                <button className="icon-button primary" onClick={() => void installAvailableUpdate()} disabled={updateInstalling}>
+                  <Download size={17} /> {t.downloadAndInstall}
+                </button>
+              ) : (
+                <button className="icon-button primary" onClick={() => void relaunch()}>
+                  <RotateCcw size={17} /> {t.relaunchNow}
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showAddAccountDialog && (
+        <div className="update-dialog-backdrop" role="presentation">
+          <section className="add-account-dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
+            <div className="update-dialog-head">
+              <h2 id="add-account-title">{t.addAccount}</h2>
+              <button className="notice-close" onClick={closeAddAccountDialog} disabled={busy || oauthStatus === "exchanging"} title={t.closeNotice}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="add-account-tabs" role="tablist">
+              {([
+                ["oauth", t.oauthLogin],
+                ["json", t.tokenJson],
+                ["api", t.apiKeyAccount],
+                ["import", t.importAccount]
+              ] as const).map(([id, label]) => (
+                <button key={id} className={addAccountTab === id ? "active" : ""} onClick={() => selectAddAccountTab(id)} role="tab" aria-selected={addAccountTab === id} disabled={oauthStatus === "exchanging"}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label className="add-account-field">
+              {t.importAlias}
+              <input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder={t.importAlias} />
+            </label>
+            {addAccountTab === "oauth" && (
+              <div className="add-account-content">
+                <p>{t.oauthLoginHint}</p>
+                <div className={`oauth-session-status ${oauthStatus}`}>
+                  <span>
+                    {oauthStatus === "starting" ? t.oauthStarting
+                      : oauthStatus === "exchanging" ? t.oauthExchanging
+                      : oauthStatus === "timeout" ? t.oauthTimedOut
+                      : oauthSession ? t.oauthWaiting
+                      : t.startOAuthLogin}
+                  </span>
+                  {oauthSession && oauthRemainingSeconds > 0 && <strong>{oauthRemainingSeconds} {t.secondsRemaining}</strong>}
+                </div>
+                {oauthSession ? (
+                  <>
+                    <label className="add-account-field">
+                      {t.authorizationUrl}
+                      <div className="oauth-url-row">
+                        <input value={oauthSession.authUrl} readOnly />
+                        <button className="mini-button" onClick={() => void copyOAuthUrl()}>{t.copyLink}</button>
+                        <button className="mini-button" onClick={() => void reopenOAuthUrl()}>{t.openAgain}</button>
+                      </div>
+                    </label>
+                    <div className="oauth-callback-row">
+                      <input value={oauthCallbackInput} onChange={(event) => setOauthCallbackInput(event.target.value)} placeholder={t.manualCallback} disabled={oauthStatus === "exchanging"} />
+                      <button className="icon-button" onClick={() => void submitOAuthCallback()} disabled={!oauthCallbackInput.trim() || oauthStatus === "exchanging"}>{t.submitCallback}</button>
+                    </div>
+                    {oauthError && <div className="oauth-error">{oauthError}</div>}
+                    <div className="oauth-action-row">
+                      {oauthStatus === "error" && <button className="icon-button primary" onClick={() => void completeNativeOAuth(oauthSession.loginId)}>{t.retryExchange}</button>}
+                      <button className="icon-button" onClick={() => void cancelNativeOAuth()} disabled={oauthStatus === "exchanging"}>{t.cancelOAuth}</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {oauthError && <div className="oauth-error">{oauthError}</div>}
+                    <button className="icon-button primary wide-button" onClick={() => void beginNativeOAuth()} disabled={oauthStatus === "starting" || oauthStatus === "exchanging"}>
+                      <KeyRound size={17} /> {t.startOAuthLogin}
+                    </button>
+                  </>
+                )}
+                <details className="oauth-cli-fallback">
+                  <summary>{t.cliFallback}</summary>
+                  <p>{t.cliFallbackHint}</p>
+                  <button className="icon-button wide-button" onClick={() => void startCliOAuthLogin()} disabled={busy}>
+                    <KeyRound size={17} /> {t.startCliLogin}
+                  </button>
+                  <button className="icon-button wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
+                    <CheckCircle2 size={17} /> {t.oauthImportDone}
+                  </button>
+                </details>
+              </div>
+            )}
+            {addAccountTab === "json" && (
+              <div className="add-account-content">
+                <textarea className="auth-json-input" spellCheck={false} value={authJsonInput} onChange={(event) => setAuthJsonInput(event.target.value)} placeholder={t.authJsonPlaceholder} />
+                <button className="icon-button primary wide-button" onClick={() => void addAuthJsonAccount()} disabled={busy || !authJsonInput.trim()}>
+                  <FileText size={17} /> {t.addFromJson}
+                </button>
+              </div>
+            )}
+            {addAccountTab === "api" && (
+              <div className="api-provider-form add-account-content">
+                <label>{t.providerId}<input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="openai-compatible" /></label>
+                <label>{t.apiBaseUrl}<input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
+                <label>{t.apiModel}<input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" /></label>
+                <label>{t.apiKey}<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
+                <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !alias.trim() || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}>
+                  <KeyRound size={17} /> {t.addApiProvider}
+                </button>
+              </div>
+            )}
+            {addAccountTab === "import" && (
+              <div className="add-account-content">
+                <p>{t.codexConfigHint}</p>
+                <button className="icon-button primary wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
+                  <Download size={17} /> {t.importCurrent}
+                </button>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
       {activePage === "settings" ? (
         <>
       <section className="toolbar-band">
@@ -1536,16 +1976,9 @@ export default function App() {
                 onChange={(event) => setAccountFilter(event.target.value)}
                 title={t.searchPlaceholder}
               />
-              <input
-                className="alias-input"
-                placeholder={t.importAlias}
-                value={alias}
-                onChange={(event) => setAlias(event.target.value)}
-                title={t.importAlias}
-              />
-              <button className="icon-button" onClick={() => void importCurrentAuth()} disabled={busy} title={t.importCurrent}>
+              <button className="icon-button primary" onClick={() => setShowAddAccountDialog(true)} disabled={busy} title={t.addAccount}>
                 <KeyRound size={17} />
-                {t.importCurrent}
+                {t.addAccount}
               </button>
             </div>
           </div>
@@ -1707,10 +2140,10 @@ export default function App() {
                     {limits.length === 0 && <div className="account-limit-empty">{t.noParsedQuota}</div>}
                   </div>}
 
-                  {!profile.apiConfig && <div className={`account-validity ${credentialExpiryState(profile).expired ? "expired" : ""}`}>
+                  {!profile.apiConfig && <div className={`account-validity ${subscriptionExpiryState(profile).expired ? "expired" : ""}`}>
                     <span>{t.loginValidity}</span>
-                    <strong>{formatCredentialValidity(profile, t)}</strong>
-                    <small>{formatUnix(credentialExpiry(profile))}</small>
+                    <strong>{formatSubscriptionValidity(profile, t)}</strong>
+                    <small>{formatDate(profile.summary.subscriptionActiveUntil)}</small>
                   </div>}
 
                   <div className="account-card-foot">
@@ -2040,20 +2473,17 @@ function planBadge(profile: Profile, t: I18n) {
   return plan ? plan.toUpperCase().replace(/_/g, " ") : t.pendingPlan;
 }
 
-function credentialExpiry(profile: Profile) {
-  const candidates = [profile.summary.accessTokenExp, profile.summary.idTokenExp]
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  return candidates.length ? Math.max(...candidates) : undefined;
+function subscriptionExpiryState(profile: Profile) {
+  const expiresAt = profile.summary.subscriptionActiveUntil
+    ? Math.floor(new Date(profile.summary.subscriptionActiveUntil).getTime() / 1000)
+    : undefined;
+  const validExpiresAt = expiresAt != null && Number.isFinite(expiresAt) ? expiresAt : undefined;
+  const remainingSeconds = validExpiresAt == null ? undefined : validExpiresAt - Math.floor(Date.now() / 1000);
+  return { expiresAt: validExpiresAt, remainingSeconds, expired: remainingSeconds != null && remainingSeconds <= 0 };
 }
 
-function credentialExpiryState(profile: Profile) {
-  const expiresAt = credentialExpiry(profile);
-  const remainingSeconds = expiresAt == null ? undefined : expiresAt - Math.floor(Date.now() / 1000);
-  return { expiresAt, remainingSeconds, expired: remainingSeconds != null && remainingSeconds <= 0 };
-}
-
-function formatCredentialValidity(profile: Profile, t: I18n) {
-  const { remainingSeconds, expired } = credentialExpiryState(profile);
+function formatSubscriptionValidity(profile: Profile, t: I18n) {
+  const { remainingSeconds, expired } = subscriptionExpiryState(profile);
   if (remainingSeconds == null) return "-";
   if (expired) return t.validityExpired;
   const days = Math.floor(remainingSeconds / 86400);
@@ -2219,9 +2649,4 @@ function formatReset(value: string) {
   return sameDay
     ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : date.toLocaleDateString([], { month: "numeric", day: "numeric" });
-}
-
-function formatUnix(value?: number) {
-  if (!value) return "-";
-  return new Date(value * 1000).toLocaleString();
 }

@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod oauth;
+
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::Argon2;
@@ -196,11 +198,14 @@ struct DetectedLimit {
     label: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct AuthSummary {
     email: Option<String>,
     plan: Option<String>,
+    subscription_active_start: Option<String>,
+    subscription_active_until: Option<String>,
+    subscription_last_checked: Option<String>,
     account_id: Option<String>,
     user_id: Option<String>,
     organization_id: Option<String>,
@@ -391,7 +396,32 @@ struct ImportResult {
 
 #[tauri::command]
 fn get_store(app: AppHandle) -> Result<StoreView, String> {
-    let store = load_store(&app)?;
+    let mut store = load_store(&app)?;
+    if !store.profiles.is_empty() {
+        let key = load_master_key(&app)?;
+        let mut changed = false;
+        for profile in &mut store.profiles {
+            if profile.api_config.is_some() {
+                continue;
+            }
+            let Ok(bytes) = decrypt_secret(&profile.encrypted_auth_json, &key) else {
+                continue;
+            };
+            let Ok(auth_json) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let Ok(summary) = summarize_auth(&auth_json) else {
+                continue;
+            };
+            if summary != profile.summary {
+                profile.summary = summary;
+                changed = true;
+            }
+        }
+        if changed {
+            save_store(&app, &store)?;
+        }
+    }
     Ok(store_view(store))
 }
 
@@ -411,16 +441,130 @@ fn import_current_auth_as_profile(
     let auth_path = path.join("auth.json");
     let auth_json =
         fs::read_to_string(&auth_path).map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
+    upsert_auth_profile(
+        &app,
+        auth_json,
+        alias,
+        Some(path),
+        "已导入当前 auth.json 为账号 profile",
+    )
+}
+
+#[tauri::command]
+fn add_auth_json_profile(
+    app: AppHandle,
+    alias: Option<String>,
+    auth_json: String,
+) -> Result<StoreView, String> {
+    upsert_auth_profile(
+        &app,
+        auth_json,
+        alias,
+        None,
+        "已从 Token/JSON 添加账号 profile",
+    )
+}
+
+#[tauri::command]
+fn start_codex_oauth_login() -> Result<String, String> {
+    Command::new("codex")
+        .arg("login")
+        .spawn()
+        .map_err(|error| {
+            format!("无法启动 codex login，请确认 Codex CLI 已安装并在 PATH 中: {error}")
+        })?;
+    Ok("已启动 Codex ChatGPT 登录，请在浏览器完成授权后返回导入当前账号".to_string())
+}
+
+#[tauri::command]
+fn codex_oauth_login_start(app: AppHandle) -> Result<oauth::OAuthLoginStartResponse, String> {
+    let response = oauth::start(app.clone(), app_data_dir(&app)?)?;
+    let _ = open_external_url(&response.auth_url);
+    Ok(response)
+}
+
+#[tauri::command]
+fn codex_oauth_open_auth_url(login_id: String) -> Result<(), String> {
+    let url = oauth::current_auth_url(&login_id)?;
+    open_external_url(&url)
+}
+
+#[tauri::command]
+fn codex_oauth_submit_callback_url(
+    app: AppHandle,
+    login_id: String,
+    callback_url: String,
+) -> Result<(), String> {
+    oauth::accept_callback(&app_data_dir(&app)?, &login_id, &callback_url)?;
+    app.emit(
+        "codex-oauth-login-completed",
+        serde_json::json!({ "loginId": login_id }),
+    )
+    .map_err(display_err)
+}
+
+#[tauri::command]
+async fn codex_oauth_login_complete(
+    app: AppHandle,
+    login_id: String,
+    alias: Option<String>,
+) -> Result<StoreView, String> {
+    let tokens = oauth::complete(&app_data_dir(&app)?, &login_id).await?;
+    let access_claims = decode_jwt_claims(&tokens.access_token);
+    let account_id = access_claims
+        .as_ref()
+        .and_then(extract_account_id_from_claims);
+    let auth_json = serde_json::to_string_pretty(&serde_json::json!({
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": null,
+        "tokens": {
+            "id_token": tokens.id_token,
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "account_id": account_id
+        },
+        "last_refresh": now_string()
+    }))
+    .map_err(display_err)?;
+    upsert_auth_profile(
+        &app,
+        auth_json,
+        alias,
+        None,
+        "已通过原生 OAuth 添加 Codex 账号 profile",
+    )
+}
+
+#[tauri::command]
+fn codex_oauth_login_cancel(app: AppHandle, login_id: Option<String>) -> Result<(), String> {
+    oauth::cancel(&app_data_dir(&app)?, login_id.as_deref())
+}
+
+fn upsert_auth_profile(
+    app: &AppHandle,
+    auth_json: String,
+    alias: Option<String>,
+    codex_home: Option<PathBuf>,
+    event_message: &str,
+) -> Result<StoreView, String> {
     let summary = summarize_auth(&auth_json)?;
-    let key = load_master_key(&app)?;
+    if summary.auth_mode.as_deref() != Some("chatgpt")
+        && summary.access_token_exp.is_none()
+        && summary.id_token_exp.is_none()
+    {
+        return Err("auth.json 未包含有效的 Codex ChatGPT Token".to_string());
+    }
+    let key = load_master_key(app)?;
     let now = now_string();
     let account_label = summary
         .email
         .clone()
         .or_else(|| summary.account_id.clone())
         .unwrap_or_else(|| "Codex Account".to_string());
-    let mut store = load_store(&app)?;
-    store.settings.codex_home = Some(path.to_string_lossy().to_string());
+    let mut store = load_store(app)?;
+    if let Some(path) = codex_home {
+        store.settings.codex_home = Some(path.to_string_lossy().to_string());
+    }
 
     let existing_index = store.profiles.iter().position(|p| {
         p.summary.account_id.is_some()
@@ -458,8 +602,8 @@ fn import_current_auth_as_profile(
     } else {
         store.profiles.push(profile);
     }
-    push_event(&mut store, "info", "已导入当前 auth.json 为账号 profile");
-    save_store(&app, &store)?;
+    push_event(&mut store, "info", event_message);
+    save_store(app, &store)?;
     Ok(store_view(store))
 }
 
@@ -507,6 +651,9 @@ fn add_api_profile(
         summary: AuthSummary {
             email: None,
             plan: Some("api_key".to_string()),
+            subscription_active_start: None,
+            subscription_active_until: None,
+            subscription_last_checked: None,
             account_id: None,
             user_id: None,
             organization_id: None,
@@ -1683,10 +1830,24 @@ fn summarize_auth(auth_json: &str) -> Result<AuthSummary, String> {
                     .as_ref()
                     .and_then(extract_plan_type_from_claims)
             }),
+        subscription_active_start: id_claims.as_ref().and_then(|claims| {
+            extract_subscription_claim(claims, "chatgpt_subscription_active_start")
+        }),
+        subscription_active_until: id_claims.as_ref().and_then(|claims| {
+            extract_subscription_claim(claims, "chatgpt_subscription_active_until")
+        }),
+        subscription_last_checked: id_claims.as_ref().and_then(|claims| {
+            extract_subscription_claim(claims, "chatgpt_subscription_last_checked")
+        }),
         account_id: auth
             .pointer("/tokens/account_id")
             .and_then(Value::as_str)
-            .map(String::from),
+            .map(String::from)
+            .or_else(|| {
+                access_claims
+                    .as_ref()
+                    .and_then(extract_account_id_from_claims)
+            }),
         user_id: id_claims
             .as_ref()
             .and_then(|v| v.get("chatgpt_user_id").or_else(|| v.get("sub")))
@@ -1721,6 +1882,29 @@ fn extract_plan_type_from_claims(claims: &Value) -> Option<String> {
                 auth.get("chatgpt_plan_type")
                     .or_else(|| auth.get("plan_type"))
             })
+        })
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
+fn extract_subscription_claim(claims: &Value, key: &str) -> Option<String> {
+    claims
+        .get(key)
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/auth")
+                .and_then(|auth| auth.get(key))
+        })
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
+fn extract_account_id_from_claims(claims: &Value) -> Option<String> {
+    claims
+        .get("https://api.openai.com/auth")
+        .and_then(|auth| {
+            auth.get("chatgpt_account_id")
+                .or_else(|| auth.get("account_id"))
         })
         .and_then(Value::as_str)
         .map(String::from)
@@ -1975,6 +2159,32 @@ fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
             .map_err(display_err)?;
         return Ok(());
     }
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://localhost:")) {
+        return Err("不允许打开该 URL".to_string());
+    }
+    #[cfg(windows)]
+    {
+        Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url)
+            .spawn()
+            .map_err(display_err)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(url).spawn().map_err(display_err)?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(display_err)?;
+    }
+    Ok(())
 }
 
 fn resolve_codex_home(app: &AppHandle, explicit: Option<String>) -> Result<PathBuf, String> {
@@ -2690,6 +2900,9 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             setup_tray(app)?;
+            if let Ok(data_dir) = app_data_dir(app.handle()) {
+                oauth::restore_listener(app.handle().clone(), data_dir);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2702,6 +2915,13 @@ fn main() {
             get_store,
             scan_codex_home,
             import_current_auth_as_profile,
+            add_auth_json_profile,
+            start_codex_oauth_login,
+            codex_oauth_login_start,
+            codex_oauth_open_auth_url,
+            codex_oauth_submit_callback_url,
+            codex_oauth_login_complete,
+            codex_oauth_login_cancel,
             add_api_profile,
             switch_profile,
             probe_usage,
@@ -2817,6 +3037,11 @@ mod tests {
         let id_token = fake_jwt(serde_json::json!({
             "email": email,
             "chatgpt_plan_type": "plus",
+            "https://api.openai.com/auth": {
+                "chatgpt_subscription_active_start": "2026-06-07T11:57:51+00:00",
+                "chatgpt_subscription_active_until": "2026-07-07T11:57:51+00:00",
+                "chatgpt_subscription_last_checked": "2026-06-28T14:28:03.424632+00:00"
+            },
             "chatgpt_user_id": "user-123",
             "organization_id": "org-123",
             "exp": 4102444800_i64
@@ -2957,6 +3182,14 @@ mod tests {
         assert_eq!(summary.auth_mode.as_deref(), Some("chatgpt"));
         assert_eq!(summary.email.as_deref(), Some("one@example.com"));
         assert_eq!(summary.plan.as_deref(), Some("plus"));
+        assert_eq!(
+            summary.subscription_active_until.as_deref(),
+            Some("2026-07-07T11:57:51+00:00")
+        );
+        assert_eq!(
+            summary.subscription_last_checked.as_deref(),
+            Some("2026-06-28T14:28:03.424632+00:00")
+        );
         assert_eq!(summary.account_id.as_deref(), Some("acc-1"));
         assert_eq!(summary.user_id.as_deref(), Some("user-123"));
         assert_eq!(summary.organization_id.as_deref(), Some("org-123"));
@@ -2975,6 +3208,19 @@ mod tests {
         assert_eq!(
             extract_plan_type_from_claims(&claims).as_deref(),
             Some("pro")
+        );
+    }
+
+    #[test]
+    fn extracts_account_id_from_access_token_claims() {
+        let claims = serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-native-oauth"
+            }
+        });
+        assert_eq!(
+            extract_account_id_from_claims(&claims).as_deref(),
+            Some("acc-native-oauth")
         );
     }
 
