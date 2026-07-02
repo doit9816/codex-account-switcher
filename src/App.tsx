@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog, open, save } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import {
@@ -1347,18 +1347,31 @@ export default function App() {
     });
   }
 
+  async function shouldForceSwitch(profile: Profile) {
+    if (forceSwitch) return true;
+    const codexRunning = await invoke<boolean>("is_codex_process_running");
+    if (!codexRunning) return false;
+    const confirmed = await confirmDialog(
+      `检测到 Codex 正在运行。\n\n如果继续强制切换，将先写入账号 ${profile.alias}，然后退出正在运行的 Codex 并重新启动。是否继续？`,
+      { title: "强制切换账号", kind: "warning" }
+    );
+    return confirmed ? true : null;
+  }
+
   async function switchProfile(profileId = selectedId) {
     const profile = store?.profiles.find((item) => item.id === profileId);
     if (!profile) return;
     setSelectedId(profile.id);
+    const force = await shouldForceSwitch(profile);
+    if (force == null) return;
     await run(async () => {
       const result = await invoke<{ message: string; codexRunning: boolean }>("switch_profile", {
         profileId: profile.id,
         codexHome: codexHome || undefined,
-        force: forceSwitch
+        force
       });
       await refresh();
-      setNotice({ kind: result.codexRunning ? "warn" : "ok", text: result.message });
+      setNotice({ kind: result.message.includes("失败") || (result.codexRunning && !force) ? "warn" : "ok", text: result.message });
       return result;
     });
   }
@@ -1377,14 +1390,19 @@ export default function App() {
       return;
     }
     setSelectedId(candidate.id);
+    const force = await shouldForceSwitch(candidate);
+    if (force == null) return;
     await run(async () => {
       const result = await invoke<{ message: string; codexRunning: boolean }>("switch_profile", {
         profileId: candidate.id,
         codexHome: codexHome || undefined,
-        force: false
+        force
       });
       await refresh();
-      setNotice({ kind: result.codexRunning ? "warn" : "ok", text: `${t.autoSelected} ${candidate.alias}: ${result.message}` });
+      setNotice({
+        kind: result.message.includes("失败") || (result.codexRunning && !force) ? "warn" : "ok",
+        text: `${t.autoSelected} ${candidate.alias}: ${result.message}`
+      });
       return result;
     });
   }

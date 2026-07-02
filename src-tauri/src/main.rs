@@ -18,6 +18,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -976,6 +978,11 @@ async fn refresh_all_profile_tokens(
 }
 
 #[tauri::command]
+fn is_codex_process_running() -> bool {
+    is_codex_running()
+}
+
+#[tauri::command]
 async fn switch_profile(
     app: AppHandle,
     profile_id: String,
@@ -1078,18 +1085,43 @@ async fn switch_profile(
     store.settings.current_profile_id = Some(profile_id.clone());
     store.profiles[idx].usage.last_used_at = Some(now_string());
     store.profiles[idx].updated_at = now_string();
-    push_event(
-        &mut store,
-        "info",
-        &format!("已切换到账号 {}", profile.alias),
-    );
+    let mut restart_message = None;
+    if codex_running && force {
+        match restart_codex_processes() {
+            Ok(()) => {
+                restart_message = Some("已强制切换并重启 Codex".to_string());
+                push_event(
+                    &mut store,
+                    "info",
+                    &format!("已切换到账号 {}，并重启 Codex", profile.alias),
+                );
+            }
+            Err(error) => {
+                restart_message = Some(format!("已切换账号，但重启 Codex 失败：{error}"));
+                push_event(
+                    &mut store,
+                    "warn",
+                    &format!("已切换到账号 {}，但重启 Codex 失败：{error}", profile.alias),
+                );
+            }
+        }
+    }
+    if restart_message.is_none() {
+        push_event(
+            &mut store,
+            "info",
+            &format!("已切换到账号 {}", profile.alias),
+        );
+    }
     save_store(&app, &store)?;
 
     Ok(SwitchResult {
         profile_id,
         backup_path: backup_path.map(|p| p.to_string_lossy().to_string()),
         codex_running,
-        message: if codex_running {
+        message: if let Some(message) = restart_message {
+            message
+        } else if codex_running {
             "已切换，但检测到 Codex 进程正在运行，当前会话可能仍使用旧账号".to_string()
         } else {
             "已切换当前 Codex 账号".to_string()
@@ -2342,6 +2374,91 @@ fn is_codex_running() -> bool {
     }
 }
 
+fn restart_codex_processes() -> Result<(), String> {
+    terminate_codex_processes()?;
+    thread::sleep(Duration::from_millis(700));
+    Command::new("codex").spawn().map_err(|error| {
+        format!("无法重新启动 codex，请确认 Codex CLI 已安装并在 PATH 中：{error}")
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn terminate_codex_processes() -> Result<(), String> {
+    let current_exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let output = Command::new("wmic")
+        .args([
+            "process",
+            "get",
+            "ProcessId,Name,ExecutablePath,CommandLine",
+            "/FORMAT:LIST",
+        ])
+        .output()
+        .map_err(display_err)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for pid in codex_process_ids_from_wmic_output(&stdout, &current_exe) {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn terminate_codex_processes() -> Result<(), String> {
+    let current_exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let output = Command::new("pgrep")
+        .args(["-af", "codex"])
+        .output()
+        .map_err(display_err)?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if !looks_like_codex_process(line, &current_exe) {
+            continue;
+        }
+        if let Some(pid) = line.split_whitespace().next() {
+            let _ = Command::new("kill").args(["-9", pid]).output();
+        }
+    }
+    Ok(())
+}
+
+fn codex_process_ids_from_wmic_output(output: &str, current_exe: &str) -> Vec<u32> {
+    let mut ids = Vec::new();
+    let mut block = Vec::new();
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            if let Some(pid) = codex_process_id_from_wmic_block(&block.join("\n"), current_exe) {
+                ids.push(pid);
+            }
+            block.clear();
+        } else {
+            block.push(line);
+        }
+    }
+    if let Some(pid) = codex_process_id_from_wmic_block(&block.join("\n"), current_exe) {
+        ids.push(pid);
+    }
+    ids
+}
+
+fn codex_process_id_from_wmic_block(block: &str, current_exe: &str) -> Option<u32> {
+    let pid = block.lines().find_map(|line| {
+        line.strip_prefix("ProcessId=")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+    })?;
+    if looks_like_codex_process(block, current_exe) {
+        Some(pid)
+    } else {
+        None
+    }
+}
+
 fn looks_like_codex_process(line: &str, current_exe: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     if !lower.contains("codex") {
@@ -2895,6 +3012,13 @@ fn display_err<E: std::fmt::Display>(err: E) -> String {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2923,6 +3047,7 @@ fn main() {
             codex_oauth_login_complete,
             codex_oauth_login_cancel,
             add_api_profile,
+            is_codex_process_running,
             switch_profile,
             probe_usage,
             consume_usage_reset,
@@ -3307,6 +3432,24 @@ mod tests {
             "9821 /usr/local/bin/codex --model gpt-5.5",
             ""
         ));
+    }
+
+    #[test]
+    fn codex_process_id_parsing_excludes_switcher_processes() {
+        let output = r#"
+CommandLine=C:\Users\me\AppData\Roaming\npm\codex.cmd --model gpt-5
+ExecutablePath=C:\Users\me\AppData\Roaming\npm\codex.cmd
+Name=node.exe
+ProcessId=1234
+
+CommandLine=G:\codex_learn\codex-account-switcher\target\debug\codex-account-switcher.exe
+ExecutablePath=G:\codex_learn\codex-account-switcher\target\debug\codex-account-switcher.exe
+Name=codex-account-switcher.exe
+ProcessId=5678
+
+"#;
+
+        assert_eq!(codex_process_ids_from_wmic_output(output, ""), vec![1234]);
     }
 
     #[test]

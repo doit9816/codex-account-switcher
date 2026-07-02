@@ -1,6 +1,6 @@
 [package]
 name = "codex-account-switcher"
-version = "0.1.7"
+version = "0.1.8"
 description = "Desktop manager for multiple Codex ChatGPT accounts"
 authors = ["cmsCloud"]
 edition = "2021"
@@ -23,6 +23,7 @@ sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 thiserror = "1"
 tiny_http = "0.12"
