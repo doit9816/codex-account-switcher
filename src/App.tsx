@@ -1352,7 +1352,7 @@ export default function App() {
     const codexRunning = await invoke<boolean>("is_codex_process_running");
     if (!codexRunning) return false;
     const confirmed = await confirmDialog(
-      `检测到 Codex 正在运行。\n\n如果继续强制切换，将先写入账号 ${profile.alias}，然后退出正在运行的 Codex 并重新启动。是否继续？`,
+      `检测到 Codex 正在运行。\n\n如果继续，将先安全关闭 Codex、保存当前账号最新凭证，再切换到 ${profile.alias}，最后按当前设备的启动方式重新打开。是否继续？`,
       { title: "强制切换账号", kind: "warning" }
     );
     return confirmed ? true : null;

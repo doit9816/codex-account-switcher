@@ -19,7 +19,7 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -886,6 +886,41 @@ fn sync_current_auth_into_profile(
     Ok(Some(auth_json))
 }
 
+fn auth_summaries_match(profile: &AuthSummary, current: &AuthSummary) -> bool {
+    if let (Some(profile_account_id), Some(current_account_id)) =
+        (profile.account_id.as_deref(), current.account_id.as_deref())
+    {
+        return profile_account_id == current_account_id;
+    }
+
+    if let (Some(profile_email), Some(current_email)) =
+        (profile.email.as_deref(), current.email.as_deref())
+    {
+        return profile_email.eq_ignore_ascii_case(current_email);
+    }
+
+    false
+}
+
+fn sync_auth_json_into_matching_profile(
+    store: &mut AppStore,
+    auth_json: &str,
+    key: &[u8; 32],
+) -> Result<Option<String>, String> {
+    let summary = summarize_auth(auth_json)?;
+    let Some(idx) = store.profiles.iter().position(|profile| {
+        profile.api_config.is_none() && auth_summaries_match(&profile.summary, &summary)
+    }) else {
+        return Ok(None);
+    };
+
+    let profile_id = store.profiles[idx].id.clone();
+    store.profiles[idx].summary = summary;
+    store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), key)?;
+    store.profiles[idx].updated_at = now_string();
+    Ok(Some(profile_id))
+}
+
 #[tauri::command]
 async fn refresh_all_profile_tokens(
     app: AppHandle,
@@ -992,12 +1027,12 @@ async fn switch_profile(
     let mut store = load_store(&app)?;
     let path = resolve_codex_home(&app, codex_home)?;
     let key = load_master_key(&app)?;
-    let idx = store
+    let mut idx = store
         .profiles
         .iter()
         .position(|p| p.id == profile_id)
         .ok_or_else(|| "账号不存在".to_string())?;
-    let profile = store.profiles[idx].clone();
+    let mut profile = store.profiles[idx].clone();
     if !profile.enabled && !force {
         return Err("账号已禁用，不能自动切换；可先启用账号后再切换".to_string());
     }
@@ -1010,7 +1045,8 @@ async fn switch_profile(
             return Err("账号仍在冷却中；如需强制切换请勾选强制切换".to_string());
         }
     }
-    let codex_running = is_codex_running();
+    let codex_runtime = collect_codex_process_snapshot();
+    let codex_running = codex_runtime.is_running();
     if codex_running && !force {
         return Err("检测到 Codex 正在运行。为避免当前会话账号不匹配，请先关闭 Codex，或勾选强制切换后再继续。".to_string());
     }
@@ -1023,6 +1059,36 @@ async fn switch_profile(
         .open(&lock_path)
         .map_err(display_err)?;
     lock.lock_exclusive().map_err(display_err)?;
+
+    let mut relaunch_guard = CodexRelaunchGuard::default();
+    if codex_running && force {
+        terminate_codex_processes(&codex_runtime)?;
+        relaunch_guard.arm(codex_runtime.clone());
+    }
+
+    let auth_path = path.join("auth.json");
+    if auth_path.exists() {
+        let current_auth_json =
+            fs::read_to_string(&auth_path).map_err(|e| format!("无法读取当前 auth.json: {e}"))?;
+        if let Some(synced_profile_id) =
+            sync_auth_json_into_matching_profile(&mut store, &current_auth_json, &key)?
+        {
+            push_event(
+                &mut store,
+                "info",
+                "切换前已保存当前 Codex 刷新后的 token 快照",
+            );
+            save_store(&app, &store)?;
+            if synced_profile_id == profile_id {
+                idx = store
+                    .profiles
+                    .iter()
+                    .position(|p| p.id == profile_id)
+                    .ok_or_else(|| "账号不存在".to_string())?;
+                profile = store.profiles[idx].clone();
+            }
+        }
+    }
 
     let mut auth_json = String::from_utf8(decrypt_secret(&profile.encrypted_auth_json, &key)?)
         .map_err(|e| e.to_string())?;
@@ -1039,7 +1105,6 @@ async fn switch_profile(
         store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
         store.profiles[idx].usage.last_token_refresh_error = None;
     }
-    let auth_path = path.join("auth.json");
     let config_path = path.join("config.toml");
     let config_backup_path = path.join("config.toml.account-switcher.backup");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
@@ -1087,7 +1152,7 @@ async fn switch_profile(
     store.profiles[idx].updated_at = now_string();
     let mut restart_message = None;
     if codex_running && force {
-        match restart_codex_processes() {
+        match relaunch_guard.relaunch() {
             Ok(()) => {
                 restart_message = Some("已强制切换并重启 Codex".to_string());
                 push_event(
@@ -2338,57 +2403,151 @@ fn latest_backup(codex_home: &Path) -> Option<PathBuf> {
     entries.pop()
 }
 
-fn is_codex_running() -> bool {
-    let current_exe = std::env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    #[cfg(windows)]
-    {
-        Command::new("wmic")
-            .args([
-                "process",
-                "get",
-                "Name,ExecutablePath,CommandLine",
-                "/FORMAT:LIST",
-            ])
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .any(|line| looks_like_codex_process(line, &current_exe))
-            })
-            .unwrap_or(false)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexLaunchKind {
+    Desktop,
+    Cli,
+}
+
+#[derive(Debug, Clone)]
+struct CodexProcessInfo {
+    pid: u32,
+    executable_path: Option<PathBuf>,
+    launch_kind: CodexLaunchKind,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexProcessSnapshot {
+    processes: Vec<CodexProcessInfo>,
+}
+
+impl CodexProcessSnapshot {
+    fn is_running(&self) -> bool {
+        !self.processes.is_empty()
     }
-    #[cfg(not(windows))]
-    {
-        Command::new("pgrep")
-            .args(["-af", "codex"])
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .any(|line| looks_like_codex_process(line, &current_exe))
-            })
-            .unwrap_or(false)
+
+    fn launch_kind(&self) -> Option<CodexLaunchKind> {
+        self.processes.first().map(|process| process.launch_kind)
+    }
+
+    fn executable_path(&self) -> Option<&Path> {
+        self.processes
+            .iter()
+            .find_map(|process| process.executable_path.as_deref())
     }
 }
 
-fn restart_codex_processes() -> Result<(), String> {
-    terminate_codex_processes()?;
-    thread::sleep(Duration::from_millis(700));
-    Command::new("codex").spawn().map_err(|error| {
-        format!("无法重新启动 codex，请确认 Codex CLI 已安装并在 PATH 中：{error}")
-    })?;
-    Ok(())
+#[derive(Debug, Default)]
+struct CodexRelaunchGuard {
+    snapshot: Option<CodexProcessSnapshot>,
+}
+
+impl CodexRelaunchGuard {
+    fn arm(&mut self, snapshot: CodexProcessSnapshot) {
+        self.snapshot = Some(snapshot);
+    }
+
+    fn relaunch(&mut self) -> Result<(), String> {
+        let Some(snapshot) = self.snapshot.take() else {
+            return Ok(());
+        };
+        relaunch_codex_processes(&snapshot)
+    }
+}
+
+impl Drop for CodexRelaunchGuard {
+    fn drop(&mut self) {
+        if let Some(snapshot) = self.snapshot.take() {
+            let _ = relaunch_codex_processes(&snapshot);
+        }
+    }
+}
+
+fn current_executable_marker() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn is_own_switcher_process(text: &str, current_exe: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if !current_exe.is_empty() && lower.contains(current_exe) {
+        return true;
+    }
+    [
+        "codexswitcher",
+        "codex switcher",
+        "codex-account-switcher",
+        "codex_account_switcher",
+        "local.codex.account-switcher",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn classify_codex_process(
+    name: &str,
+    executable_path: Option<&str>,
+    command_line: &str,
+    current_exe: &str,
+) -> Option<CodexLaunchKind> {
+    let path = executable_path.unwrap_or("");
+    let combined = format!("{name}\n{path}\n{command_line}");
+    if is_own_switcher_process(&combined, current_exe) {
+        return None;
+    }
+
+    let name_lower = name.to_ascii_lowercase();
+    let path_lower = path.to_ascii_lowercase();
+    let command_lower = command_line.to_ascii_lowercase();
+    let explicit_cli = command_lower.contains("@openai/codex")
+        || command_lower.contains("codex.js")
+        || command_lower.contains("/bin/codex")
+        || command_lower.contains("\\bin\\codex")
+        || path_lower.contains("node_modules")
+        || path_lower.contains("@openai/codex");
+    let is_desktop_binary = path_lower.contains(".app/contents/macos/codex")
+        || (cfg!(windows) && name_lower == "codex.exe" && !explicit_cli);
+    let is_desktop_main = is_desktop_binary
+        && !path_lower.contains("\\resources\\")
+        && !path_lower.contains("/resources/")
+        && !command_lower.contains("--type=")
+        && !command_lower.contains("--utility-sub-type=");
+    if is_desktop_main {
+        return Some(CodexLaunchKind::Desktop);
+    }
+    if is_desktop_binary {
+        return None;
+    }
+
+    let is_cli =
+        explicit_cli || path_lower.ends_with("/codex") || path_lower.ends_with("\\codex.exe");
+    is_cli.then_some(CodexLaunchKind::Cli)
 }
 
 #[cfg(windows)]
-fn terminate_codex_processes() -> Result<(), String> {
-    let current_exe = std::env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
+fn collect_codex_process_snapshot() -> CodexProcessSnapshot {
+    let current_exe = current_executable_marker();
+    let script = r#"Get-CimInstance Win32_Process |
+Where-Object { $_.Name -match '(?i)codex' -or $_.CommandLine -match '(?i)(@openai[\\/]codex|codex\.js|[\\/]bin[\\/]codex)' } |
+Select-Object ProcessId,Name,ExecutablePath,CommandLine |
+ConvertTo-Json -Compress"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let parsed = parse_windows_codex_process_json(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                &current_exe,
+            );
+            if !parsed.processes.is_empty() {
+                return parsed;
+            }
+        }
+    }
+
     let output = Command::new("wmic")
         .args([
             "process",
@@ -2396,35 +2555,299 @@ fn terminate_codex_processes() -> Result<(), String> {
             "ProcessId,Name,ExecutablePath,CommandLine",
             "/FORMAT:LIST",
         ])
-        .output()
-        .map_err(display_err)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for pid in codex_process_ids_from_wmic_output(&stdout, &current_exe) {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .output();
+        .output();
+    let processes = output
+        .ok()
+        .map(|output| {
+            codex_process_ids_from_wmic_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &current_exe,
+            )
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pid| CodexProcessInfo {
+            pid,
+            executable_path: None,
+            launch_kind: CodexLaunchKind::Cli,
+        })
+        .collect();
+    CodexProcessSnapshot { processes }
+}
+
+#[cfg(windows)]
+fn parse_windows_codex_process_json(output: &str, current_exe: &str) -> CodexProcessSnapshot {
+    let Ok(value) = serde_json::from_str::<Value>(output) else {
+        return CodexProcessSnapshot::default();
+    };
+    let values = match value {
+        Value::Array(values) => values,
+        value => vec![value],
+    };
+    let mut desktop = Vec::new();
+    let mut cli = Vec::new();
+    for value in values {
+        let Some(pid) = value
+            .get("ProcessId")
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+        else {
+            continue;
+        };
+        let name = value.get("Name").and_then(Value::as_str).unwrap_or("");
+        let executable_path = value
+            .get("ExecutablePath")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty());
+        let command_line = value
+            .get("CommandLine")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let Some(launch_kind) =
+            classify_codex_process(name, executable_path, command_line, current_exe)
+        else {
+            continue;
+        };
+        let info = CodexProcessInfo {
+            pid,
+            executable_path: executable_path.map(PathBuf::from),
+            launch_kind,
+        };
+        match launch_kind {
+            CodexLaunchKind::Desktop => desktop.push(info),
+            CodexLaunchKind::Cli => cli.push(info),
+        }
     }
-    Ok(())
+    CodexProcessSnapshot {
+        processes: if desktop.is_empty() { cli } else { desktop },
+    }
 }
 
 #[cfg(not(windows))]
-fn terminate_codex_processes() -> Result<(), String> {
-    let current_exe = std::env::current_exe()
+fn collect_codex_process_snapshot() -> CodexProcessSnapshot {
+    let current_exe = current_executable_marker();
+    let output = Command::new("ps")
+        .args(["-axww", "-o", "pid=,comm=,command="])
+        .output();
+    let mut desktop = Vec::new();
+    let mut cli = Vec::new();
+    for line in output
         .ok()
-        .map(|p| p.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    let output = Command::new("pgrep")
-        .args(["-af", "codex"])
-        .output()
-        .map_err(display_err)?;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if !looks_like_codex_process(line, &current_exe) {
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default()
+        .lines()
+    {
+        let mut parts = line.trim().splitn(3, char::is_whitespace);
+        let Some(pid) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
             continue;
-        }
-        if let Some(pid) = line.split_whitespace().next() {
-            let _ = Command::new("kill").args(["-9", pid]).output();
+        };
+        let name = parts.next().unwrap_or("");
+        let command_line = parts.next().unwrap_or("");
+        let executable = command_line.split_whitespace().next();
+        let Some(launch_kind) =
+            classify_codex_process(name, executable, command_line, &current_exe)
+        else {
+            continue;
+        };
+        let info = CodexProcessInfo {
+            pid,
+            executable_path: executable.map(PathBuf::from),
+            launch_kind,
+        };
+        match launch_kind {
+            CodexLaunchKind::Desktop => desktop.push(info),
+            CodexLaunchKind::Cli => cli.push(info),
         }
     }
+    CodexProcessSnapshot {
+        processes: if desktop.is_empty() { cli } else { desktop },
+    }
+}
+
+fn is_codex_running() -> bool {
+    collect_codex_process_snapshot().is_running()
+}
+
+fn process_is_running(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .split_whitespace()
+                    .any(|value| value == pid.to_string())
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn wait_for_processes_exit(pids: &[u32], timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if pids.iter().all(|pid| !process_is_running(*pid)) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    pids.iter().all(|pid| !process_is_running(*pid))
+}
+
+#[cfg(windows)]
+fn terminate_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+    let pids = snapshot
+        .processes
+        .iter()
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    for pid in &pids {
+        let output = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .map_err(display_err)?;
+        if !output.status.success() && process_is_running(*pid) {
+            return Err(format!(
+                "无法关闭 Codex 进程 {pid}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    if wait_for_processes_exit(&pids, Duration::from_secs(8)) {
+        Ok(())
+    } else {
+        Err("Codex 进程未能完全退出，请手动关闭后重试".to_string())
+    }
+}
+
+#[cfg(not(windows))]
+fn terminate_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+    let pids = snapshot
+        .processes
+        .iter()
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    for pid in &pids {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    if wait_for_processes_exit(&pids, Duration::from_secs(3)) {
+        return Ok(());
+    }
+    for pid in &pids {
+        if process_is_running(*pid) {
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+    }
+    if wait_for_processes_exit(&pids, Duration::from_secs(5)) {
+        Ok(())
+    } else {
+        Err("Codex 进程未能完全退出，请手动关闭后重试".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn windows_codex_app_user_model_id() -> Option<String> {
+    let script = r#"$entry = Get-StartApps |
+Where-Object { $_.Name -match '(?i)^Codex$' -or $_.AppID -match '(?i)OpenAI\.Codex' } |
+Select-Object -First 1
+if ($entry) { Write-Output $entry.AppID }"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(String::from)
+}
+
+#[cfg(windows)]
+fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+    match snapshot.launch_kind() {
+        Some(CodexLaunchKind::Desktop) => {
+            if let Some(app_id) = windows_codex_app_user_model_id() {
+                Command::new("explorer.exe")
+                    .arg(format!("shell:AppsFolder\\{app_id}"))
+                    .spawn()
+                    .map_err(|error| format!("无法通过 Windows 应用入口启动 Codex: {error}"))?;
+                return Ok(());
+            }
+            if let Some(path) = snapshot.executable_path().filter(|path| path.exists()) {
+                Command::new(path)
+                    .spawn()
+                    .map_err(|error| format!("无法启动 Codex 桌面应用: {error}"))?;
+                return Ok(());
+            }
+            Err("未找到 Codex 桌面应用启动入口".to_string())
+        }
+        Some(CodexLaunchKind::Cli) => {
+            Command::new("cmd")
+                .args(["/C", "start", "", "codex"])
+                .spawn()
+                .map_err(|error| {
+                    format!("无法重新启动 Codex CLI，请确认 codex 已安装并在 PATH 中: {error}")
+                })?;
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+    match snapshot.launch_kind() {
+        Some(CodexLaunchKind::Desktop) => {
+            let status = Command::new("open")
+                .args(["-a", "Codex"])
+                .status()
+                .map_err(display_err)?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err("无法重新启动 Codex.app".to_string())
+            }
+        }
+        Some(CodexLaunchKind::Cli) => {
+            let executable = snapshot
+                .executable_path()
+                .filter(|path| path.exists())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("codex"));
+            Command::new(executable).spawn().map_err(|error| {
+                format!("无法重新启动 Codex CLI，请确认 codex 已安装并在 PATH 中: {error}")
+            })?;
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+    let executable = snapshot
+        .executable_path()
+        .filter(|path| path.exists())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("codex"));
+    Command::new(&executable)
+        .spawn()
+        .map_err(|error| format!("无法重新启动 Codex: {error}"))?;
     Ok(())
 }
 
@@ -3434,6 +3857,92 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn classifies_windows_desktop_root_without_matching_helpers() {
+        assert_eq!(
+            classify_codex_process(
+                "Codex.exe",
+                Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0_x64__test\app\Codex.exe"),
+                r#""C:\Program Files\WindowsApps\OpenAI.Codex_1.0_x64__test\app\Codex.exe""#,
+                ""
+            ),
+            Some(CodexLaunchKind::Desktop)
+        );
+        assert_eq!(
+            classify_codex_process(
+                "Codex.exe",
+                Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0_x64__test\app\Codex.exe"),
+                r#""C:\Program Files\WindowsApps\OpenAI.Codex_1.0_x64__test\app\Codex.exe" --type=renderer"#,
+                ""
+            ),
+            None
+        );
+        assert_eq!(
+            classify_codex_process(
+                "codex.exe",
+                Some(r"C:\npm\node_modules\@openai\codex\vendor\x86_64-pc-windows-msvc\codex.exe"),
+                r#"codex.exe --version"#,
+                ""
+            ),
+            Some(CodexLaunchKind::Cli)
+        );
+    }
+
+    #[test]
+    fn classifies_cli_without_matching_switcher() {
+        assert_eq!(
+            classify_codex_process(
+                "node.exe",
+                Some(r"C:\Program Files\nodejs\node.exe"),
+                r#"node.exe C:\npm\node_modules\@openai\codex\bin\codex.js"#,
+                ""
+            ),
+            Some(CodexLaunchKind::Cli)
+        );
+        assert_eq!(
+            classify_codex_process(
+                "codex-account-switcher.exe",
+                Some(r"G:\CodexSwitcher\codex-account-switcher.exe"),
+                r#""G:\CodexSwitcher\codex-account-switcher.exe""#,
+                ""
+            ),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_process_snapshot_using_only_desktop_root() {
+        let snapshot = parse_windows_codex_process_json(
+            r#"[
+                {
+                    "ProcessId": 101,
+                    "Name": "Codex.exe",
+                    "ExecutablePath": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__test\\app\\Codex.exe",
+                    "CommandLine": "\"C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__test\\app\\Codex.exe\""
+                },
+                {
+                    "ProcessId": 102,
+                    "Name": "Codex.exe",
+                    "ExecutablePath": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__test\\app\\Codex.exe",
+                    "CommandLine": "\"C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__test\\app\\Codex.exe\" --type=renderer"
+                },
+                {
+                    "ProcessId": 103,
+                    "Name": "codex.exe",
+                    "ExecutablePath": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__test\\app\\resources\\codex.exe",
+                    "CommandLine": "\"C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__test\\app\\resources\\codex.exe\" app-server"
+                }
+            ]"#,
+            "",
+        );
+
+        assert_eq!(snapshot.processes.len(), 1);
+        assert_eq!(snapshot.processes[0].pid, 101);
+        assert_eq!(snapshot.launch_kind(), Some(CodexLaunchKind::Desktop));
+    }
+
     #[test]
     fn codex_process_id_parsing_excludes_switcher_processes() {
         let output = r#"
@@ -3768,6 +4277,113 @@ ProcessId=5678
         assert!(should_refresh_access_token(Some(now - 1), 0));
         assert!(!should_refresh_access_token(Some(now + 3_600), 0));
         assert!(should_refresh_access_token(Some(now + 3_600), 3_600));
+    }
+
+    #[test]
+    fn syncs_rotated_current_auth_into_matching_profile() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let first_auth = fake_auth("acc-1", "one@example.com");
+        let second_auth = fake_auth("acc-2", "two@example.com");
+        let mut store = AppStore::default();
+        store.profiles = vec![
+            AccountProfile {
+                id: "profile-1".to_string(),
+                alias: "one".to_string(),
+                enabled: true,
+                priority: 100,
+                cooldown_until: None,
+                quota_rule: QuotaRule::default(),
+                summary: summarize_auth(&first_auth).unwrap(),
+                encrypted_auth_json: encrypt_secret(first_auth.as_bytes(), &key).unwrap(),
+                api_config: None,
+                usage: UsageStats::default(),
+                created_at: now_string(),
+                updated_at: now_string(),
+            },
+            AccountProfile {
+                id: "profile-2".to_string(),
+                alias: "two".to_string(),
+                enabled: true,
+                priority: 90,
+                cooldown_until: None,
+                quota_rule: QuotaRule::default(),
+                summary: summarize_auth(&second_auth).unwrap(),
+                encrypted_auth_json: encrypt_secret(second_auth.as_bytes(), &key).unwrap(),
+                api_config: None,
+                usage: UsageStats::default(),
+                created_at: now_string(),
+                updated_at: now_string(),
+            },
+        ];
+        let rotated_auth = apply_token_refresh_response(
+            &first_auth,
+            &serde_json::json!({
+                "access_token": fake_jwt(serde_json::json!({
+                    "client_id": "app_test",
+                    "sub": "user-123",
+                    "exp": 4102449999_i64
+                })),
+                "refresh_token": "rt_rotated"
+            }),
+        )
+        .unwrap();
+
+        let synced = sync_auth_json_into_matching_profile(&mut store, &rotated_auth, &key).unwrap();
+
+        assert_eq!(synced.as_deref(), Some("profile-1"));
+        let saved = String::from_utf8(
+            decrypt_secret(&store.profiles[0].encrypted_auth_json, &key).unwrap(),
+        )
+        .unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            saved
+                .pointer("/tokens/refresh_token")
+                .and_then(Value::as_str),
+            Some("rt_rotated")
+        );
+        let untouched = String::from_utf8(
+            decrypt_secret(&store.profiles[1].encrypted_auth_json, &key).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(untouched, second_auth);
+    }
+
+    #[test]
+    fn skips_current_auth_when_no_profile_identity_matches() {
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        let stored_auth = fake_auth("acc-1", "one@example.com");
+        let mut store = AppStore::default();
+        store.profiles.push(AccountProfile {
+            id: "profile-1".to_string(),
+            alias: "one".to_string(),
+            enabled: true,
+            priority: 100,
+            cooldown_until: None,
+            quota_rule: QuotaRule::default(),
+            summary: summarize_auth(&stored_auth).unwrap(),
+            encrypted_auth_json: encrypt_secret(stored_auth.as_bytes(), &key).unwrap(),
+            api_config: None,
+            usage: UsageStats::default(),
+            created_at: now_string(),
+            updated_at: now_string(),
+        });
+
+        let synced = sync_auth_json_into_matching_profile(
+            &mut store,
+            &fake_auth("acc-other", "other@example.com"),
+            &key,
+        )
+        .unwrap();
+
+        assert_eq!(synced, None);
+        let saved = String::from_utf8(
+            decrypt_secret(&store.profiles[0].encrypted_auth_json, &key).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved, stored_auth);
     }
 
     #[test]
