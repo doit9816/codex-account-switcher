@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod oauth;
+mod routing;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -18,6 +19,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -37,40 +39,44 @@ const KEYRING_USER: &str = "profiles";
 const LEGACY_APP_IDENTIFIER: &str = "cn.cmscloud.codex-account-switcher";
 const CHATGPT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
+pub(crate) const ROUTER_PROVIDER_ID: &str = "codex-switcher-router";
+static STORE_IO_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct AppStore {
+pub(crate) struct AppStore {
     #[serde(default)]
-    settings: AppSettings,
+    pub(crate) settings: AppSettings,
     #[serde(default)]
-    profiles: Vec<AccountProfile>,
+    pub(crate) profiles: Vec<AccountProfile>,
     #[serde(default)]
-    events: Vec<AppEvent>,
+    pub(crate) events: Vec<AppEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AppSettings {
-    codex_home: Option<String>,
-    current_profile_id: Option<String>,
-    auto_switch_enabled: bool,
+pub(crate) struct AppSettings {
+    pub(crate) codex_home: Option<String>,
+    pub(crate) current_profile_id: Option<String>,
+    pub(crate) auto_switch_enabled: bool,
     #[serde(default)]
-    probe_proxy: ProxySettings,
+    pub(crate) probe_proxy: ProxySettings,
     #[serde(default)]
-    auto_token_refresh_enabled: bool,
+    pub(crate) auto_token_refresh_enabled: bool,
     #[serde(default = "default_auto_refresh_interval_secs")]
-    auto_refresh_interval_secs: u64,
+    pub(crate) auto_refresh_interval_secs: u64,
     #[serde(default)]
-    background_token_refresh_enabled: bool,
+    pub(crate) background_token_refresh_enabled: bool,
     #[serde(default = "default_background_token_refresh_interval_secs")]
-    background_token_refresh_interval_secs: u64,
+    pub(crate) background_token_refresh_interval_secs: u64,
     #[serde(default = "default_token_refresh_threshold_secs")]
-    token_refresh_threshold_secs: u64,
+    pub(crate) token_refresh_threshold_secs: u64,
     #[serde(default = "default_true")]
-    auto_probe_enabled: bool,
+    pub(crate) auto_probe_enabled: bool,
     #[serde(default = "default_auto_probe_interval_secs")]
-    auto_probe_interval_secs: u64,
+    pub(crate) auto_probe_interval_secs: u64,
+    #[serde(default)]
+    pub(crate) routing: RoutingSettings,
 }
 
 impl Default for AppSettings {
@@ -88,8 +94,73 @@ impl Default for AppSettings {
             token_refresh_threshold_secs: default_token_refresh_threshold_secs(),
             auto_probe_enabled: true,
             auto_probe_interval_secs: default_auto_probe_interval_secs(),
+            routing: RoutingSettings::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoutingSettings {
+    #[serde(default = "default_routing_listen_host")]
+    pub(crate) listen_host: String,
+    #[serde(default = "default_routing_port")]
+    pub(crate) port: u16,
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) risk_confirmed: bool,
+    #[serde(default)]
+    pub(crate) applied_to_codex: bool,
+    #[serde(default)]
+    pub(crate) mode: RoutingMode,
+    #[serde(default)]
+    pub(crate) fixed_profile_id: Option<String>,
+    #[serde(default = "default_routing_sticky_ttl_secs")]
+    pub(crate) sticky_ttl_secs: u64,
+    #[serde(default)]
+    pub(crate) encrypted_access_key: Option<SecretEnvelope>,
+}
+
+impl Default for RoutingSettings {
+    fn default() -> Self {
+        Self {
+            listen_host: default_routing_listen_host(),
+            port: default_routing_port(),
+            enabled: false,
+            risk_confirmed: false,
+            applied_to_codex: false,
+            mode: RoutingMode::Auto,
+            fixed_profile_id: None,
+            sticky_ttl_secs: default_routing_sticky_ttl_secs(),
+            encrypted_access_key: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RoutingMode {
+    Auto,
+    Fixed,
+}
+
+impl Default for RoutingMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+fn default_routing_listen_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_routing_port() -> u16 {
+    15_722
+}
+
+fn default_routing_sticky_ttl_secs() -> u64 {
+    3_600
 }
 
 fn default_auto_refresh_interval_secs() -> u64 {
@@ -114,44 +185,46 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ProxySettings {
-    enabled: bool,
-    url: String,
+pub(crate) struct ProxySettings {
+    pub(crate) enabled: bool,
+    pub(crate) url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AccountProfile {
-    id: String,
-    alias: String,
-    enabled: bool,
-    priority: i32,
-    cooldown_until: Option<String>,
-    quota_rule: QuotaRule,
-    summary: AuthSummary,
-    encrypted_auth_json: SecretEnvelope,
+pub(crate) struct AccountProfile {
+    pub(crate) id: String,
+    pub(crate) alias: String,
+    pub(crate) enabled: bool,
+    pub(crate) priority: i32,
+    pub(crate) cooldown_until: Option<String>,
+    pub(crate) quota_rule: QuotaRule,
+    pub(crate) summary: AuthSummary,
+    pub(crate) encrypted_auth_json: SecretEnvelope,
     #[serde(default)]
-    api_config: Option<ApiProviderConfig>,
-    usage: UsageStats,
-    created_at: String,
-    updated_at: String,
+    pub(crate) api_config: Option<ApiProviderConfig>,
+    pub(crate) usage: UsageStats,
+    #[serde(default)]
+    pub(crate) route_health: RouteHealth,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ApiProviderConfig {
-    provider_id: String,
-    base_url: String,
-    model: String,
-    wire_api: String,
+pub(crate) struct ApiProviderConfig {
+    pub(crate) provider_id: String,
+    pub(crate) base_url: String,
+    pub(crate) model: String,
+    pub(crate) wire_api: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct QuotaRule {
-    hourly_limit: Option<u32>,
-    daily_limit: Option<u32>,
-    cooldown_minutes: u32,
+pub(crate) struct QuotaRule {
+    pub(crate) hourly_limit: Option<u32>,
+    pub(crate) daily_limit: Option<u32>,
+    pub(crate) cooldown_minutes: u32,
 }
 
 impl Default for QuotaRule {
@@ -166,71 +239,71 @@ impl Default for QuotaRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct UsageStats {
-    hourly_used: u32,
-    daily_used: u32,
+pub(crate) struct UsageStats {
+    pub(crate) hourly_used: u32,
+    pub(crate) daily_used: u32,
     #[serde(default)]
-    detected_limits: Vec<DetectedLimit>,
-    detected_summary: Option<String>,
-    last_probe_at: Option<String>,
-    last_probe_status: Option<String>,
-    last_error: Option<String>,
-    last_used_at: Option<String>,
-    estimated_reset_at: Option<String>,
+    pub(crate) detected_limits: Vec<DetectedLimit>,
+    pub(crate) detected_summary: Option<String>,
+    pub(crate) last_probe_at: Option<String>,
+    pub(crate) last_probe_status: Option<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) last_used_at: Option<String>,
+    pub(crate) estimated_reset_at: Option<String>,
     #[serde(default)]
-    last_token_refresh_at: Option<String>,
+    pub(crate) last_token_refresh_at: Option<String>,
     #[serde(default)]
-    last_token_refresh_status: Option<String>,
+    pub(crate) last_token_refresh_status: Option<String>,
     #[serde(default)]
-    last_token_refresh_error: Option<String>,
+    pub(crate) last_token_refresh_error: Option<String>,
     #[serde(default)]
-    available_reset_count: Option<i64>,
+    pub(crate) available_reset_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct DetectedLimit {
-    window: String,
-    used: Option<u32>,
-    limit: Option<u32>,
-    remaining: Option<u32>,
-    used_percent: Option<u32>,
-    remaining_percent: Option<u32>,
-    reset_at: Option<String>,
-    label: Option<String>,
+pub(crate) struct DetectedLimit {
+    pub(crate) window: String,
+    pub(crate) used: Option<u32>,
+    pub(crate) limit: Option<u32>,
+    pub(crate) remaining: Option<u32>,
+    pub(crate) used_percent: Option<u32>,
+    pub(crate) remaining_percent: Option<u32>,
+    pub(crate) reset_at: Option<String>,
+    pub(crate) label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct AuthSummary {
-    email: Option<String>,
-    plan: Option<String>,
-    subscription_active_start: Option<String>,
-    subscription_active_until: Option<String>,
-    subscription_last_checked: Option<String>,
-    account_id: Option<String>,
-    user_id: Option<String>,
-    organization_id: Option<String>,
-    access_token_exp: Option<i64>,
-    id_token_exp: Option<i64>,
-    auth_mode: Option<String>,
+pub(crate) struct AuthSummary {
+    pub(crate) email: Option<String>,
+    pub(crate) plan: Option<String>,
+    pub(crate) subscription_active_start: Option<String>,
+    pub(crate) subscription_active_until: Option<String>,
+    pub(crate) subscription_last_checked: Option<String>,
+    pub(crate) account_id: Option<String>,
+    pub(crate) user_id: Option<String>,
+    pub(crate) organization_id: Option<String>,
+    pub(crate) access_token_exp: Option<i64>,
+    pub(crate) id_token_exp: Option<i64>,
+    pub(crate) auth_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SecretEnvelope {
-    v: u32,
-    alg: String,
-    nonce: String,
-    ciphertext: String,
+pub(crate) struct SecretEnvelope {
+    pub(crate) v: u32,
+    pub(crate) alg: String,
+    pub(crate) nonce: String,
+    pub(crate) ciphertext: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AppEvent {
-    ts: String,
-    level: String,
-    message: String,
+pub(crate) struct AppEvent {
+    pub(crate) ts: String,
+    pub(crate) level: String,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,8 +337,26 @@ struct AccountProfileView {
     summary: AuthSummary,
     api_config: Option<ApiProviderConfig>,
     usage: UsageStats,
+    route_health: RouteHealth,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RouteHealth {
+    #[serde(default)]
+    pub(crate) consecutive_failures: u32,
+    #[serde(default)]
+    pub(crate) active_connections: u32,
+    #[serde(default)]
+    pub(crate) last_route_at: Option<String>,
+    #[serde(default)]
+    pub(crate) last_status: Option<String>,
+    #[serde(default)]
+    pub(crate) last_error: Option<String>,
+    #[serde(default)]
+    pub(crate) cooldown_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -593,6 +684,9 @@ fn upsert_auth_profile(
         usage: existing_index
             .map(|idx| store.profiles[idx].usage.clone())
             .unwrap_or_default(),
+        route_health: existing_index
+            .map(|idx| store.profiles[idx].route_health.clone())
+            .unwrap_or_default(),
         created_at: existing_index
             .map(|idx| store.profiles[idx].created_at.clone())
             .unwrap_or_else(|| now.clone()),
@@ -671,6 +765,7 @@ fn add_api_profile(
             wire_api: "responses".to_string(),
         }),
         usage: UsageStats::default(),
+        route_health: RouteHealth::default(),
         created_at: now.clone(),
         updated_at: now,
     });
@@ -793,6 +888,49 @@ fn save_auto_settings(
     push_event(&mut store, "info", "已保存自动刷新设置");
     save_store(&app, &store)?;
     Ok(store_view(store))
+}
+
+#[tauri::command]
+fn routing_status(app: AppHandle) -> Result<routing::RoutingStatus, String> {
+    routing::status(app)
+}
+
+#[tauri::command]
+fn routing_save_settings(
+    app: AppHandle,
+    input: routing::SaveRoutingSettingsInput,
+) -> Result<routing::RoutingStatus, String> {
+    routing::save_settings(app, input)
+}
+
+#[tauri::command]
+fn routing_start(app: AppHandle) -> Result<routing::RoutingStatus, String> {
+    routing::start(app)
+}
+
+#[tauri::command]
+fn routing_stop(app: AppHandle) -> Result<routing::RoutingStatus, String> {
+    routing::stop(app)
+}
+
+#[tauri::command]
+fn routing_regenerate_access_key(app: AppHandle) -> Result<routing::RoutingStatus, String> {
+    routing::regenerate_access_key(app)
+}
+
+#[tauri::command]
+fn routing_read_logs(app: AppHandle, limit: usize) -> Vec<routing::RoutingLogEntry> {
+    routing::read_logs(app, limit)
+}
+
+#[tauri::command]
+fn routing_apply_codex_config(app: AppHandle) -> Result<routing::RoutingStatus, String> {
+    routing::apply_codex_config(app)
+}
+
+#[tauri::command]
+fn routing_restore_codex_config(app: AppHandle) -> Result<routing::RoutingStatus, String> {
+    routing::restore_codex_config(app)
 }
 
 #[tauri::command]
@@ -1033,6 +1171,12 @@ async fn switch_profile(
         .position(|p| p.id == profile_id)
         .ok_or_else(|| "账号不存在".to_string())?;
     let mut profile = store.profiles[idx].clone();
+    if store.settings.routing.applied_to_codex {
+        return Err(
+            "路由 API 已接管本机 Codex 配置；请在路由页固定账号或先恢复配置后再切换全局账号"
+                .to_string(),
+        );
+    }
     if !profile.enabled && !force {
         return Err("账号已禁用，不能自动切换；可先启用账号后再切换".to_string());
     }
@@ -1570,6 +1714,7 @@ fn import_accounts_bundle(
             encrypted_auth_json,
             api_config: profile.api_config,
             usage: profile.usage,
+            route_health: RouteHealth::default(),
             created_at: profile.created_at,
             updated_at: now_string(),
         };
@@ -1720,6 +1865,7 @@ fn store_view(store: AppStore) -> StoreView {
                 summary: p.summary,
                 api_config: p.api_config,
                 usage: p.usage,
+                route_health: p.route_health,
                 created_at: p.created_at,
                 updated_at: p.updated_at,
             })
@@ -1742,7 +1888,7 @@ fn delete_profile_from_store(store: &mut AppStore, profile_id: &str) -> Result<S
     Ok(alias)
 }
 
-fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(display_err)?;
     migrate_legacy_app_data_dir(&dir)?;
     fs::create_dir_all(&dir).map_err(display_err)?;
@@ -1787,7 +1933,8 @@ fn copy_dir_contents_if_missing(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn load_store(app: &AppHandle) -> Result<AppStore, String> {
+pub(crate) fn load_store(app: &AppHandle) -> Result<AppStore, String> {
+    let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
     let path = app_data_dir(app)?.join(STORE_FILE);
     if !path.exists() {
         return Ok(AppStore::default());
@@ -1796,7 +1943,8 @@ fn load_store(app: &AppHandle) -> Result<AppStore, String> {
     serde_json::from_str(&text).map_err(display_err)
 }
 
-fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
+pub(crate) fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
+    let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
     let path = app_data_dir(app)?.join(STORE_FILE);
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(store).map_err(display_err)?;
@@ -1807,7 +1955,7 @@ fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
     fs::rename(tmp, path).map_err(display_err)
 }
 
-fn load_master_key(app: &AppHandle) -> Result<[u8; 32], String> {
+pub(crate) fn load_master_key(app: &AppHandle) -> Result<[u8; 32], String> {
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         if let Ok(secret) = entry.get_password() {
             if let Ok(bytes) = STANDARD.decode(secret) {
@@ -1840,7 +1988,7 @@ fn load_master_key(app: &AppHandle) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
-fn encrypt_secret(plaintext: &[u8], key: &[u8; 32]) -> Result<SecretEnvelope, String> {
+pub(crate) fn encrypt_secret(plaintext: &[u8], key: &[u8; 32]) -> Result<SecretEnvelope, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(display_err)?;
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
@@ -1855,7 +2003,7 @@ fn encrypt_secret(plaintext: &[u8], key: &[u8; 32]) -> Result<SecretEnvelope, St
     })
 }
 
-fn decrypt_secret(envelope: &SecretEnvelope, key: &[u8; 32]) -> Result<Vec<u8>, String> {
+pub(crate) fn decrypt_secret(envelope: &SecretEnvelope, key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(display_err)?;
     let nonce = STANDARD.decode(&envelope.nonce).map_err(display_err)?;
     let ciphertext = STANDARD.decode(&envelope.ciphertext).map_err(display_err)?;
@@ -1902,7 +2050,7 @@ fn decrypt_export(envelope: ExportEnvelope, password: &str) -> Result<Vec<u8>, S
     )
 }
 
-fn summarize_auth(auth_json: &str) -> Result<AuthSummary, String> {
+pub(crate) fn summarize_auth(auth_json: &str) -> Result<AuthSummary, String> {
     let auth: Value = serde_json::from_str(auth_json).map_err(display_err)?;
     let id_claims = auth
         .pointer("/tokens/id_token")
@@ -2013,7 +2161,7 @@ fn decode_jwt_claims(token: &str) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn build_probe_client(proxy: &ProxySettings) -> Result<reqwest::Client, String> {
+pub(crate) fn build_probe_client(proxy: &ProxySettings) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder();
     if proxy.enabled {
         let proxy_url = normalize_proxy_url(&proxy.url)?;
@@ -2025,7 +2173,7 @@ fn build_probe_client(proxy: &ProxySettings) -> Result<reqwest::Client, String> 
     builder.build().map_err(display_err)
 }
 
-async fn refresh_auth_json_with_client(
+pub(crate) async fn refresh_auth_json_with_client(
     client: &reqwest::Client,
     auth_json: &str,
 ) -> Result<String, String> {
@@ -2085,7 +2233,10 @@ fn apply_token_refresh_response(auth_json: &str, token_response: &Value) -> Resu
     serde_json::to_string_pretty(&auth).map_err(display_err)
 }
 
-fn should_refresh_access_token(access_token_exp: Option<i64>, threshold_secs: u64) -> bool {
+pub(crate) fn should_refresh_access_token(
+    access_token_exp: Option<i64>,
+    threshold_secs: u64,
+) -> bool {
     let Some(exp) = access_token_exp else {
         return true;
     };
@@ -2284,7 +2435,10 @@ fn open_external_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_codex_home(app: &AppHandle, explicit: Option<String>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_codex_home(
+    app: &AppHandle,
+    explicit: Option<String>,
+) -> Result<PathBuf, String> {
     if let Some(path) =
         explicit.or_else(|| load_store(app).ok().and_then(|s| s.settings.codex_home))
     {
@@ -2372,7 +2526,7 @@ fn format_codex_config_content(file_name: &str, content: &str) -> Result<String,
     }
 }
 
-fn replace_file_with_rollback(
+pub(crate) fn replace_file_with_rollback(
     target: &Path,
     bytes: &[u8],
     backup_path: Option<&Path>,
@@ -3407,7 +3561,7 @@ fn summarize_usage_body(body: &Value) -> String {
     }
 }
 
-fn push_event(store: &mut AppStore, level: &str, message: &str) {
+pub(crate) fn push_event(store: &mut AppStore, level: &str, message: &str) {
     store.events.insert(
         0,
         AppEvent {
@@ -3419,17 +3573,17 @@ fn push_event(store: &mut AppStore, level: &str, message: &str) {
     store.events.truncate(100);
 }
 
-fn now_string() -> String {
+pub(crate) fn now_string() -> String {
     Utc::now().to_rfc3339()
 }
 
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_time(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-fn display_err<E: std::fmt::Display>(err: E) -> String {
+pub(crate) fn display_err<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
@@ -3450,6 +3604,7 @@ fn main() {
             if let Ok(data_dir) = app_data_dir(app.handle()) {
                 oauth::restore_listener(app.handle().clone(), data_dir);
             }
+            routing::restore_enabled(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -3479,6 +3634,14 @@ fn main() {
             save_proxy_settings,
             open_codex_home,
             save_auto_settings,
+            routing_status,
+            routing_save_settings,
+            routing_start,
+            routing_stop,
+            routing_regenerate_access_key,
+            routing_read_logs,
+            routing_apply_codex_config,
+            routing_restore_codex_config,
             refresh_profile_tokens_from_codex_home,
             refresh_all_profile_tokens,
             export_all_accounts_bundle,
@@ -3627,6 +3790,7 @@ mod tests {
             encrypted_auth_json: encrypt_secret(auth.as_bytes(), &key).unwrap(),
             api_config: None,
             usage: UsageStats::default(),
+            route_health: RouteHealth::default(),
             created_at: now_string(),
             updated_at: now_string(),
         }
@@ -3674,6 +3838,7 @@ mod tests {
                 token_refresh_threshold_secs: 0,
                 auto_probe_enabled: true,
                 auto_probe_interval_secs: 60,
+                routing: RoutingSettings::default(),
             },
             profiles: vec![ExportProfile {
                 id: "profile-1".to_string(),
@@ -4298,6 +4463,7 @@ ProcessId=5678
                 encrypted_auth_json: encrypt_secret(first_auth.as_bytes(), &key).unwrap(),
                 api_config: None,
                 usage: UsageStats::default(),
+                route_health: RouteHealth::default(),
                 created_at: now_string(),
                 updated_at: now_string(),
             },
@@ -4312,6 +4478,7 @@ ProcessId=5678
                 encrypted_auth_json: encrypt_secret(second_auth.as_bytes(), &key).unwrap(),
                 api_config: None,
                 usage: UsageStats::default(),
+                route_health: RouteHealth::default(),
                 created_at: now_string(),
                 updated_at: now_string(),
             },
@@ -4367,6 +4534,7 @@ ProcessId=5678
             encrypted_auth_json: encrypt_secret(stored_auth.as_bytes(), &key).unwrap(),
             api_config: None,
             usage: UsageStats::default(),
+            route_health: RouteHealth::default(),
             created_at: now_string(),
             updated_at: now_string(),
         });
@@ -4527,6 +4695,7 @@ ProcessId=5678
             .unwrap(),
             api_config: None,
             usage: UsageStats::default(),
+            route_health: RouteHealth::default(),
             created_at: now_string(),
             updated_at: now_string(),
         };
@@ -4561,6 +4730,7 @@ ProcessId=5678
             .unwrap(),
             api_config: None,
             usage: UsageStats::default(),
+            route_health: RouteHealth::default(),
             created_at: now_string(),
             updated_at: now_string(),
         };

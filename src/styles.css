@@ -604,6 +604,97 @@ input:focus {
   grid-template-columns: 1fr;
 }
 
+.routing-page {
+  display: grid;
+  gap: 16px;
+}
+
+.routing-hero {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.routing-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+}
+
+.routing-settings-panel .form-grid select,
+.routing-settings-panel .form-grid input {
+  width: 100%;
+}
+
+.routing-risk {
+  background: #fff8ed;
+  border: 1px solid #eed3a7;
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.routing-secret {
+  background: #f5f8fb;
+  border: 1px solid #d9e1ea;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+}
+
+.routing-secret span {
+  color: #657487;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.routing-secret strong {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.routing-account-list,
+.routing-log-list {
+  display: grid;
+  gap: 8px;
+}
+
+.routing-account-row,
+.routing-log-row {
+  align-items: center;
+  background: #fbfcfd;
+  border: 1px solid #dfe6ee;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(160px, 1.4fr) auto auto auto auto auto;
+  min-height: 48px;
+  padding: 9px 10px;
+}
+
+.routing-log-row {
+  grid-template-columns: minmax(150px, 1.3fr) 70px minmax(110px, 1fr) 80px minmax(120px, 1fr);
+}
+
+.routing-account-row strong,
+.routing-account-row small,
+.routing-log-row strong,
+.routing-log-row small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routing-account-row small,
+.routing-log-row small {
+  color: #647181;
+}
+
 .panel {
   background: #ffffff;
   border: 1px solid #d8e0e8;
