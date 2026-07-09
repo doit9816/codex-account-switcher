@@ -854,6 +854,7 @@ export default function App() {
   const [tokenRefreshThresholdSecs, setTokenRefreshThresholdSecs] = useState(0);
   const [autoProbeEnabled, setAutoProbeEnabled] = useState(true);
   const [autoProbeIntervalSecs, setAutoProbeIntervalSecs] = useState(60);
+  const [autoProbeRunning, setAutoProbeRunning] = useState(false);
   const [routingStatus, setRoutingStatus] = useState<RoutingStatus | null>(null);
   const [routingHost, setRoutingHost] = useState("0.0.0.0");
   const [routingPort, setRoutingPort] = useState(15722);
@@ -1330,7 +1331,17 @@ export default function App() {
   async function toggleRoutingService() {
     const running = routingStatus?.running;
     await run(async () => {
-      const routing = await invoke<RoutingStatus>(running ? "routing_stop" : "routing_start");
+      const routing = await invoke<RoutingStatus>("routing_save_settings", {
+        input: {
+          listenHost: routingHost,
+          port: routingPort,
+          enabled: !running,
+          riskConfirmed: routingRiskConfirmed,
+          mode: routingMode,
+          fixedProfileId: routingMode === "fixed" ? routingFixedProfileId || undefined : undefined,
+          stickyTtlSecs: routingStickyTtlSecs
+        }
+      });
       setRoutingStatus(routing);
       await refresh();
       return routing;
@@ -1452,6 +1463,7 @@ export default function App() {
   async function autoProbeTick() {
     if (autoBusyRef.current) return;
     autoBusyRef.current = true;
+    setAutoProbeRunning(true);
     try {
       const latest = await invoke<StoreView>("get_store");
       const profiles = latest.profiles.filter((profile) => (
@@ -1473,6 +1485,7 @@ export default function App() {
       console.warn("auto probe failed", error);
     } finally {
       autoBusyRef.current = false;
+      setAutoProbeRunning(false);
     }
   }
 
@@ -2256,9 +2269,9 @@ export default function App() {
             title={t.probeInterval}
           />
         </label>
-        <button className="icon-button" onClick={() => void saveAutoSettings()} disabled={busy} title={t.saveAutoRefresh}>
+        <button className="icon-button" onClick={() => void saveAutoSettings()} disabled={busy || autoProbeRunning} title={t.saveAutoRefresh}>
           <RefreshCcw size={17} />
-          {t.saveAutoRefresh}
+          {autoProbeRunning ? "探测中..." : t.saveAutoRefresh}
         </button>
         <button className="icon-button" onClick={() => void refreshOtherProfileTokensNow()} disabled={busy} title={t.keepaliveNow}>
           <KeyRound size={17} />

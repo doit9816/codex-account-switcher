@@ -1661,9 +1661,14 @@ fn export_all_accounts_bundle(
         include_conversations,
         files: metas,
     };
+    let mut export_settings = store.settings.clone();
+    export_settings.routing.enabled = false;
+    export_settings.routing.applied_to_codex = false;
+    export_settings.routing.encrypted_access_key = None;
+
     let payload = BundlePayload {
         manifest,
-        settings: store.settings.clone(),
+        settings: export_settings,
         profiles: export_profiles,
         files,
     };
@@ -1935,6 +1940,26 @@ fn copy_dir_contents_if_missing(from: &Path, to: &Path) -> Result<(), String> {
 
 pub(crate) fn load_store(app: &AppHandle) -> Result<AppStore, String> {
     let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
+    read_store_unlocked(app)
+}
+
+pub(crate) fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
+    let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
+    write_store_unlocked(app, store)
+}
+
+pub(crate) fn mutate_store<T>(
+    app: &AppHandle,
+    update: impl FnOnce(&mut AppStore) -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
+    let mut store = read_store_unlocked(app)?;
+    let result = update(&mut store)?;
+    write_store_unlocked(app, &store)?;
+    Ok(result)
+}
+
+fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
     let path = app_data_dir(app)?.join(STORE_FILE);
     if !path.exists() {
         return Ok(AppStore::default());
@@ -1943,8 +1968,7 @@ pub(crate) fn load_store(app: &AppHandle) -> Result<AppStore, String> {
     serde_json::from_str(&text).map_err(display_err)
 }
 
-pub(crate) fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
-    let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
+fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String> {
     let path = app_data_dir(app)?.join(STORE_FILE);
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(store).map_err(display_err)?;

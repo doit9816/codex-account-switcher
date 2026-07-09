@@ -1,6 +1,6 @@
 use crate::{
     app_data_dir, build_probe_client, decrypt_secret, display_err, encrypt_secret, load_master_key,
-    load_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
+    load_store, mutate_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
     replace_file_with_rollback, resolve_codex_home, save_store, should_refresh_access_token,
     summarize_auth, AccountProfile, AppStore, RouteHealth, RoutingMode, RoutingSettings,
     ROUTER_PROVIDER_ID,
@@ -211,7 +211,16 @@ pub(crate) fn start(app: AppHandle) -> Result<RoutingStatus, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let thread_app = app.clone();
-    let thread = thread::spawn(move || run_server(thread_app, host, port, thread_stop));
+    let server = Server::http((host.as_str(), port)).map_err(|error| {
+        let message = format!("路由 API 启动失败: {error}");
+        if let Ok(mut store) = load_store(&app) {
+            store.settings.routing.enabled = false;
+            push_event(&mut store, "warn", &message);
+            let _ = save_store(&app, &store);
+        }
+        message
+    })?;
+    let thread = thread::spawn(move || run_server(thread_app, server, thread_stop));
     *guard = Some(RouterHandle {
         host: settings.listen_host,
         port,
@@ -318,19 +327,7 @@ pub(crate) fn restore_enabled(app: AppHandle) {
     }
 }
 
-fn run_server(app: AppHandle, host: String, port: u16, stop: Arc<AtomicBool>) {
-    let server = match Server::http((host.as_str(), port)) {
-        Ok(server) => server,
-        Err(error) => {
-            if let Ok(mut store) = load_store(&app) {
-                store.settings.routing.enabled = false;
-                push_event(&mut store, "warn", &format!("路由 API 启动失败: {error}"));
-                let _ = save_store(&app, &store);
-            }
-            return;
-        }
-    };
-
+fn run_server(app: AppHandle, server: Server, stop: Arc<AtomicBool>) {
     while !stop.load(AtomicOrdering::Relaxed) {
         match server.recv_timeout(Duration::from_millis(400)) {
             Ok(Some(request)) => handle_request(app.clone(), request),
@@ -491,32 +488,38 @@ fn prepare_and_send(
 }
 
 fn refresh_profile_access(app: &AppHandle, profile_id: &str) -> Result<(), String> {
-    let mut store = load_store(app)?;
+    let store = load_store(app)?;
     let key = load_master_key(app)?;
     let proxy = store.settings.probe_proxy.clone();
-    let idx = store
+    let profile = store
         .profiles
         .iter()
-        .position(|profile| profile.id == profile_id)
+        .find(|profile| profile.id == profile_id)
         .ok_or_else(|| "profile not found".to_string())?;
-    if store.profiles[idx].api_config.is_some() {
+    if profile.api_config.is_some() {
         return Err("API Provider does not support OAuth refresh".to_string());
     }
-    let auth_json = String::from_utf8(decrypt_secret(
-        &store.profiles[idx].encrypted_auth_json,
-        &key,
-    )?)
-    .map_err(display_err)?;
+    let auth_json = String::from_utf8(decrypt_secret(&profile.encrypted_auth_json, &key)?)
+        .map_err(display_err)?;
     let client = build_probe_client(&proxy)?;
     let runtime = tokio::runtime::Runtime::new().map_err(display_err)?;
     let updated = runtime.block_on(refresh_auth_json_with_client(&client, &auth_json))?;
-    store.profiles[idx].summary = summarize_auth(&updated)?;
-    store.profiles[idx].encrypted_auth_json = encrypt_secret(updated.as_bytes(), &key)?;
-    store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
-    store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
-    store.profiles[idx].usage.last_token_refresh_error = None;
-    push_event(&mut store, "info", "路由请求已刷新 OAuth access token");
-    save_store(app, &store)
+    let summary = summarize_auth(&updated)?;
+    let encrypted_auth_json = encrypt_secret(updated.as_bytes(), &key)?;
+    mutate_store(app, |store| {
+        let profile = store
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| "profile not found".to_string())?;
+        profile.summary = summary;
+        profile.encrypted_auth_json = encrypted_auth_json;
+        profile.usage.last_token_refresh_at = Some(now_string());
+        profile.usage.last_token_refresh_status = Some("ok".to_string());
+        profile.usage.last_token_refresh_error = None;
+        push_event(store, "info", "路由请求已刷新 OAuth access token");
+        Ok(())
+    })
 }
 
 fn prepare_upstream(
@@ -654,7 +657,13 @@ impl Read for RouteResponseReader {
         let Some(inner) = &mut self.inner else {
             return Ok(0);
         };
-        let read = inner.read(buf)?;
+        let read = match inner.read(buf) {
+            Ok(read) => read,
+            Err(error) => {
+                self.finish(Some(error.to_string()));
+                return Err(error);
+            }
+        };
         if read == 0 {
             self.finish(None);
         }
@@ -946,7 +955,7 @@ fn update_profile_health(
     profile_id: &str,
     update: impl FnOnce(&mut RouteHealth, &mut AccountProfile),
 ) {
-    if let Ok(mut store) = load_store(app) {
+    let _ = mutate_store(app, |store| {
         if let Some(profile) = store
             .profiles
             .iter_mut()
@@ -955,9 +964,9 @@ fn update_profile_health(
             let mut health = std::mem::take(&mut profile.route_health);
             update(&mut health, profile);
             profile.route_health = health;
-            let _ = save_store(app, &store);
         }
-    }
+        Ok(())
+    });
 }
 
 fn request_headers(request: &Request) -> HashMap<String, String> {
