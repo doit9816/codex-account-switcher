@@ -969,12 +969,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (showAddAccountDialog && addAccountTab === "oauth" && !oauthSession && oauthStatus === "idle") {
-      void beginNativeOAuth();
-    }
-  }, [showAddAccountDialog, addAccountTab, oauthSession, oauthStatus]);
-
-  useEffect(() => {
     if (!oauthSession) {
       setOauthRemainingSeconds(0);
       return;
@@ -1983,11 +1977,12 @@ export default function App() {
             )}
             {addAccountTab === "api" && (
               <div className="api-provider-form add-account-content">
+                <label>{t.apiProviderName}<input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="LongCat / OpenAI Compatible" /></label>
                 <label>{t.providerId}<input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="openai-compatible" /></label>
                 <label>{t.apiBaseUrl}<input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
                 <label>{t.apiModel}<input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" /></label>
                 <label>{t.apiKey}<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
-                <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !alias.trim() || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}>
+                <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}>
                   <KeyRound size={17} /> {t.addApiProvider}
                 </button>
               </div>
@@ -2453,7 +2448,7 @@ export default function App() {
               <button
                 className="icon-button primary"
                 onClick={() => void addApiProvider()}
-                disabled={busy || !apiProviderName.trim() || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}
+                disabled={busy || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}
               >
                 <KeyRound size={16} /> {t.addApiProvider}
               </button>
