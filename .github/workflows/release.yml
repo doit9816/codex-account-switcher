@@ -47,6 +47,32 @@ jobs:
           node-version: lts/*
           cache: npm
 
+      - name: Validate release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require("fs");
+          const tag = process.env.RELEASE_TAG;
+          const prefix = "codex-account-switcher-v";
+          if (!tag.startsWith(prefix)) {
+            throw new Error(`Unexpected release tag: ${tag}`);
+          }
+          const version = tag.slice(prefix.length);
+          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+          const cargoVersion = cargoToml.match(/^version = "([^"]+)"/m)?.[1];
+          const versions = { packageVersion, tauriVersion, cargoVersion };
+          for (const [name, value] of Object.entries(versions)) {
+            if (value !== version) {
+              throw new Error(`${name} ${value} does not match release tag ${tag}`);
+            }
+          }
+          console.log(`release tag ${tag} matches package, Tauri, and Cargo versions`);
+          NODE
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -84,7 +110,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
-          tagName: codex-account-switcher-v__VERSION__
+          tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
             Download the installer or bundle for your platform from the assets below.
@@ -119,7 +145,18 @@ jobs:
 
             const version = tag.slice(prefix.length);
             const { owner, repo } = context.repo;
-            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            let release;
+            for (let attempt = 1; attempt <= 6; attempt++) {
+              try {
+                ({ data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag }));
+                break;
+              } catch (error) {
+                if (error.status !== 404 || attempt === 6) throw error;
+                core.info(`Release ${tag} is not visible yet; retrying (${attempt}/6)`);
+                await sleep(10000);
+              }
+            }
             const assets = release.assets;
 
             const requireAsset = (pattern, label) => {
