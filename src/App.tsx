@@ -416,6 +416,7 @@ const messages = {
     oneWeek: "1周",
     tokenInvalidatedHint: "认证已失效，需要重新登录该账号",
     refreshTokenReusedHint: "refresh token 已被其他会话使用，需要重新登录",
+    reauthorize: "重新授权",
     usageResets: "可用重置",
     useReset: "使用重置",
     useResetConfirm: "确定使用一次重置吗？这会重置当前适用的 Codex 用量窗口。",
@@ -608,6 +609,7 @@ const messages = {
     oneWeek: "1w",
     tokenInvalidatedHint: "Authentication is invalid. Sign in to this account again.",
     refreshTokenReusedHint: "Refresh token was used by another session. Sign in again.",
+    reauthorize: "Reauthorize",
     usageResets: "Resets available",
     useReset: "Use reset",
     useResetConfirm: "Use one reset now? This resets the currently eligible Codex usage windows.",
@@ -800,6 +802,7 @@ const messages = {
     oneWeek: "1週",
     tokenInvalidatedHint: "認證已失效，需要重新登入該帳號",
     refreshTokenReusedHint: "refresh token 已被其他會話使用，需要重新登入",
+    reauthorize: "重新授權",
     usageResets: "可用重置",
     useReset: "使用重置",
     useResetConfirm: "確定使用一次重置嗎？這會重置目前適用的 Codex 用量視窗。",
@@ -834,6 +837,7 @@ export default function App() {
   const [oauthError, setOauthError] = useState("");
   const [oauthCallbackInput, setOauthCallbackInput] = useState("");
   const [oauthRemainingSeconds, setOauthRemainingSeconds] = useState(0);
+  const [oauthReauthProfileId, setOauthReauthProfileId] = useState<string | null>(null);
   const [accountFilter, setAccountFilter] = useState("");
   const [apiProviderName, setApiProviderName] = useState("");
   const [apiProviderId, setApiProviderId] = useState("");
@@ -1160,13 +1164,25 @@ export default function App() {
     setOauthStatus("exchanging");
     setOauthError("");
     try {
+      const reauthProfileId = oauthReauthProfileId;
+      const previousReauthProfile = reauthProfileId
+        ? store?.profiles.find((profile) => profile.id === reauthProfileId)
+        : undefined;
       const view = await invoke<StoreView>("codex_oauth_login_complete", {
         loginId,
         alias: aliasRef.current || undefined
       });
+      const updatedReauthProfile = reauthProfileId
+        ? view.profiles.find((profile) => profile.id === reauthProfileId)
+        : undefined;
       setStore(view);
-      setSelectedId(view.profiles[view.profiles.length - 1]?.id || "");
+      setSelectedId(
+        updatedReauthProfile && updatedReauthProfile.updatedAt !== previousReauthProfile?.updatedAt
+          ? updatedReauthProfile.id
+          : view.profiles[view.profiles.length - 1]?.id || ""
+      );
       setAlias("");
+      setOauthReauthProfileId(null);
       setOauthSession(null);
       setOauthStatus("idle");
       setOauthCallbackInput("");
@@ -1218,6 +1234,7 @@ export default function App() {
     setOauthSession(null);
     setOauthStatus(nextStatus);
     setOauthError("");
+    setOauthReauthProfileId(null);
     setOauthCallbackInput("");
     if (loginId) {
       try {
@@ -1236,6 +1253,23 @@ export default function App() {
   function selectAddAccountTab(tab: "oauth" | "json" | "api" | "import") {
     if (addAccountTab === "oauth" && tab !== "oauth") void cancelNativeOAuth("idle");
     setAddAccountTab(tab);
+  }
+
+  async function reauthorizeProfile(profile: Profile) {
+    setSelectedId(profile.id);
+    if (oauthSession) {
+      await cancelNativeOAuth("idle");
+    } else {
+      setOauthSession(null);
+      setOauthStatus("idle");
+      setOauthError("");
+      setOauthCallbackInput("");
+    }
+    setAlias(profile.alias);
+    setOauthReauthProfileId(profile.id);
+    setAddAccountTab("oauth");
+    setShowAddAccountDialog(true);
+    await beginNativeOAuth();
   }
 
   async function addAuthJsonAccount() {
@@ -1950,7 +1984,10 @@ export default function App() {
                 ) : (
                   <>
                     {oauthError && <div className="oauth-error">{oauthError}</div>}
-                    <button className="icon-button primary wide-button" onClick={() => void beginNativeOAuth()} disabled={oauthStatus === "starting" || oauthStatus === "exchanging"}>
+                    <button className="icon-button primary wide-button" onClick={() => {
+                      setOauthReauthProfileId(null);
+                      void beginNativeOAuth();
+                    }} disabled={oauthStatus === "starting" || oauthStatus === "exchanging"}>
                       <KeyRound size={17} /> {t.startOAuthLogin}
                     </button>
                   </>
@@ -2533,6 +2570,19 @@ export default function App() {
                           <RotateCcw size={14} /> {t.useReset}
                         </button>
                       )}
+                      {profileNeedsReauthorization(profile) && (
+                        <button
+                          className="mini-button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void reauthorizeProfile(profile);
+                          }}
+                          disabled={busy || oauthStatus === "starting" || oauthStatus === "exchanging"}
+                          title={t.reauthorize}
+                        >
+                          <KeyRound size={14} /> {t.reauthorize}
+                        </button>
+                      )}
                   <button
                     className="mini-button"
                     onClick={(event) => {
@@ -2938,6 +2988,18 @@ function tokenState(profile: Profile, t: I18n) {
   if (profile.usage.lastTokenRefreshStatus === "error") return t.keepaliveFailed;
   if (profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now()) return t.expired;
   return t.normal;
+}
+
+function profileNeedsReauthorization(profile: Profile) {
+  if (profile.apiConfig) return false;
+  const error = profile.usage.lastTokenRefreshError || profile.usage.lastError || "";
+  return (
+    profile.usage.lastTokenRefreshStatus === "error" ||
+    profile.usage.lastTokenRefreshStatus === "relogin_required" ||
+    error.includes("token_invalidated") ||
+    error.includes("refresh_token_reused") ||
+    error.includes("invalid_grant")
+  );
 }
 
 function authSummariesMatch(left: AuthSummary, right: AuthSummary) {
