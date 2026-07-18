@@ -219,6 +219,31 @@ export default function App() {
       );
     });
   }, [routingPoolSort, store?.profiles, t]);
+  const routingPreviewProfile = useMemo(() => {
+    if (routingMode === "fixed") {
+      return (store?.profiles || []).find((profile) => profile.id === routingFixedProfileId);
+    }
+    return routingProfiles.find((profile) => (
+      profile.enabled &&
+      !isCooling(profile) &&
+      tokenState(profile, t) !== t.reloginRequired &&
+      tokenState(profile, t) !== t.authInvalid
+    ));
+  }, [routingFixedProfileId, routingMode, routingProfiles, store?.profiles, t]);
+  const latestRoutingLog = routingStatus?.recentLogs.length
+    ? routingStatus.recentLogs[routingStatus.recentLogs.length - 1]
+    : undefined;
+  const routingModeLabel = routingMode === "fixed" ? "固定账号" : "自动会话粘性";
+  const routingPreviewText = routingMode === "fixed"
+    ? routingPreviewProfile
+      ? `固定使用：${routingPreviewProfile.alias}`
+      : "固定账号未选择"
+    : routingPreviewProfile
+      ? `新会话优先：${routingPreviewProfile.alias}`
+      : "暂无可用账号";
+  const latestRoutingText = latestRoutingLog
+    ? `${latestRoutingLog.alias || latestRoutingLog.profileId || "未知账号"} · ${latestRoutingLog.httpStatus || latestRoutingLog.status}`
+    : "暂无请求";
   const passwordTooShort = password.length > 0 && password.length < 8;
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
@@ -963,9 +988,21 @@ export default function App() {
     const profile = store?.profiles.find((item) => item.id === profileId);
     if (!profile) return;
     setSelectedId(profile.id);
+    const restoreRoutingFirst = !!store?.settings.routing.appliedToCodex;
+    if (restoreRoutingFirst) {
+      const confirmed = await confirmDialog(
+        `当前本机 Codex 已接管到路由 API。\n\n如果继续切换全局账号，会先恢复接管前配置，再写入 ${profile.alias}。如果你只是想让路由使用这个账号，请点“固定到路由”。是否继续？`,
+        { title: "切换全局账号", kind: "warning" }
+      );
+      if (!confirmed) return;
+    }
     const force = await shouldForceSwitch(profile);
     if (force == null) return;
     await run(async () => {
+      if (restoreRoutingFirst) {
+        const routing = await invoke<RoutingStatus>("routing_restore_codex_config");
+        setRoutingStatus(routing);
+      }
       const result = await invoke<{ message: string; codexRunning: boolean }>("switch_profile", {
         profileId: profile.id,
         codexHome: codexHome || undefined,
@@ -1602,6 +1639,28 @@ export default function App() {
                 </div>
                 <KeyRound size={22} />
               </div>
+              <div className={`routing-takeover-card ${store?.settings.routing.appliedToCodex ? "active" : ""}`}>
+                <div>
+                  <span>Codex 接管状态</span>
+                  <strong>{store?.settings.routing.appliedToCodex ? "已接管到本路由" : "未接管"}</strong>
+                  <p>{store?.settings.routing.appliedToCodex ? "本机 Codex 会请求下面的 Base URL。" : "点击一键接管后，本机 Codex 才会走路由。"}</p>
+                </div>
+                <StatusPill ok={!!store?.settings.routing.appliedToCodex} text={store?.settings.routing.appliedToCodex ? "接管中" : "未接管"} />
+              </div>
+              <div className="routing-status-grid">
+                <div>
+                  <span>当前策略</span>
+                  <strong>{routingModeLabel}</strong>
+                </div>
+                <div>
+                  <span>{routingMode === "fixed" ? "使用账号" : "预计下一跳"}</span>
+                  <strong>{routingPreviewText}</strong>
+                </div>
+                <div>
+                  <span>最近实际命中</span>
+                  <strong>{latestRoutingText}</strong>
+                </div>
+              </div>
               <div className="routing-secret">
                 <span>Base URL</span>
                 <strong>{routingStatus?.baseUrl || "-"}</strong>
@@ -1626,7 +1685,7 @@ export default function App() {
                   <RotateCcw size={17} /> 恢复配置
                 </button>
               </div>
-              <StatusPill ok={!!store?.settings.routing.appliedToCodex} text={store?.settings.routing.appliedToCodex ? "已接管本机 Codex" : "未接管"} />
+              <p className="routing-help-text">自动模式会按账号池排序选择新会话；同一会话在 TTL 内保持粘性。实际用了谁，看“最近实际命中”和下方请求日志。</p>
             </div>
           </section>
 
@@ -1651,14 +1710,16 @@ export default function App() {
               <div className="routing-account-list">
                 {routingProfiles.map((profile) => (
                   <article className="routing-account-row" key={profile.id}>
-                    <div>
+                    <div className="routing-account-main">
                       <strong>{profile.alias}</strong>
                       <small>{profile.summary.email || profile.apiConfig?.baseUrl || profile.summary.accountId || t.unknownAccount}</small>
                     </div>
-                    <StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} />
-                    <span>{profile.apiConfig ? profile.apiConfig.model : formatSubscriptionValidity(profile, t)}</span>
-                    <span>连接 {profile.routeHealth?.activeConnections || 0}</span>
-                    <span>{profile.routeHealth?.lastStatus || "-"}</span>
+                    <div className="routing-account-meta">
+                      <StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} />
+                      <span>{profile.apiConfig ? profile.apiConfig.model : formatSubscriptionValidity(profile, t)}</span>
+                      <span>连接 {profile.routeHealth?.activeConnections || 0}</span>
+                      <span>{profile.routeHealth?.lastStatus || "-"}</span>
+                    </div>
                     <label className="routing-priority-control">
                       <span>优先级</span>
                       <input
@@ -1710,7 +1771,13 @@ export default function App() {
                     <small>{log.fallback || log.error || log.sessionHash || "-"}</small>
                   </div>
                 ))}
-                {(routingStatus?.recentLogs || []).length === 0 && <div className="account-empty">暂无请求日志</div>}
+                {(routingStatus?.recentLogs || []).length === 0 && (
+                  <div className="routing-log-empty">
+                    <strong>暂无请求日志</strong>
+                    <p>接管后需要让 Codex 发起一次新请求，这里才会出现实际命中的账号、状态和耗时。</p>
+                    <small>如果刚接管过，请重启正在运行的 Codex 会话，或确认 Codex 配置里的 Base URL 是 {routingStatus?.baseUrl || `http://${routingHost}:${routingPort}/v1`}。</small>
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -2125,15 +2192,28 @@ export default function App() {
                     className="mini-button primary icon-only"
                     onClick={(event) => {
                       event.stopPropagation();
-                      if (store?.settings.routing.appliedToCodex) void fixProfileToRouting(profile.id);
-                      else void switchProfile(profile.id);
+                      void switchProfile(profile.id);
                     }}
                     disabled={busy}
-                    title={store?.settings.routing.appliedToCodex ? "固定到路由" : t.switch}
-                    aria-label={store?.settings.routing.appliedToCodex ? "固定到路由" : t.switch}
+                    title={t.switch}
+                    aria-label={t.switch}
                   >
                     <Zap size={14} />
                   </button>
+                  {store?.settings.routing.appliedToCodex && (
+                    <button
+                      className="mini-button icon-only"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void fixProfileToRouting(profile.id);
+                      }}
+                      disabled={busy}
+                      title="固定到路由"
+                      aria-label="固定到路由"
+                    >
+                      <Network size={14} />
+                    </button>
+                  )}
                   <button
                     className="mini-button danger icon-only"
                     onClick={(event) => {
@@ -2268,13 +2348,24 @@ export default function App() {
             </button>
             <button
               className="icon-button primary"
-              onClick={() => selectedProfile && store?.settings.routing.appliedToCodex ? void fixProfileToRouting(selectedProfile.id) : void switchSelected()}
+              onClick={() => void switchSelected()}
               disabled={!selectedProfile || busy}
-              title={store?.settings.routing.appliedToCodex ? "固定到路由" : t.switch}
+              title={t.switch}
             >
               <Zap size={17} />
-              {store?.settings.routing.appliedToCodex ? "固定到路由" : t.switch}
+              {t.switch}
             </button>
+            {store?.settings.routing.appliedToCodex && (
+              <button
+                className="icon-button"
+                onClick={() => selectedProfile && void fixProfileToRouting(selectedProfile.id)}
+                disabled={!selectedProfile || busy}
+                title="固定到路由"
+              >
+                <Network size={17} />
+                固定到路由
+              </button>
+            )}
             <button className="icon-button" onClick={() => void autoSwitch()} disabled={!store?.profiles.length || busy} title={t.autoSelect}>
               <CheckCircle2 size={17} />
               {t.autoSelect}

@@ -689,16 +689,91 @@ input:focus {
 .routing-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr);
+  align-items: start;
+}
+
+.routing-settings-panel .form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .routing-settings-panel .form-grid select,
 .routing-settings-panel .form-grid input {
+  min-width: 0;
   width: 100%;
 }
 
 .routing-mode-field select {
-  min-width: 190px;
+  min-width: 0;
+}
+
+.routing-key-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.routing-key-panel .panel-header,
+.routing-key-panel .routing-secret {
+  margin-bottom: 0;
+}
+
+.routing-takeover-card {
+  align-items: flex-start;
+  background: #f8fafc;
+  border: 1px solid #dbe4ef;
+  border-radius: 12px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.routing-takeover-card.active {
+  background: #ecfdf3;
+  border-color: #b8e7ca;
+}
+
+.routing-takeover-card span,
+.routing-status-grid span {
+  color: #6b7788;
+  display: block;
+  font-size: 12px;
+  font-weight: 750;
+  margin-bottom: 4px;
+}
+
+.routing-takeover-card strong,
+.routing-status-grid strong {
+  color: #102033;
+  display: block;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.routing-takeover-card p,
+.routing-help-text {
+  color: #607086;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 6px 0 0;
+}
+
+.routing-status-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.routing-status-grid > div {
+  background: #f5f8fb;
+  border: 1px solid #d9e1ea;
+  border-radius: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.routing-help-text {
+  margin: 0;
 }
 
 .routing-pool-tools {
@@ -755,15 +830,44 @@ input:focus {
   border-radius: 8px;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(180px, 1.35fr) auto minmax(76px, auto) minmax(74px, auto) minmax(54px, auto) minmax(174px, auto) auto;
   min-height: 48px;
   padding: 9px 10px;
+}
+
+.routing-account-row {
+  grid-template-columns: minmax(160px, 1fr) minmax(190px, 1fr) auto auto;
+}
+
+.routing-account-main,
+.routing-account-meta {
+  min-width: 0;
+}
+
+.routing-account-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.routing-account-meta > span:not(.status-pill) {
+  background: #f1f5f9;
+  border-radius: 999px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 650;
+  max-width: 150px;
+  overflow: hidden;
+  padding: 5px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .routing-priority-control {
   align-items: center;
   display: inline-flex;
   gap: 6px;
+  justify-self: end;
   white-space: nowrap;
 }
 
@@ -775,7 +879,7 @@ input:focus {
 .routing-priority-control input {
   height: 30px;
   padding: 0 7px;
-  width: 68px;
+  width: 66px;
 }
 
 .routing-log-row {
@@ -796,6 +900,30 @@ input:focus {
 .routing-account-row small,
 .routing-log-row small {
   color: #647181;
+}
+
+.routing-log-empty {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  color: #475569;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  line-height: 1.5;
+  min-height: 120px;
+  padding: 24px;
+  text-align: center;
+}
+
+.routing-log-empty strong {
+  color: #0f172a;
+}
+
+.routing-log-empty p,
+.routing-log-empty small {
+  margin: 0;
+  max-width: 420px;
 }
 
 .panel {
@@ -1589,6 +1717,8 @@ input:focus {
   .bottom-grid,
   .metric-grid,
   .form-grid,
+  .routing-grid,
+  .routing-status-grid,
   .list-columns {
     grid-template-columns: 1fr;
     width: 100%;
