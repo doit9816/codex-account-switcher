@@ -113,6 +113,8 @@ export function accountState(profile: Profile, t: I18n) {
 
 export function tokenState(profile: Profile, t: I18n) {
   const error = profile.usage.lastTokenRefreshError || profile.usage.lastError || "";
+  const accessTokenExpired = !!profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now();
+  const accessTokenValid = !!profile.summary.accessTokenExp && !accessTokenExpired;
   if (error.includes("token_invalidated")) return t.authInvalid;
   if (
     profile.usage.lastTokenRefreshStatus === "relogin_required" ||
@@ -120,17 +122,18 @@ export function tokenState(profile: Profile, t: I18n) {
     error.includes("invalid_grant")
   ) return t.reloginRequired;
   if (profile.usage.lastTokenRefreshStatus === "ok") return t.keptAlive;
-  if (profile.usage.lastTokenRefreshStatus === "error") return t.keepaliveFailed;
-  if (profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now()) return t.expired;
+  if (accessTokenExpired) return t.expired;
+  if (profile.usage.lastTokenRefreshStatus === "error" && !accessTokenValid) return t.keepaliveFailed;
   return t.normal;
 }
 
 export function profileNeedsReauthorization(profile: Profile) {
   if (profile.apiConfig) return false;
   const error = profile.usage.lastTokenRefreshError || profile.usage.lastError || "";
+  const accessTokenExpired = !!profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now();
   return (
-    profile.usage.lastTokenRefreshStatus === "error" ||
     profile.usage.lastTokenRefreshStatus === "relogin_required" ||
+    (profile.usage.lastTokenRefreshStatus === "error" && accessTokenExpired) ||
     error.includes("token_invalidated") ||
     error.includes("refresh_token_reused") ||
     error.includes("invalid_grant")

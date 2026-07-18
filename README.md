@@ -144,13 +144,17 @@ Generate or rotate an updater key with:
 npm run tauri signer generate -- --ci -w ~/.codexswitcher-updater.key
 ```
 
-When publishing a new version, update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, then push a version tag. Installed apps will find the new stable release through the in-app update checker.
+Before tagging a new release, run the version sync script first. It updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json` so the release workflow tag check will pass. Installed apps will find the new stable release through the in-app update checker.
 
 Create a release:
 
 ```bash
-git tag codex-account-switcher-v0.1.3
-git push origin codex-account-switcher-v0.1.3
+npm run release:version -- 0.1.15
+git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git commit -m "Bump version to 0.1.15"
+git tag codex-account-switcher-v0.1.15
+git push origin main
+git push origin codex-account-switcher-v0.1.15
 ```
 
 If release upload fails with a token permission error, set the repository's GitHub Actions workflow permissions to **Read and write permissions**.

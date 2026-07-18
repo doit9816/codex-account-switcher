@@ -144,13 +144,17 @@ CodexSwitcher 使用 Tauri v2 updater 和 GitHub Releases：
 npm run tauri signer generate -- --ci -w ~/.codexswitcher-updater.key
 ```
 
-发布新版本时，需要同步更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处版本号，然后推送版本 tag。已安装客户端会通过软件内“检查更新”发现新的 stable release。
+发布新版本时，打 tag 前先运行版本同步脚本。它会同步更新 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json`，确保 Release workflow 的 tag 版本校验通过。已安装客户端会通过软件内“检查更新”发现新的 stable release。
 
 创建发版 tag：
 
 ```bash
-git tag codex-account-switcher-v0.1.3
-git push origin codex-account-switcher-v0.1.3
+npm run release:version -- 0.1.15
+git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git commit -m "Bump version to 0.1.15"
+git tag codex-account-switcher-v0.1.15
+git push origin main
+git push origin codex-account-switcher-v0.1.15
 ```
 
 如果 Release 上传失败，通常是仓库权限问题。到 GitHub 仓库设置：
