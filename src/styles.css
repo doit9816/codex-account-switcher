@@ -421,6 +421,7 @@ button:disabled {
 }
 
 .proxy-band {
+  flex-wrap: wrap;
   justify-content: flex-start;
   margin-top: -2px;
 }

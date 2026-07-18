@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod oauth;
+mod proxy;
 mod routing;
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -42,6 +43,7 @@ const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 const OFFICIAL_CLIENT_DISPLAY_NAME: &str = "Codex/ChatGPT";
 pub(crate) const ROUTER_PROVIDER_ID: &str = "codex-switcher-router";
 static STORE_IO_MUTEX: Mutex<()> = Mutex::new(());
+pub(crate) use proxy::{build_probe_client, normalize_proxy_url, ProxySettings, CHATGPT_USAGE_URL};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -182,13 +184,6 @@ fn default_auto_probe_interval_secs() -> u64 {
 
 fn default_true() -> bool {
     true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProxySettings {
-    pub(crate) enabled: bool,
-    pub(crate) url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -962,6 +957,14 @@ fn save_proxy_settings(app: AppHandle, enabled: bool, url: String) -> Result<Sto
 }
 
 #[tauri::command]
+async fn test_proxy_settings(
+    enabled: bool,
+    url: String,
+) -> Result<proxy::ProbeProxyTestResult, String> {
+    proxy::test_proxy_settings(enabled, url).await
+}
+
+#[tauri::command]
 fn open_codex_home(app: AppHandle, codex_home: Option<String>) -> Result<(), String> {
     let path = resolve_codex_home(&app, codex_home)?;
     if !path.exists() {
@@ -1569,7 +1572,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
         .ok_or_else(|| "auth.json 中没有 access_token，无法探测 usage".to_string())?;
 
     let response = client
-        .get("https://chatgpt.com/backend-api/wham/usage")
+        .get(CHATGPT_USAGE_URL)
         .bearer_auth(access_token)
         .send()
         .await;
@@ -1689,7 +1692,7 @@ async fn consume_usage_reset(
     }
 
     let usage_response = client
-        .get("https://chatgpt.com/backend-api/wham/usage")
+        .get(CHATGPT_USAGE_URL)
         .bearer_auth(access_token)
         .send()
         .await;
@@ -2301,18 +2304,6 @@ fn decode_jwt_claims(token: &str) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-pub(crate) fn build_probe_client(proxy: &ProxySettings) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder();
-    if proxy.enabled {
-        let proxy_url = normalize_proxy_url(&proxy.url)?;
-        if proxy_url.is_empty() {
-            return Err("proxy is enabled but proxy url is empty".to_string());
-        }
-        builder = builder.proxy(reqwest::Proxy::all(proxy_url).map_err(display_err)?);
-    }
-    builder.build().map_err(display_err)
-}
-
 pub(crate) async fn refresh_auth_json_with_client(
     client: &reqwest::Client,
     auth_json: &str,
@@ -2566,27 +2557,6 @@ fn restore_api_config_backup(codex_home: &Path) -> Result<bool, String> {
     }
     fs::remove_file(&backup_path).map_err(display_err)?;
     Ok(true)
-}
-
-fn normalize_proxy_url(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-    let normalized = if trimmed.contains("://") {
-        trimmed.to_string()
-    } else {
-        format!("http://{trimmed}")
-    };
-    let lower = normalized.to_ascii_lowercase();
-    if !(lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("socks5://")
-        || lower.starts_with("socks5h://"))
-    {
-        return Err("代理地址仅支持 http、https、socks5、socks5h".to_string());
-    }
-    Ok(normalized)
 }
 
 fn clamp_interval(seconds: u64) -> u64 {
@@ -3981,6 +3951,7 @@ fn main() {
             update_profile_details,
             delete_profile,
             save_proxy_settings,
+            test_proxy_settings,
             open_codex_home,
             save_auto_settings,
             routing_status,
@@ -4704,20 +4675,6 @@ ProcessId=5678
     }
 
     #[test]
-    fn normalizes_and_validates_probe_proxy_urls() {
-        assert_eq!(
-            normalize_proxy_url("127.0.0.1:7890").unwrap(),
-            "http://127.0.0.1:7890"
-        );
-        assert_eq!(
-            normalize_proxy_url(" socks5://127.0.0.1:7890 ").unwrap(),
-            "socks5://127.0.0.1:7890"
-        );
-        assert!(normalize_proxy_url("ftp://127.0.0.1:21").is_err());
-        assert_eq!(normalize_proxy_url("").unwrap(), "");
-    }
-
-    #[test]
     fn writes_api_provider_without_removing_mcp_config() {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
@@ -4999,21 +4956,6 @@ command = "demo-server"
             .unwrap()
             .to_string_lossy()
             .starts_with("config.toml-"));
-    }
-
-    #[test]
-    fn builds_probe_client_with_proxy_settings() {
-        assert!(build_probe_client(&ProxySettings::default()).is_ok());
-        assert!(build_probe_client(&ProxySettings {
-            enabled: true,
-            url: "http://127.0.0.1:7890".to_string(),
-        })
-        .is_ok());
-        assert!(build_probe_client(&ProxySettings {
-            enabled: true,
-            url: "".to_string(),
-        })
-        .is_err());
     }
 
     #[test]
