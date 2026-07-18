@@ -69,6 +69,9 @@ import {
   subscriptionExpiryState,
   tokenState
 } from "./profileUtils";
+
+const UI_BUSY_TIMEOUT_MS = 30_000;
+
 export default function App() {
   const [store, setStore] = useState<StoreView | null>(null);
   const [scan, setScan] = useState<CodexScan | null>(null);
@@ -381,14 +384,23 @@ export default function App() {
   async function run<T>(task: () => Promise<T>, okText?: string) {
     setBusy(true);
     setNotice(null);
+    let timeoutId: number | undefined;
     try {
-      const result = await task();
+      const taskPromise = task();
+      taskPromise.catch(() => undefined);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error("操作超时，请稍后刷新状态或重试"));
+        }, UI_BUSY_TIMEOUT_MS);
+      });
+      const result = await Promise.race([taskPromise, timeoutPromise]);
       if (okText) setNotice({ kind: "ok", text: okText });
       return result;
     } catch (error) {
       setNotice({ kind: "error", text: String(error) });
       return undefined;
     } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       setBusy(false);
     }
   }

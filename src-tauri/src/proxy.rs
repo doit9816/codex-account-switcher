@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 pub(crate) const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -56,14 +58,14 @@ pub(crate) async fn test_proxy_settings(
 }
 
 pub(crate) fn build_probe_client(proxy: &ProxySettings) -> Result<reqwest::Client, String> {
-    build_probe_client_with_timeout(proxy, Duration::from_secs(0))
+    build_probe_client_with_timeout(proxy, DEFAULT_PROBE_TIMEOUT)
 }
 
 fn build_probe_client_with_timeout(
     proxy: &ProxySettings,
     timeout: Duration,
 ) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder();
+    let mut builder = reqwest::Client::builder().connect_timeout(DEFAULT_PROBE_CONNECT_TIMEOUT);
     if !timeout.is_zero() {
         builder = builder.timeout(timeout);
     }
