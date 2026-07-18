@@ -375,6 +375,7 @@ pub fn cancel(app_data_dir: &Path, login_id: Option<&str>) -> Result<(), String>
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn complete(app_data_dir: &Path, login_id: &str) -> Result<OAuthTokens, String> {
     let (code, verifier, callback_url) = {
         let guard = pending()
@@ -410,6 +411,40 @@ pub async fn complete(app_data_dir: &Path, login_id: &str) -> Result<OAuthTokens
     Ok(tokens)
 }
 
+pub async fn complete_with_client(
+    app_data_dir: &Path,
+    login_id: &str,
+    client: &reqwest::Client,
+) -> Result<OAuthTokens, String> {
+    let (code, verifier, callback_url) = {
+        let guard = pending()
+            .lock()
+            .map_err(|_| "OAuth state lock poisoned".to_string())?;
+        let value = guard
+            .as_ref()
+            .ok_or_else(|| "OAuth session does not exist. Start authorization again.".to_string())?;
+        if value.expires_at <= now() {
+            return Err("OAuth session expired. Start authorization again.".to_string());
+        }
+        if value.login_id != login_id {
+            return Err("OAuth loginId mismatch".to_string());
+        }
+        (
+            value
+                .code
+                .clone()
+                .ok_or_else(|| "Browser authorization has not completed.".to_string())?,
+            value.code_verifier.clone(),
+            value.callback_url.clone(),
+        )
+    };
+    let tokens =
+        exchange_code_for_tokens_at(client, TOKEN_ENDPOINT, &code, &verifier, &callback_url)
+            .await?;
+    set_pending(app_data_dir, None)?;
+    Ok(tokens)
+}
+
 pub async fn exchange_code_for_tokens_at(
     client: &reqwest::Client,
     endpoint: &str,
@@ -419,6 +454,8 @@ pub async fn exchange_code_for_tokens_at(
 ) -> Result<OAuthTokens, String> {
     let response = client
         .post(endpoint)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::USER_AGENT, "codex-account-switcher")
         .form(&[
             ("grant_type", "authorization_code"),
             ("code", code),
@@ -443,8 +480,14 @@ pub async fn exchange_code_for_tokens_at(
                 .map(String::from)
         });
         return Err(match error_code {
-            Some(code) => format!("OAuth Token 交换失败: HTTP {status}, {code}"),
-            None => format!("OAuth Token 交换失败: HTTP {status}"),
+            Some(code) => format!(
+                "OAuth Token exchange failed: HTTP {status}, {code}: {}",
+                compact_oauth_error_body(&body)
+            ),
+            None => format!(
+                "OAuth Token exchange failed: HTTP {status}: {}",
+                compact_oauth_error_body(&body)
+            ),
         });
     }
     let value: Value = serde_json::from_str(&body)
@@ -470,6 +513,14 @@ pub async fn exchange_code_for_tokens_at(
     })
 }
 
+
+fn compact_oauth_error_body(body: &str) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "empty response body".to_string();
+    }
+    compact.chars().take(240).collect()
+}
 #[cfg(test)]
 mod tests {
     use super::*;

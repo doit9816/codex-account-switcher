@@ -196,6 +196,8 @@ pub(crate) struct ProxySettings {
 pub(crate) struct AccountProfile {
     pub(crate) id: String,
     pub(crate) alias: String,
+    #[serde(default)]
+    pub(crate) note: String,
     pub(crate) enabled: bool,
     pub(crate) priority: i32,
     pub(crate) cooldown_until: Option<String>,
@@ -331,6 +333,7 @@ struct StoreView {
 struct AccountProfileView {
     id: String,
     alias: String,
+    note: String,
     enabled: bool,
     priority: i32,
     cooldown_until: Option<String>,
@@ -466,6 +469,8 @@ struct BundleFile {
 struct ExportProfile {
     id: String,
     alias: String,
+    #[serde(default)]
+    note: String,
     enabled: bool,
     priority: i32,
     cooldown_until: Option<String>,
@@ -598,7 +603,9 @@ async fn codex_oauth_login_complete(
     login_id: String,
     alias: Option<String>,
 ) -> Result<StoreView, String> {
-    let tokens = oauth::complete(&app_data_dir(&app)?, &login_id).await?;
+    let store = load_store(&app)?;
+    let client = build_probe_client(&store.settings.probe_proxy)?;
+    let tokens = oauth::complete_with_client(&app_data_dir(&app)?, &login_id, &client).await?;
     let access_claims = decode_jwt_claims(&tokens.access_token);
     let account_id = access_claims
         .as_ref()
@@ -666,6 +673,9 @@ fn upsert_auth_profile(
             .map(|idx| store.profiles[idx].id.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string()),
         alias: alias.unwrap_or(account_label),
+        note: existing_index
+            .map(|idx| store.profiles[idx].note.clone())
+            .unwrap_or_default(),
         enabled: true,
         priority: existing_index
             .map(|idx| store.profiles[idx].priority)
@@ -740,6 +750,7 @@ fn add_api_profile(
     store.profiles.push(AccountProfile {
         id: Uuid::new_v4().to_string(),
         alias,
+        note: String::new(),
         enabled: true,
         priority: 100,
         cooldown_until: None,
@@ -805,6 +816,102 @@ fn save_quota_rule(
     profile.priority = priority;
     profile.updated_at = now_string();
     push_event(&mut store, "info", "已保存账号额度规则");
+    save_store(&app, &store)?;
+    Ok(store_view(store))
+}
+
+#[tauri::command]
+fn update_profile_details(
+    app: AppHandle,
+    profile_id: String,
+    alias: String,
+    note: String,
+    provider_id: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    wire_api: Option<String>,
+    api_key: Option<String>,
+) -> Result<StoreView, String> {
+    let mut store = load_store(&app)?;
+    let provider_id = provider_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_provider_id)
+        .transpose()?;
+    if let Some(ref provider_id) = provider_id {
+        if store.profiles.iter().any(|profile| {
+            profile.id != profile_id
+                && profile
+                    .api_config
+                    .as_ref()
+                    .is_some_and(|config| config.provider_id == *provider_id)
+        }) {
+            return Err(format!("Provider ID {provider_id} 已存在"));
+        }
+    }
+    let base_url = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_api_base_url)
+        .transpose()?;
+    let model = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from);
+    let wire_api = wire_api
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from);
+    let api_key = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from);
+    let encrypted_api_auth = if let Some(api_key) = api_key {
+        let key = load_master_key(&app)?;
+        let auth_json = serde_json::to_string_pretty(&serde_json::json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": api_key,
+        }))
+        .map_err(display_err)?;
+        Some(encrypt_secret(auth_json.as_bytes(), &key)?)
+    } else {
+        None
+    };
+    let profile = store
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return Err("账号备注不能为空".to_string());
+    }
+    profile.alias = alias.to_string();
+    profile.note = note.trim().to_string();
+    if let Some(config) = profile.api_config.as_mut() {
+        if let Some(provider_id) = provider_id {
+            config.provider_id = provider_id;
+        }
+        if let Some(base_url) = base_url {
+            config.base_url = base_url;
+        }
+        if let Some(model) = model {
+            config.model = model;
+        }
+        if let Some(wire_api) = wire_api {
+            config.wire_api = wire_api;
+        }
+        if let Some(encrypted_api_auth) = encrypted_api_auth {
+            profile.encrypted_auth_json = encrypted_api_auth;
+        }
+    }
+    profile.updated_at = now_string();
+    push_event(&mut store, "info", "已更新账号信息");
     save_store(&app, &store)?;
     Ok(store_view(store))
 }
@@ -1631,6 +1738,7 @@ fn export_all_accounts_bundle(
             Ok(ExportProfile {
                 id: p.id.clone(),
                 alias: p.alias.clone(),
+                note: p.note.clone(),
                 enabled: p.enabled,
                 priority: p.priority,
                 cooldown_until: p.cooldown_until.clone(),
@@ -1717,6 +1825,7 @@ fn import_accounts_bundle(
         let local_profile = AccountProfile {
             id: profile.id,
             alias: profile.alias,
+            note: profile.note,
             enabled: profile.enabled,
             priority: profile.priority,
             cooldown_until: profile.cooldown_until,
@@ -1869,6 +1978,7 @@ fn store_view(store: AppStore) -> StoreView {
             .map(|p| AccountProfileView {
                 id: p.id,
                 alias: p.alias,
+                note: p.note,
                 enabled: p.enabled,
                 priority: p.priority,
                 cooldown_until: p.cooldown_until,
@@ -3868,6 +3978,7 @@ fn main() {
             probe_usage,
             consume_usage_reset,
             save_quota_rule,
+            update_profile_details,
             delete_profile,
             save_proxy_settings,
             open_codex_home,
@@ -4020,6 +4131,7 @@ mod tests {
         AccountProfile {
             id: id.to_string(),
             alias: email.to_string(),
+            note: String::new(),
             enabled: true,
             priority: 100,
             cooldown_until: None,
@@ -4081,6 +4193,7 @@ mod tests {
             profiles: vec![ExportProfile {
                 id: "profile-1".to_string(),
                 alias: "primary".to_string(),
+                note: String::new(),
                 enabled: true,
                 priority: 100,
                 cooldown_until: None,
@@ -4937,6 +5050,7 @@ command = "demo-server"
             AccountProfile {
                 id: "profile-1".to_string(),
                 alias: "one".to_string(),
+                note: String::new(),
                 enabled: true,
                 priority: 100,
                 cooldown_until: None,
@@ -4952,6 +5066,7 @@ command = "demo-server"
             AccountProfile {
                 id: "profile-2".to_string(),
                 alias: "two".to_string(),
+                note: String::new(),
                 enabled: true,
                 priority: 90,
                 cooldown_until: None,
@@ -5008,6 +5123,7 @@ command = "demo-server"
         store.profiles.push(AccountProfile {
             id: "profile-1".to_string(),
             alias: "one".to_string(),
+            note: String::new(),
             enabled: true,
             priority: 100,
             cooldown_until: None,
@@ -5165,6 +5281,7 @@ command = "demo-server"
         let mut profile = AccountProfile {
             id: "profile-1".to_string(),
             alias: "primary".to_string(),
+            note: String::new(),
             enabled: true,
             priority: 100,
             cooldown_until: None,
@@ -5200,6 +5317,7 @@ command = "demo-server"
         let mut profile = AccountProfile {
             id: "profile-1".to_string(),
             alias: "primary".to_string(),
+            note: String::new(),
             enabled: true,
             priority: 100,
             cooldown_until: None,

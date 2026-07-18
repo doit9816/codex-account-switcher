@@ -17,6 +17,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Network,
+  Pencil,
   Power,
   RefreshCcw,
   RotateCcw,
@@ -88,6 +89,7 @@ type DetectedLimit = {
 type Profile = {
   id: string;
   alias: string;
+  note: string;
   enabled: boolean;
   priority: number;
   cooldownUntil?: string;
@@ -417,6 +419,12 @@ const messages = {
     tokenInvalidatedHint: "认证已失效，需要重新登录该账号",
     refreshTokenReusedHint: "refresh token 已被其他会话使用，需要重新登录",
     reauthorize: "重新授权",
+    editAccount: "编辑账号",
+    editAccountInfo: "编辑账号信息",
+    accountAlias: "账号别名",
+    notePlaceholder: "备注、设备、用途等",
+    apiKeyOptional: "API Key（留空不修改）",
+    savedProfile: "账号信息已保存",
     usageResets: "可用重置",
     useReset: "使用重置",
     useResetConfirm: "确定使用一次重置吗？这会重置当前适用的 Codex 用量窗口。",
@@ -610,6 +618,12 @@ const messages = {
     tokenInvalidatedHint: "Authentication is invalid. Sign in to this account again.",
     refreshTokenReusedHint: "Refresh token was used by another session. Sign in again.",
     reauthorize: "Reauthorize",
+    editAccount: "Edit account",
+    editAccountInfo: "Edit account info",
+    accountAlias: "Account alias",
+    notePlaceholder: "Notes, device, purpose, etc.",
+    apiKeyOptional: "API Key (leave blank to keep current)",
+    savedProfile: "Account info saved",
     usageResets: "Resets available",
     useReset: "Use reset",
     useResetConfirm: "Use one reset now? This resets the currently eligible Codex usage windows.",
@@ -803,6 +817,12 @@ const messages = {
     tokenInvalidatedHint: "認證已失效，需要重新登入該帳號",
     refreshTokenReusedHint: "refresh token 已被其他會話使用，需要重新登入",
     reauthorize: "重新授權",
+    editAccount: "編輯帳號",
+    editAccountInfo: "編輯帳號資訊",
+    accountAlias: "帳號別名",
+    notePlaceholder: "備註、裝置、用途等",
+    apiKeyOptional: "API Key（留空不修改）",
+    savedProfile: "帳號資訊已儲存",
     usageResets: "可用重置",
     useReset: "使用重置",
     useResetConfirm: "確定使用一次重置嗎？這會重置目前適用的 Codex 用量視窗。",
@@ -830,6 +850,7 @@ export default function App() {
   const [codexHome, setCodexHome] = useState("");
   const [alias, setAlias] = useState("");
   const [showAddAccountDialog, setShowAddAccountDialog] = useState(false);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [addAccountTab, setAddAccountTab] = useState<"oauth" | "json" | "api" | "import">("oauth");
   const [authJsonInput, setAuthJsonInput] = useState("");
   const [oauthSession, setOauthSession] = useState<OAuthLoginSession | null>(null);
@@ -868,6 +889,13 @@ export default function App() {
   const [routingStickyTtlSecs, setRoutingStickyTtlSecs] = useState(3600);
   const [quotaDraft, setQuotaDraft] = useState<QuotaRule>(emptyQuota);
   const [aliasDraft, setAliasDraft] = useState("");
+  const [editAliasDraft, setEditAliasDraft] = useState("");
+  const [editNoteDraft, setEditNoteDraft] = useState("");
+  const [editProviderIdDraft, setEditProviderIdDraft] = useState("");
+  const [editBaseUrlDraft, setEditBaseUrlDraft] = useState("");
+  const [editModelDraft, setEditModelDraft] = useState("");
+  const [editWireApiDraft, setEditWireApiDraft] = useState("responses");
+  const [editApiKeyDraft, setEditApiKeyDraft] = useState("");
   const [priorityDraft, setPriorityDraft] = useState(100);
   const [enabledDraft, setEnabledDraft] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -894,6 +922,10 @@ export default function App() {
     () => store?.profiles.find((profile) => profile.id === selectedId),
     [store, selectedId]
   );
+  const editingProfile = useMemo(
+    () => store?.profiles.find((profile) => profile.id === editingProfileId),
+    [store?.profiles, editingProfileId]
+  );
   const currentGlobalProfileId = useMemo(() => {
     const configuredId = store?.settings.currentProfileId;
     const configuredProfile = store?.profiles.find((profile) => profile.id === configuredId);
@@ -915,6 +947,7 @@ export default function App() {
     return profiles.filter((profile) => {
       const values = [
         profile.alias,
+        profile.note,
         profile.summary.email,
         profile.summary.accountId,
         profile.summary.plan,
@@ -933,6 +966,8 @@ export default function App() {
   const backgroundTokenBusyRef = useRef(false);
   const aliasRef = useRef("");
   const oauthCompletingRef = useRef(false);
+  const storeRef = useRef<StoreView | null>(null);
+  const oauthReauthProfileIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     void refresh();
@@ -950,6 +985,14 @@ export default function App() {
   useEffect(() => {
     aliasRef.current = alias;
   }, [alias]);
+
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
+
+  useEffect(() => {
+    oauthReauthProfileIdRef.current = oauthReauthProfileId;
+  }, [oauthReauthProfileId]);
 
   useEffect(() => {
     let unlistenCompleted: (() => void) | undefined;
@@ -1164,9 +1207,9 @@ export default function App() {
     setOauthStatus("exchanging");
     setOauthError("");
     try {
-      const reauthProfileId = oauthReauthProfileId;
+      const reauthProfileId = oauthReauthProfileIdRef.current;
       const previousReauthProfile = reauthProfileId
-        ? store?.profiles.find((profile) => profile.id === reauthProfileId)
+        ? storeRef.current?.profiles.find((profile) => profile.id === reauthProfileId)
         : undefined;
       const view = await invoke<StoreView>("codex_oauth_login_complete", {
         loginId,
@@ -1302,6 +1345,42 @@ export default function App() {
       setStore(view);
       return view;
     }, t.savedRules);
+  }
+
+  function openEditProfile(profile: Profile) {
+    setEditingProfileId(profile.id);
+    setEditAliasDraft(profile.alias);
+    setEditNoteDraft(profile.note || "");
+    setEditProviderIdDraft(profile.apiConfig?.providerId || "");
+    setEditBaseUrlDraft(profile.apiConfig?.baseUrl || "");
+    setEditModelDraft(profile.apiConfig?.model || "");
+    setEditWireApiDraft(profile.apiConfig?.wireApi || "responses");
+    setEditApiKeyDraft("");
+  }
+
+  function closeEditProfile() {
+    setEditingProfileId(null);
+    setEditApiKeyDraft("");
+  }
+
+  async function saveProfileDetails() {
+    if (!editingProfile) return;
+    await run(async () => {
+      const view = await invoke<StoreView>("update_profile_details", {
+        profileId: editingProfile.id,
+        alias: editAliasDraft.trim(),
+        note: editNoteDraft,
+        providerId: editingProfile.apiConfig ? editProviderIdDraft : undefined,
+        baseUrl: editingProfile.apiConfig ? editBaseUrlDraft : undefined,
+        model: editingProfile.apiConfig ? editModelDraft : undefined,
+        wireApi: editingProfile.apiConfig ? editWireApiDraft : undefined,
+        apiKey: editingProfile.apiConfig ? editApiKeyDraft : undefined
+      });
+      setStore(view);
+      setSelectedId(editingProfile.id);
+      closeEditProfile();
+      return view;
+    }, t.savedProfile);
   }
 
   async function saveProxySettings() {
@@ -2036,6 +2115,58 @@ export default function App() {
         </div>
       )}
 
+      {editingProfile && (
+        <div className="update-dialog-backdrop" role="presentation">
+          <section className="add-account-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-account-title">
+            <div className="update-dialog-head">
+              <h2 id="edit-account-title">{t.editAccountInfo}</h2>
+              <button className="notice-close" onClick={closeEditProfile} disabled={busy} title={t.closeNotice}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="api-provider-form add-account-content">
+              <label>
+                {t.accountAlias}
+                <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} />
+              </label>
+              <label>
+                {t.accountNote}
+                <textarea
+                  className="profile-note-input"
+                  value={editNoteDraft}
+                  onChange={(event) => setEditNoteDraft(event.target.value)}
+                  placeholder={t.notePlaceholder}
+                />
+              </label>
+              {editingProfile.apiConfig && (
+                <>
+                  <label>{t.providerId}<input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} /></label>
+                  <label>{t.apiBaseUrl}<input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
+                  <label>{t.apiModel}<input value={editModelDraft} onChange={(event) => setEditModelDraft(event.target.value)} /></label>
+                  <label>
+                    Wire API
+                    <select value={editWireApiDraft} onChange={(event) => setEditWireApiDraft(event.target.value)}>
+                      <option value="responses">Responses API</option>
+                    </select>
+                  </label>
+                  <label>{t.apiKeyOptional}<input type="password" value={editApiKeyDraft} onChange={(event) => setEditApiKeyDraft(event.target.value)} /></label>
+                </>
+              )}
+              <div className="oauth-action-row">
+                <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
+                <button
+                  className="icon-button primary"
+                  onClick={() => void saveProfileDetails()}
+                  disabled={busy || !editAliasDraft.trim() || !!(editingProfile.apiConfig && (!editProviderIdDraft.trim() || !editModelDraft.trim()))}
+                >
+                  <ShieldCheck size={17} /> {t.saveRules}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
       {activePage === "routing" ? (
         <section className="routing-page">
           <div className="routing-hero panel">
@@ -2506,6 +2637,7 @@ export default function App() {
                     <div className="account-card-title">
                       <strong>{profile.alias}</strong>
                       <small>{profile.summary.email || profile.summary.accountId || t.unknownAccount}</small>
+                      {profile.note && <small className="account-note">{profile.note}</small>}
                     </div>
                     <div className="account-card-badges">
                       {isCurrent && <em className="current-badge">{t.currentUsing}</em>}
@@ -2557,45 +2689,60 @@ export default function App() {
                   <div className="account-card-foot">
                     <small>{profile.usage.lastProbeAt ? `${t.probe}: ${formatReset(profile.usage.lastProbeAt)}` : t.notProbed}</small>
                     <span className="row-actions">
+                      <button
+                        className="mini-button icon-only"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditProfile(profile);
+                        }}
+                        disabled={busy}
+                        title={t.editAccount}
+                        aria-label={t.editAccount}
+                      >
+                        <Pencil size={14} />
+                      </button>
                       {(profile.usage.availableResetCount || 0) > 0 && (
                         <button
-                          className="mini-button"
+                          className="mini-button icon-only"
                           onClick={(event) => {
                             event.stopPropagation();
                             void consumeUsageReset(profile.id);
                           }}
                           disabled={busy}
                           title={t.useReset}
+                          aria-label={t.useReset}
                         >
-                          <RotateCcw size={14} /> {t.useReset}
+                          <RotateCcw size={14} />
                         </button>
                       )}
                       {profileNeedsReauthorization(profile) && (
                         <button
-                          className="mini-button"
+                          className="mini-button icon-only"
                           onClick={(event) => {
                             event.stopPropagation();
                             void reauthorizeProfile(profile);
                           }}
                           disabled={busy || oauthStatus === "starting" || oauthStatus === "exchanging"}
                           title={t.reauthorize}
+                          aria-label={t.reauthorize}
                         >
-                          <KeyRound size={14} /> {t.reauthorize}
+                          <KeyRound size={14} />
                         </button>
                       )}
                   <button
-                    className="mini-button"
+                    className="mini-button icon-only"
                     onClick={(event) => {
                       event.stopPropagation();
                       void probeProfile(profile.id);
                     }}
                     disabled={busy}
                     title={t.probeQuota}
+                    aria-label={t.probeQuota}
                   >
-                    <RefreshCcw size={14} /> {t.probe}
+                    <RefreshCcw size={14} />
                   </button>
                   <button
-                    className="mini-button primary"
+                    className="mini-button primary icon-only"
                     onClick={(event) => {
                       event.stopPropagation();
                       if (store?.settings.routing.appliedToCodex) void fixProfileToRouting(profile.id);
@@ -2603,11 +2750,12 @@ export default function App() {
                     }}
                     disabled={busy}
                     title={store?.settings.routing.appliedToCodex ? "固定到路由" : t.switch}
+                    aria-label={store?.settings.routing.appliedToCodex ? "固定到路由" : t.switch}
                   >
-                    <Zap size={14} /> {store?.settings.routing.appliedToCodex ? "固定" : t.switch}
+                    <Zap size={14} />
                   </button>
                   <button
-                    className="mini-button danger"
+                    className="mini-button danger icon-only"
                     onClick={(event) => {
                       event.stopPropagation();
                       void deleteProfile(profile.id);
@@ -2616,7 +2764,7 @@ export default function App() {
                     title={t.deleteAccount}
                     aria-label={t.deleteAccount}
                   >
-                    <Trash2 size={15} /> {t.deleteAccount}
+                    <Trash2 size={15} />
                   </button>
                     </span>
                   </div>

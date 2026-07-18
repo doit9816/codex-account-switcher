@@ -1228,6 +1228,7 @@ mod tests {
         AccountProfile {
             id: id.to_string(),
             alias: id.to_string(),
+            note: String::new(),
             enabled: true,
             priority,
             cooldown_until: None,

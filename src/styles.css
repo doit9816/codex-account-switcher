@@ -317,6 +317,11 @@ button:disabled {
   resize: vertical;
 }
 
+.profile-note-input {
+  min-height: 92px;
+  resize: vertical;
+}
+
 .wide-button {
   justify-content: center;
   width: 100%;
@@ -959,6 +964,12 @@ input:focus {
 
 .account-card-title small {
   margin-top: 4px;
+}
+
+.account-card-title .account-note {
+  color: #526276;
+  font-size: 12px;
+  max-width: 100%;
 }
 
 .account-card-badges,
