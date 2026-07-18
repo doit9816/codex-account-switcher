@@ -23,6 +23,21 @@ select {
   font: inherit;
 }
 
+select {
+  background: #fbfcfd;
+  border: 1px solid #cbd5df;
+  border-radius: 6px;
+  color: #17202a;
+  height: 38px;
+  outline: none;
+  padding: 0 10px;
+}
+
+select:focus {
+  border-color: #4676df;
+  box-shadow: 0 0 0 3px rgba(70, 118, 223, 0.14);
+}
+
 button {
   cursor: pointer;
 }
@@ -264,8 +279,20 @@ button:disabled {
   width: 100%;
 }
 
+.edit-account-dialog {
+  max-width: 720px;
+}
+
 .add-account-dialog h2 {
   margin: 0;
+}
+
+.edit-account-type {
+  color: #64748b;
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 4px;
 }
 
 .add-account-tabs {
@@ -320,6 +347,10 @@ button:disabled {
 .profile-note-input {
   min-height: 92px;
   resize: vertical;
+}
+
+.profile-note-input.compact {
+  min-height: 74px;
 }
 
 .wide-button {
@@ -395,6 +426,10 @@ button:disabled {
 @media (max-width: 720px) {
   .add-account-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .edit-api-provider-form {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .oauth-url-row,
@@ -632,6 +667,20 @@ input:focus {
   width: 100%;
 }
 
+.routing-mode-field select {
+  min-width: 190px;
+}
+
+.routing-pool-tools {
+  align-items: center;
+  display: inline-flex;
+  gap: 10px;
+}
+
+.routing-pool-tools select {
+  width: 124px;
+}
+
 .routing-risk {
   background: #fff8ed;
   border: 1px solid #eed3a7;
@@ -676,9 +725,27 @@ input:focus {
   border-radius: 8px;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(160px, 1.4fr) auto auto auto auto auto;
+  grid-template-columns: minmax(180px, 1.35fr) auto minmax(76px, auto) minmax(74px, auto) minmax(54px, auto) minmax(174px, auto) auto;
   min-height: 48px;
   padding: 9px 10px;
+}
+
+.routing-priority-control {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.routing-priority-control span {
+  color: #647181;
+  font-size: 12px;
+}
+
+.routing-priority-control input {
+  height: 30px;
+  padding: 0 7px;
+  width: 68px;
 }
 
 .routing-log-row {
@@ -781,6 +848,28 @@ input:focus {
   display: grid;
   font-size: 12px;
   gap: 5px;
+}
+
+.edit-api-provider-form {
+  align-items: end;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.edit-oauth-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.form-span-all {
+  grid-column: 1 / -1;
+}
+
+.edit-form-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  margin-top: 2px;
 }
 
 .api-provider-summary {

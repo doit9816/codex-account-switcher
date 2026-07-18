@@ -18,7 +18,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -1213,9 +1213,18 @@ fn is_running() -> bool {
 fn drop_existing(handle: &mut Option<RouterHandle>) {
     if let Some(mut existing) = handle.take() {
         existing.stop.store(true, AtomicOrdering::Relaxed);
-        let _ = TcpStream::connect((display_host(&existing.host).as_str(), existing.port));
+        let addr = format!("{}:{}", display_host(&existing.host), existing.port);
+        if let Ok(mut addrs) = addr.to_socket_addrs() {
+            if let Some(addr) = addrs.next() {
+                let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(150));
+            }
+        }
         if let Some(thread) = existing.thread.take() {
-            let _ = thread.join();
+            let _ = thread::Builder::new()
+                .name("routing-stop-join".to_string())
+                .spawn(move || {
+                    let _ = thread.join();
+                });
         }
     }
 }

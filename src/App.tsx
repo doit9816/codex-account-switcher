@@ -113,6 +113,9 @@ export default function App() {
   const [routingMode, setRoutingMode] = useState<"auto" | "fixed">("auto");
   const [routingFixedProfileId, setRoutingFixedProfileId] = useState("");
   const [routingStickyTtlSecs, setRoutingStickyTtlSecs] = useState(3600);
+  const [routingBusy, setRoutingBusy] = useState(false);
+  const [routingPoolSort, setRoutingPoolSort] = useState<"route" | "priority" | "expiry" | "connections" | "status">("route");
+  const [routingPriorityDrafts, setRoutingPriorityDrafts] = useState<Record<string, string>>({});
   const [quotaDraft, setQuotaDraft] = useState<QuotaRule>(emptyQuota);
   const [aliasDraft, setAliasDraft] = useState("");
   const [editAliasDraft, setEditAliasDraft] = useState("");
@@ -186,6 +189,33 @@ export default function App() {
       return values.some((value) => String(value || "").toLowerCase().includes(query));
     });
   }, [store?.profiles, accountFilter, currentGlobalProfileId, t]);
+  const routingProfiles = useMemo(() => {
+    const routeRank = (profile: Profile) => {
+      if (!profile.enabled) return 4;
+      if (isCooling(profile)) return 3;
+      if (tokenState(profile, t) === t.reloginRequired || tokenState(profile, t) === t.authInvalid) return 2;
+      return 0;
+    };
+    const expiryValue = (profile: Profile) => {
+      const expiresAt = subscriptionExpiryState(profile).expiresAt;
+      return expiresAt == null ? Number.MAX_SAFE_INTEGER : expiresAt;
+    };
+    return (store?.profiles || []).slice().sort((left, right) => {
+      if (routingPoolSort === "priority") return right.priority - left.priority || left.alias.localeCompare(right.alias);
+      if (routingPoolSort === "expiry") return expiryValue(left) - expiryValue(right) || right.priority - left.priority;
+      if (routingPoolSort === "connections") {
+        return (right.routeHealth?.activeConnections || 0) - (left.routeHealth?.activeConnections || 0) || right.priority - left.priority;
+      }
+      if (routingPoolSort === "status") return routeRank(left) - routeRank(right) || right.priority - left.priority;
+      return (
+        routeRank(left) - routeRank(right) ||
+        expiryValue(left) - expiryValue(right) ||
+        right.priority - left.priority ||
+        (right.routeHealth?.activeConnections || 0) - (left.routeHealth?.activeConnections || 0) ||
+        left.alias.localeCompare(right.alias)
+      );
+    });
+  }, [routingPoolSort, store?.profiles, t]);
   const passwordTooShort = password.length > 0 && password.length < 8;
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
@@ -680,7 +710,9 @@ export default function App() {
 
   async function toggleRoutingService() {
     const running = routingStatus?.running;
-    await run(async () => {
+    setRoutingBusy(true);
+    try {
+      await run(async () => {
       const routing = await invoke<RoutingStatus>("routing_save_settings", {
         input: {
           listenHost: routingHost,
@@ -696,6 +728,9 @@ export default function App() {
       await refresh();
       return routing;
     }, running ? "路由服务已停止" : "路由服务已启动");
+    } finally {
+      setRoutingBusy(false);
+    }
   }
 
   async function regenerateRoutingKey() {
@@ -749,6 +784,29 @@ export default function App() {
       await refresh();
       return routing;
     }, "已固定到路由");
+  }
+
+  async function saveRoutingProfilePriority(profile: Profile) {
+    const draft = Number(routingPriorityDrafts[profile.id] ?? profile.priority);
+    const priority = Number.isFinite(draft) ? draft : profile.priority;
+    await run(async () => {
+      const view = await invoke<StoreView>("save_quota_rule", {
+        profileId: profile.id,
+        alias: profile.alias,
+        hourlyLimit: normalizeNumber(profile.quotaRule.hourlyLimit),
+        dailyLimit: normalizeNumber(profile.quotaRule.dailyLimit),
+        cooldownMinutes: profile.quotaRule.cooldownMinutes || 180,
+        enabled: profile.enabled,
+        priority
+      });
+      setStore(view);
+      setRoutingPriorityDrafts((current) => {
+        const next = { ...current };
+        delete next[profile.id];
+        return next;
+      });
+      return view;
+    }, "优先级已保存");
   }
 
   async function checkForUpdate(manual = true) {
@@ -1360,52 +1418,87 @@ export default function App() {
 
       {editingProfile && (
         <div className="update-dialog-backdrop" role="presentation">
-          <section className="add-account-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-account-title">
+          <section className="add-account-dialog edit-account-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-account-title">
             <div className="update-dialog-head">
-              <h2 id="edit-account-title">{t.editAccountInfo}</h2>
+              <div>
+                <h2 id="edit-account-title">{t.editAccountInfo}</h2>
+                <span className="edit-account-type">
+                  {editingProfile.apiConfig ? t.apiKeyAccount : t.oauthLogin}
+                </span>
+              </div>
               <button className="notice-close" onClick={closeEditProfile} disabled={busy} title={t.closeNotice}>
                 <X size={18} />
               </button>
             </div>
-            <div className="api-provider-form add-account-content">
-              <label>
-                {t.accountAlias}
-                <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} />
-              </label>
-              <label>
-                {t.accountNote}
-                <textarea
-                  className="profile-note-input"
-                  value={editNoteDraft}
-                  onChange={(event) => setEditNoteDraft(event.target.value)}
-                  placeholder={t.notePlaceholder}
-                />
-              </label>
-              {editingProfile.apiConfig && (
-                <>
-                  <label>{t.providerId}<input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} /></label>
-                  <label>{t.apiBaseUrl}<input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
-                  <label>{t.apiModel}<input value={editModelDraft} onChange={(event) => setEditModelDraft(event.target.value)} /></label>
-                  <label>
-                    Wire API
-                    <select value={editWireApiDraft} onChange={(event) => setEditWireApiDraft(event.target.value)}>
-                      <option value="responses">Responses API</option>
-                    </select>
-                  </label>
-                  <label>{t.apiKeyOptional}<input type="password" value={editApiKeyDraft} onChange={(event) => setEditApiKeyDraft(event.target.value)} /></label>
-                </>
-              )}
-              <div className="oauth-action-row">
-                <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
-                <button
-                  className="icon-button primary"
-                  onClick={() => void saveProfileDetails()}
-                  disabled={busy || !editAliasDraft.trim() || !!(editingProfile.apiConfig && (!editProviderIdDraft.trim() || !editModelDraft.trim()))}
-                >
-                  <ShieldCheck size={17} /> {t.saveRules}
-                </button>
+            {editingProfile.apiConfig ? (
+              <div className="api-provider-form edit-api-provider-form add-account-content">
+                <label>
+                  {t.apiProviderName}
+                  <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} placeholder="LongCat / OpenAI Compatible" />
+                </label>
+                <label>
+                  {t.providerId}
+                  <input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} placeholder="openai-compatible" />
+                </label>
+                <label>
+                  {t.apiBaseUrl}
+                  <input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="https://api.openai.com/v1" />
+                </label>
+                <label>
+                  {t.apiModel}
+                  <input value={editModelDraft} onChange={(event) => setEditModelDraft(event.target.value)} placeholder="gpt-5.4" />
+                </label>
+                <label>
+                  {t.apiKeyOptional}
+                  <input type="password" value={editApiKeyDraft} onChange={(event) => setEditApiKeyDraft(event.target.value)} />
+                </label>
+                <label className="form-span-all">
+                  {t.accountNote}
+                  <textarea
+                    className="profile-note-input compact"
+                    value={editNoteDraft}
+                    onChange={(event) => setEditNoteDraft(event.target.value)}
+                    placeholder={t.notePlaceholder}
+                  />
+                </label>
+                <div className="edit-form-actions">
+                  <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
+                  <button
+                    className="icon-button primary"
+                    onClick={() => void saveProfileDetails()}
+                    disabled={busy || !editAliasDraft.trim() || !editProviderIdDraft.trim() || !editModelDraft.trim()}
+                  >
+                    <ShieldCheck size={17} /> {t.saveRules}
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="edit-oauth-form add-account-content">
+                <label className="add-account-field">
+                  {t.accountAlias}
+                  <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} />
+                </label>
+                <label className="add-account-field">
+                  {t.accountNote}
+                  <textarea
+                    className="profile-note-input"
+                    value={editNoteDraft}
+                    onChange={(event) => setEditNoteDraft(event.target.value)}
+                    placeholder={t.notePlaceholder}
+                  />
+                </label>
+                <div className="edit-form-actions">
+                  <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
+                  <button
+                    className="icon-button primary"
+                    onClick={() => void saveProfileDetails()}
+                    disabled={busy || !editAliasDraft.trim()}
+                  >
+                    <ShieldCheck size={17} /> {t.saveRules}
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -1417,7 +1510,7 @@ export default function App() {
               <h2>路由 API</h2>
               <p>单一转发 API，按规则在本地账号池中选择上游账号。</p>
             </div>
-            <StatusPill ok={!!routingStatus?.running} text={routingStatus?.running ? "运行中" : "已停止"} />
+            <StatusPill ok={!!routingStatus?.running} text={routingBusy ? "处理中..." : routingStatus?.running ? "运行中" : "已停止"} />
           </div>
 
           <section className="routing-grid">
@@ -1427,9 +1520,9 @@ export default function App() {
                   <h2>服务设置</h2>
                   <p>{routingStatus?.baseUrl || `http://${routingHost}:${routingPort}/v1`}</p>
                 </div>
-                <button className="icon-button primary" onClick={() => void toggleRoutingService()} disabled={busy}>
+                <button className="icon-button primary" onClick={() => void toggleRoutingService()} disabled={busy || routingBusy}>
                   <Power size={17} />
-                  {routingStatus?.running ? "停止" : "启动"}
+                  {routingBusy ? "处理中..." : routingStatus?.running ? "停止" : "启动"}
                 </button>
               </div>
 
@@ -1446,7 +1539,7 @@ export default function App() {
                   粘性 TTL 秒
                   <input type="number" min={60} value={routingStickyTtlSecs} onChange={(event) => setRoutingStickyTtlSecs(Number(event.target.value) || 3600)} />
                 </label>
-                <label>
+                <label className="routing-mode-field">
                   路由模式
                   <select value={routingMode} onChange={(event) => setRoutingMode(event.target.value as "auto" | "fixed")}>
                     <option value="auto">自动会话粘性</option>
@@ -1528,10 +1621,19 @@ export default function App() {
                   <h2>账号池</h2>
                   <p>{routingStatus?.activeConnections || 0} active connections</p>
                 </div>
-                <Gauge size={22} />
+                <div className="routing-pool-tools">
+                  <Gauge size={22} />
+                  <select value={routingPoolSort} onChange={(event) => setRoutingPoolSort(event.target.value as typeof routingPoolSort)}>
+                    <option value="route">路由顺序</option>
+                    <option value="priority">优先级</option>
+                    <option value="expiry">到期时间</option>
+                    <option value="connections">连接数</option>
+                    <option value="status">状态</option>
+                  </select>
+                </div>
               </div>
               <div className="routing-account-list">
-                {(store?.profiles || []).map((profile) => (
+                {routingProfiles.map((profile) => (
                   <article className="routing-account-row" key={profile.id}>
                     <div>
                       <strong>{profile.alias}</strong>
@@ -1541,6 +1643,21 @@ export default function App() {
                     <span>{profile.apiConfig ? profile.apiConfig.model : formatSubscriptionValidity(profile, t)}</span>
                     <span>连接 {profile.routeHealth?.activeConnections || 0}</span>
                     <span>{profile.routeHealth?.lastStatus || "-"}</span>
+                    <label className="routing-priority-control">
+                      <span>优先级</span>
+                      <input
+                        type="number"
+                        value={routingPriorityDrafts[profile.id] ?? String(profile.priority)}
+                        onChange={(event) => setRoutingPriorityDrafts((current) => ({ ...current, [profile.id]: event.target.value }))}
+                      />
+                      <button
+                        className="mini-button"
+                        onClick={() => void saveRoutingProfilePriority(profile)}
+                        disabled={busy || Number(routingPriorityDrafts[profile.id] ?? profile.priority) === profile.priority}
+                      >
+                        保存
+                      </button>
+                    </label>
                     <button
                       className="mini-button primary"
                       onClick={() => {
