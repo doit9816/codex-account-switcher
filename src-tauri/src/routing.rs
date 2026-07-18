@@ -323,7 +323,16 @@ pub(crate) fn restore_enabled(app: AppHandle) {
         return;
     };
     if store.settings.routing.enabled {
-        let _ = start(app);
+        let _ = thread::Builder::new()
+            .name("routing-restore".to_string())
+            .spawn(move || {
+                if let Err(error) = start(app.clone()) {
+                    if let Ok(mut store) = load_store(&app) {
+                        push_event(&mut store, "warn", &format!("路由 API 自动恢复失败：{error}"));
+                        let _ = save_store(&app, &store);
+                    }
+                }
+            });
     }
 }
 
@@ -1205,7 +1214,7 @@ fn hash_text(value: &str) -> String {
 fn is_running() -> bool {
     ROUTER
         .get()
-        .and_then(|slot| slot.lock().ok())
+        .and_then(|slot| slot.try_lock().ok())
         .and_then(|guard| guard.as_ref().map(|_| ()))
         .is_some()
 }

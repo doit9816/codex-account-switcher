@@ -394,15 +394,19 @@ export default function App() {
   }
 
   async function refresh() {
-    const view = await invoke<StoreView>("get_store");
-    setStore(view);
-    const routing = await invoke<RoutingStatus>("routing_status");
-    setRoutingStatus(routing);
-    if (view.settings.codexHome) {
-      const currentScan = await invoke<CodexScan>("scan_codex_home", {
-        codexHome: view.settings.codexHome
-      });
-      setScan(currentScan);
+    try {
+      const view = await invoke<StoreView>("get_store");
+      setStore(view);
+      const routing = await invoke<RoutingStatus>("routing_status");
+      setRoutingStatus(routing);
+      if (view.settings.codexHome) {
+        const currentScan = await invoke<CodexScan>("scan_codex_home", {
+          codexHome: view.settings.codexHome
+        });
+        setScan(currentScan);
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: `${t.failed}: ${String(error)}` });
     }
   }
 

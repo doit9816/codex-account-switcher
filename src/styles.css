@@ -17,6 +17,36 @@ body {
   min-height: 100vh;
 }
 
+.startup-error {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  color: #7c2d12;
+  margin: 32px auto;
+  max-width: 860px;
+  padding: 22px;
+}
+
+.startup-error h1 {
+  color: #9a3412;
+  font-size: 20px;
+  margin: 0 0 8px;
+}
+
+.startup-error p {
+  margin: 0 0 14px;
+}
+
+.startup-error pre {
+  background: #431407;
+  border-radius: 8px;
+  color: #ffedd5;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+
 button,
 input,
 select {
