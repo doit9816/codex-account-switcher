@@ -1290,6 +1290,7 @@ async fn switch_profile(
         auth_backup_path
     } else {
         restore_api_config_backup(&path)?;
+        remove_longcat_config_for_non_api_account(&config_path)?;
         let backup_path = backup_auth_file(&auth_path)?;
         replace_file_with_rollback(&auth_path, auth_json.as_bytes(), backup_path.as_deref())?;
         backup_path
@@ -2335,6 +2336,8 @@ fn write_api_provider_config(
         document["web_search"] = toml_edit::value("disabled");
         document["model_reasoning_effort"] = toml_edit::value("high");
         document["model_supports_reasoning_summaries"] = toml_edit::value(true);
+    } else {
+        remove_longcat_codex_options(&mut document);
     }
     if !document.as_table().contains_key("model_providers")
         || !document["model_providers"].is_table()
@@ -2365,14 +2368,76 @@ fn write_api_provider_config(
 }
 
 fn is_longcat_api_config(api_config: &ApiProviderConfig) -> bool {
-    api_config
-        .base_url
-        .to_ascii_lowercase()
-        .contains("api.longcat.chat")
-        || api_config
-            .model
-            .to_ascii_lowercase()
-            .starts_with("longcat-")
+    is_longcat_base_url(&api_config.base_url) || is_longcat_model(&api_config.model)
+}
+
+fn is_longcat_base_url(value: &str) -> bool {
+    value.to_ascii_lowercase().contains("api.longcat.chat")
+}
+
+fn is_longcat_model(value: &str) -> bool {
+    value.to_ascii_lowercase().starts_with("longcat-")
+}
+
+fn document_uses_longcat_api(document: &toml_edit::DocumentMut) -> bool {
+    if document["model"].as_str().is_some_and(is_longcat_model) {
+        return true;
+    }
+    let Some(provider_id) = document["model_provider"].as_str() else {
+        return false;
+    };
+    document["model_providers"][provider_id]["base_url"]
+        .as_str()
+        .is_some_and(is_longcat_base_url)
+}
+
+fn remove_longcat_config_for_non_api_account(config_path: &Path) -> Result<(), String> {
+    let current = fs::read_to_string(config_path).unwrap_or_default();
+    if current.trim().is_empty() {
+        return Ok(());
+    }
+    let mut document = current
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("config.toml 瑙ｆ瀽澶辫触: {error}"))?;
+    if !document_uses_longcat_api(&document) {
+        return Ok(());
+    }
+
+    if document["model"].as_str().is_some_and(is_longcat_model) {
+        document.as_table_mut().remove("model");
+    }
+    if let Some(provider_id) = document["model_provider"].as_str().map(str::to_string) {
+        if document["model_providers"][&provider_id]["base_url"]
+            .as_str()
+            .is_some_and(is_longcat_base_url)
+        {
+            document.as_table_mut().remove("model_provider");
+            if let Some(providers) = document["model_providers"].as_table_mut() {
+                providers.remove(&provider_id);
+            }
+        }
+    }
+    remove_longcat_codex_options(&mut document);
+    replace_file_with_rollback(config_path, document.to_string().as_bytes(), None)
+}
+
+fn remove_longcat_codex_options(document: &mut toml_edit::DocumentMut) {
+    remove_bool_root_if_matches(document, "disable_response_storage", true);
+    remove_str_root_if_matches(document, "web_search", "disabled");
+    remove_str_root_if_matches(document, "model_reasoning_effort", "high");
+    remove_bool_root_if_matches(document, "model_supports_reasoning_summaries", true);
+}
+
+fn remove_bool_root_if_matches(document: &mut toml_edit::DocumentMut, key: &str, expected: bool) {
+    if document.as_table().get(key).and_then(|item| item.as_bool()) == Some(expected) {
+        document.as_table_mut().remove(key);
+    }
+}
+
+fn remove_str_root_if_matches(document: &mut toml_edit::DocumentMut, key: &str, expected: &str) {
+    if document.as_table().get(key).and_then(|item| item.as_str()) == Some(expected) {
+        document.as_table_mut().remove(key);
+    }
 }
 
 fn restore_api_config_backup(codex_home: &Path) -> Result<bool, String> {
@@ -4627,6 +4692,150 @@ ProcessId=5678
         assert_eq!(
             document["model_providers"]["longcat"]["requires_openai_auth"].as_bool(),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn removes_longcat_options_for_other_api_provider() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text(
+            &config_path,
+            r#"model_provider = "codex"
+model = "LongCat-2.0"
+disable_response_storage = true
+web_search = "disabled"
+model_reasoning_effort = "high"
+model_supports_reasoning_summaries = true
+
+[model_providers.codex]
+name = "codex"
+base_url = "https://api.longcat.chat/openai/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#,
+        );
+        let api_config = ApiProviderConfig {
+            provider_id: "other-api".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "gpt-custom".to_string(),
+            wire_api: "responses".to_string(),
+        };
+
+        write_api_provider_config(
+            &config_path,
+            &api_config,
+            "Other API",
+            &["codex".to_string(), "other-api".to_string()],
+        )
+        .unwrap();
+
+        let text = fs::read_to_string(config_path).unwrap();
+        let document = text.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["model"].as_str(), Some("gpt-custom"));
+        assert_eq!(document["model_provider"].as_str(), Some("other-api"));
+        assert!(document
+            .as_table()
+            .get("disable_response_storage")
+            .is_none());
+        assert!(document.as_table().get("web_search").is_none());
+        assert!(document.as_table().get("model_reasoning_effort").is_none());
+        assert!(document
+            .as_table()
+            .get("model_supports_reasoning_summaries")
+            .is_none());
+        assert!(document
+            .as_table()
+            .get("model_providers")
+            .and_then(|item| item.as_table())
+            .and_then(|providers| providers.get("codex"))
+            .is_none());
+        assert_eq!(
+            document["model_providers"]["other-api"]["requires_openai_auth"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn keeps_non_official_root_options_for_other_api_provider() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text(
+            &config_path,
+            r#"web_search = "enabled"
+model_reasoning_effort = "medium"
+"#,
+        );
+        let api_config = ApiProviderConfig {
+            provider_id: "other-api".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "gpt-custom".to_string(),
+            wire_api: "responses".to_string(),
+        };
+
+        write_api_provider_config(
+            &config_path,
+            &api_config,
+            "Other API",
+            &["other-api".to_string()],
+        )
+        .unwrap();
+
+        let text = fs::read_to_string(config_path).unwrap();
+        let document = text.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["web_search"].as_str(), Some("enabled"));
+        assert_eq!(document["model_reasoning_effort"].as_str(), Some("medium"));
+    }
+
+    #[test]
+    fn removes_longcat_config_for_non_api_account() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text(
+            &config_path,
+            r#"model_provider = "codex"
+model = "LongCat-2.0"
+disable_response_storage = true
+web_search = "disabled"
+model_reasoning_effort = "high"
+model_supports_reasoning_summaries = true
+
+[model_providers.codex]
+name = "codex"
+base_url = "https://api.longcat.chat/openai/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.demo]
+command = "demo-server"
+"#,
+        );
+
+        remove_longcat_config_for_non_api_account(&config_path).unwrap();
+
+        let text = fs::read_to_string(config_path).unwrap();
+        let document = text.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(document.as_table().get("model").is_none());
+        assert!(document.as_table().get("model_provider").is_none());
+        assert!(document
+            .as_table()
+            .get("disable_response_storage")
+            .is_none());
+        assert!(document.as_table().get("web_search").is_none());
+        assert!(document.as_table().get("model_reasoning_effort").is_none());
+        assert!(document
+            .as_table()
+            .get("model_supports_reasoning_summaries")
+            .is_none());
+        assert!(document
+            .as_table()
+            .get("model_providers")
+            .and_then(|item| item.as_table())
+            .and_then(|providers| providers.get("codex"))
+            .is_none());
+        assert_eq!(
+            document["mcp_servers"]["demo"]["command"].as_str(),
+            Some("demo-server")
         );
     }
 
