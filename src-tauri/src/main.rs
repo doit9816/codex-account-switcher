@@ -16,8 +16,12 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -41,9 +45,18 @@ const LEGACY_APP_IDENTIFIER: &str = "cn.cmscloud.codex-account-switcher";
 const CHATGPT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 const OFFICIAL_CLIENT_DISPLAY_NAME: &str = "Codex/ChatGPT";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub(crate) const ROUTER_PROVIDER_ID: &str = "codex-switcher-router";
 static STORE_IO_MUTEX: Mutex<()> = Mutex::new(());
 pub(crate) use proxy::{build_probe_client, normalize_proxy_url, ProxySettings, CHATGPT_USAGE_URL};
+
+#[cfg(windows)]
+fn hidden_command<S: AsRef<OsStr>>(program: S) -> Command {
+    let mut command = Command::new(program);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -2693,7 +2706,7 @@ pub(crate) fn resolve_codex_home(
     explicit: Option<String>,
 ) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
-        return Ok(PathBuf::from(path));
+        return Ok(compatible_official_home(PathBuf::from(path)));
     }
     if let Some(path) = load_store(app).ok().and_then(|s| s.settings.codex_home) {
         return Ok(compatible_official_home(PathBuf::from(path)));
@@ -3020,7 +3033,7 @@ fn collect_codex_process_snapshot() -> CodexProcessSnapshot {
 Where-Object { $_.Name -match '(?i)(codex|chatgpt)' -or $_.ExecutablePath -match '(?i)(OpenAI\.(Codex|ChatGPT)|@openai[\\/](codex|chatgpt))' -or $_.CommandLine -match '(?i)(@openai[\\/](codex|chatgpt)|(codex|chatgpt)\.js|[\\/]bin[\\/](codex|chatgpt))' } |
 Select-Object ProcessId,Name,ExecutablePath,CommandLine |
 ConvertTo-Json -Compress"#;
-    let output = Command::new("powershell")
+    let output = hidden_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output();
     if let Ok(output) = output {
@@ -3035,7 +3048,7 @@ ConvertTo-Json -Compress"#;
         }
     }
 
-    let output = Command::new("wmic")
+    let output = hidden_command("wmic")
         .args([
             "process",
             "get",
@@ -3158,7 +3171,7 @@ fn is_codex_running() -> bool {
 fn process_is_running(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        Command::new("tasklist")
+        hidden_command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output()
             .map(|output| {
@@ -3199,7 +3212,7 @@ fn relaunch_official_cli(snapshot: &CodexProcessSnapshot) -> Result<(), String> 
     }
     let mut last_error = None;
     for command in ["codex", "chatgpt"] {
-        match Command::new("cmd")
+        match hidden_command("cmd")
             .args(["/C", "start", "", command])
             .spawn()
         {
@@ -3246,7 +3259,7 @@ fn terminate_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), Stri
         .map(|process| process.pid)
         .collect::<Vec<_>>();
     for pid in &pids {
-        let output = Command::new("taskkill")
+        let output = hidden_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output()
             .map_err(display_err)?;
@@ -3299,7 +3312,7 @@ fn windows_codex_app_user_model_id() -> Option<String> {
 Where-Object { $_.Name -match '(?i)^(Codex|ChatGPT)$' -or $_.AppID -match '(?i)OpenAI\.(Codex|ChatGPT)' } |
 Select-Object -First 1
 if ($entry) { Write-Output $entry.AppID }"#;
-    let output = Command::new("powershell")
+    let output = hidden_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
         .ok()?;
@@ -4541,6 +4554,20 @@ ProcessId=5678
         let chatgpt = dir.path().join(".chatgpt");
         fs::create_dir_all(&codex).unwrap();
         fs::create_dir_all(&chatgpt).unwrap();
+        write_text(&chatgpt.join("auth.json"), "{}");
+
+        assert_eq!(compatible_official_home(codex), chatgpt);
+    }
+
+    #[test]
+    fn compatible_home_prefers_newer_official_home() {
+        let dir = tempdir().unwrap();
+        let codex = dir.path().join(".codex");
+        let chatgpt = dir.path().join(".chatgpt");
+        fs::create_dir_all(&codex).unwrap();
+        fs::create_dir_all(&chatgpt).unwrap();
+        write_text(&codex.join("auth.json"), "{}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
         write_text(&chatgpt.join("auth.json"), "{}");
 
         assert_eq!(compatible_official_home(codex), chatgpt);
