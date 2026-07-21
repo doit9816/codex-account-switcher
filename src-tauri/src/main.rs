@@ -1373,12 +1373,6 @@ async fn switch_profile(
         .map_err(display_err)?;
     lock.lock_exclusive().map_err(display_err)?;
 
-    let mut relaunch_guard = CodexRelaunchGuard::default();
-    if codex_running && force {
-        terminate_codex_processes(&codex_runtime)?;
-        relaunch_guard.arm(codex_runtime.clone());
-    }
-
     let auth_path = path.join("auth.json");
     if auth_path.exists() {
         let current_auth_json =
@@ -1409,15 +1403,36 @@ async fn switch_profile(
         && should_refresh_access_token(profile.summary.access_token_exp, 0)
     {
         let client = build_probe_client(&store.settings.probe_proxy)?;
-        auth_json = refresh_auth_json_with_client(&client, &auth_json)
-            .await
-            .map_err(|e| format!("账号 token 已过期且刷新失败：{}", e))?;
+        auth_json = match refresh_auth_json_with_client(&client, &auth_json).await {
+            Ok(updated) => updated,
+            Err(error) => {
+                store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
+                store.profiles[idx].usage.last_token_refresh_status = Some(
+                    if refresh_error_requires_relogin(&error) {
+                        "relogin_required"
+                    } else {
+                        "error"
+                    }
+                    .to_string(),
+                );
+                store.profiles[idx].usage.last_token_refresh_error = Some(error.clone());
+                save_store(&app, &store)?;
+                return Err(format!("账号 token 已过期且刷新失败：{error}"));
+            }
+        };
         store.profiles[idx].summary = summarize_auth(&auth_json)?;
         store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
         store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
         store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
         store.profiles[idx].usage.last_token_refresh_error = None;
     }
+
+    let mut relaunch_guard = CodexRelaunchGuard::default();
+    if codex_running && force {
+        terminate_codex_processes(&codex_runtime)?;
+        relaunch_guard.arm(codex_runtime.clone());
+    }
+
     let config_path = path.join("config.toml");
     let config_backup_path = path.join("config.toml.account-switcher.backup");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
