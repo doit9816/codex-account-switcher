@@ -1,9 +1,9 @@
 use crate::{
     app_data_dir, build_probe_client, decrypt_secret, display_err, encrypt_secret, load_master_key,
     load_store, mutate_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
-    replace_file_with_rollback, resolve_codex_home, save_store, should_refresh_access_token,
-    summarize_auth, AccountProfile, AppStore, RouteHealth, RoutingMode, RoutingSettings,
-    ROUTER_PROVIDER_ID,
+    refresh_error_requires_relogin, replace_file_with_rollback, resolve_codex_home, save_store,
+    should_refresh_access_token, summarize_auth, AccountProfile, AppStore, RouteHealth,
+    RoutingMode, RoutingSettings, ROUTER_PROVIDER_ID,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -58,6 +58,20 @@ pub(crate) struct RoutingStatus {
     active_connections: u32,
     settings: RoutingSettings,
     recent_logs: Vec<RoutingLogEntry>,
+    codex_check: RoutingCodexCheck,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoutingCodexCheck {
+    config_path: String,
+    selected_provider: Option<String>,
+    provider_present: bool,
+    base_url_matches: bool,
+    token_present: bool,
+    service_running: bool,
+    health_ok: bool,
+    diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +156,7 @@ pub(crate) fn status(app: AppHandle) -> Result<RoutingStatus, String> {
         active_connections: ACTIVE_CONNECTIONS.load(AtomicOrdering::Relaxed),
         settings,
         recent_logs: read_recent_logs(&app, 40),
+        codex_check: codex_config_check(&app, &store, running),
     })
 }
 
@@ -277,7 +292,11 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
     {
         document["model_providers"] = toml_edit::table();
     }
-    let provider = &mut document["model_providers"][ROUTER_PROVIDER_ID];
+    document["model_providers"][ROUTER_PROVIDER_ID] =
+        toml_edit::Item::Table(toml_edit::Table::new());
+    let provider = document["model_providers"][ROUTER_PROVIDER_ID]
+        .as_table_mut()
+        .ok_or_else(|| "无法写入 Codex 路由 provider 配置".to_string())?;
     provider["name"] = toml_edit::value("CodexSwitcher Router");
     provider["base_url"] = toml_edit::value(format!(
         "http://{}:{}/v1",
@@ -286,6 +305,9 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
     ));
     provider["wire_api"] = toml_edit::value("responses");
     provider["experimental_bearer_token"] = toml_edit::value(access_key);
+    provider["requires_openai_auth"] = toml_edit::value(false);
+    provider["request_max_retries"] = toml_edit::value(0);
+    provider["stream_max_retries"] = toml_edit::value(0);
     provider["supports_websockets"] = toml_edit::value(false);
     replace_file_with_rollback(&config_path, document.to_string().as_bytes(), None)?;
 
@@ -294,6 +316,108 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
     push_event(&mut store, "info", "已将本机 Codex 配置接管到路由 API");
     save_store(&app, &store)?;
     status(app)
+}
+
+fn codex_config_check(app: &AppHandle, store: &AppStore, running: bool) -> RoutingCodexCheck {
+    let codex_home = resolve_codex_home(app, store.settings.codex_home.clone())
+        .unwrap_or_else(|_| app_data_dir(app).unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let config_path = codex_home.join("config.toml");
+    let expected_base_url = format!(
+        "http://{}:{}/v1",
+        display_host(&store.settings.routing.listen_host),
+        store.settings.routing.port
+    );
+    let mut check = RoutingCodexCheck {
+        config_path: config_path.to_string_lossy().to_string(),
+        selected_provider: None,
+        provider_present: false,
+        base_url_matches: false,
+        token_present: false,
+        service_running: running,
+        health_ok: false,
+        diagnostics: Vec::new(),
+    };
+
+    match fs::read_to_string(&config_path) {
+        Ok(contents) if contents.trim().is_empty() => {
+            check.diagnostics.push("config.toml 为空".to_string());
+        }
+        Ok(contents) => match contents.parse::<toml_edit::DocumentMut>() {
+            Ok(document) => {
+                check.selected_provider = document
+                    .get("model_provider")
+                    .and_then(|item| item.as_str())
+                    .map(ToString::to_string);
+                let Some(provider) = document
+                    .get("model_providers")
+                    .and_then(|providers| providers.get(ROUTER_PROVIDER_ID))
+                else {
+                    check
+                        .diagnostics
+                        .push("未找到 codex-switcher-router provider".to_string());
+                    check.health_ok = probe_router_health(&expected_base_url);
+                    return check;
+                };
+
+                check.provider_present = true;
+                let base_url = provider
+                    .get("base_url")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or_default();
+                check.base_url_matches = base_url == expected_base_url;
+                check.token_present = provider
+                    .get("experimental_bearer_token")
+                    .and_then(|item| item.as_str())
+                    .is_some_and(|token| !token.trim().is_empty());
+
+                if check.selected_provider.as_deref() != Some(ROUTER_PROVIDER_ID) {
+                    check
+                        .diagnostics
+                        .push("当前 model_provider 未指向路由 provider".to_string());
+                }
+                if !check.base_url_matches {
+                    check
+                        .diagnostics
+                        .push("Codex 配置里的 Base URL 与当前路由地址不一致".to_string());
+                }
+                if !check.token_present {
+                    check
+                        .diagnostics
+                        .push("路由 API Key 未写入 Codex 配置".to_string());
+                }
+            }
+            Err(error) => check
+                .diagnostics
+                .push(format!("config.toml 解析失败: {error}")),
+        },
+        Err(error) => check
+            .diagnostics
+            .push(format!("无法读取 config.toml: {error}")),
+    }
+
+    check.health_ok = probe_router_health(&expected_base_url);
+    if check.provider_present
+        && check.base_url_matches
+        && check.token_present
+        && check.service_running
+        && check.health_ok
+        && check.diagnostics.is_empty()
+    {
+        check.diagnostics.push(
+            "配置与服务自检通过；若仍无日志，请重启 Codex 或新建会话后再发送一次请求".to_string(),
+        );
+    }
+    check
+}
+
+fn probe_router_health(base_url: &str) -> bool {
+    let health_url = base_url.trim_end_matches("/v1").to_string() + "/health";
+    Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .and_then(|client| client.get(health_url).send())
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
 }
 
 pub(crate) fn restore_codex_config(app: AppHandle) -> Result<RoutingStatus, String> {
@@ -328,7 +452,11 @@ pub(crate) fn restore_enabled(app: AppHandle) {
             .spawn(move || {
                 if let Err(error) = start(app.clone()) {
                     if let Ok(mut store) = load_store(&app) {
-                        push_event(&mut store, "warn", &format!("路由 API 自动恢复失败：{error}"));
+                        push_event(
+                            &mut store,
+                            "warn",
+                            &format!("路由 API 自动恢复失败：{error}"),
+                        );
                         let _ = save_store(&app, &store);
                     }
                 }
@@ -796,6 +924,9 @@ fn refresh_due_profiles(
         if profile.api_config.is_some() {
             continue;
         }
+        if profile.usage.last_token_refresh_status.as_deref() == Some("relogin_required") {
+            continue;
+        }
         if !should_refresh_access_token(profile.summary.access_token_exp, 0) {
             continue;
         }
@@ -818,7 +949,14 @@ fn refresh_due_profiles(
             }
             Err(error) => {
                 profile.usage.last_token_refresh_at = Some(now_string());
-                profile.usage.last_token_refresh_status = Some("error".to_string());
+                profile.usage.last_token_refresh_status = Some(
+                    if refresh_error_requires_relogin(&error) {
+                        "relogin_required"
+                    } else {
+                        "error"
+                    }
+                    .to_string(),
+                );
                 profile.usage.last_token_refresh_error = Some(error);
                 changed = true;
             }

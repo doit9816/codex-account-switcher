@@ -1169,19 +1169,62 @@ fn sync_auth_json_into_matching_profile(
     Ok(Some(profile_id))
 }
 
+fn sync_codex_auth_into_matching_profile(
+    app: &AppHandle,
+    store: &mut AppStore,
+    key: &[u8; 32],
+) -> Result<Option<String>, String> {
+    let path = resolve_codex_home(app, store.settings.codex_home.clone())?;
+    let auth_path = path.join("auth.json");
+    if !auth_path.exists() {
+        return Ok(None);
+    }
+
+    let auth_json =
+        fs::read_to_string(&auth_path).map_err(|e| format!("无法读取当前 auth.json: {e}"))?;
+    sync_auth_json_into_matching_profile(store, &auth_json, key)
+}
+
+fn should_skip_profile_token_keepalive(
+    profile: &AccountProfile,
+    current_id: Option<&str>,
+    include_current: bool,
+) -> bool {
+    !profile.enabled
+        || (!include_current && current_id == Some(profile.id.as_str()))
+        || profile.api_config.is_some()
+        || profile.usage.last_token_refresh_status.as_deref() == Some("relogin_required")
+}
+
 #[tauri::command]
 async fn refresh_all_profile_tokens(
     app: AppHandle,
     include_current: bool,
     threshold_secs: Option<u64>,
 ) -> Result<TokenRefreshBatchResult, String> {
-    if is_codex_running() {
-        return Err("检测到 Codex 正在运行，已暂停其他账号 token 保活，避免 refresh_token 被轮换后影响当前会话。".to_string());
-    }
     let key = load_master_key(&app)?;
     let mut store = load_store(&app)?;
     let client = build_probe_client(&store.settings.probe_proxy)?;
-    let current_id = store.settings.current_profile_id.clone();
+    let current_id = match sync_codex_auth_into_matching_profile(&app, &mut store, &key) {
+        Ok(Some(profile_id)) => {
+            store.settings.current_profile_id = Some(profile_id.clone());
+            push_event(
+                &mut store,
+                "info",
+                "已从当前 Codex auth.json 同步账号 token 快照",
+            );
+            Some(profile_id)
+        }
+        Ok(None) => store.settings.current_profile_id.clone(),
+        Err(error) => {
+            push_event(
+                &mut store,
+                "warn",
+                &format!("同步当前 Codex auth.json 失败：{error}"),
+            );
+            store.settings.current_profile_id.clone()
+        }
+    };
     let threshold = clamp_token_refresh_threshold(
         threshold_secs.unwrap_or(store.settings.token_refresh_threshold_secs),
     );
@@ -1190,15 +1233,11 @@ async fn refresh_all_profile_tokens(
     let mut failed = 0;
 
     for idx in 0..store.profiles.len() {
-        if !store.profiles[idx].enabled {
-            skipped += 1;
-            continue;
-        }
-        if !include_current && current_id.as_deref() == Some(store.profiles[idx].id.as_str()) {
-            skipped += 1;
-            continue;
-        }
-        if store.profiles[idx].api_config.is_some() {
+        if should_skip_profile_token_keepalive(
+            &store.profiles[idx],
+            current_id.as_deref(),
+            include_current,
+        ) {
             skipped += 1;
             continue;
         }
@@ -1237,7 +1276,14 @@ async fn refresh_all_profile_tokens(
             Err(err) => {
                 failed += 1;
                 store.profiles[idx].usage.last_token_refresh_at = Some(now);
-                store.profiles[idx].usage.last_token_refresh_status = Some("error".to_string());
+                store.profiles[idx].usage.last_token_refresh_status = Some(
+                    if refresh_error_requires_relogin(&err) {
+                        "relogin_required"
+                    } else {
+                        "error"
+                    }
+                    .to_string(),
+                );
                 store.profiles[idx].usage.last_token_refresh_error = Some(err);
             }
         }
@@ -2383,7 +2429,7 @@ fn compact_error_body(body: &str) -> String {
     }
 }
 
-fn refresh_error_requires_relogin(error: &str) -> bool {
+pub(crate) fn refresh_error_requires_relogin(error: &str) -> bool {
     let normalized = error.to_ascii_lowercase();
     normalized.contains("refresh_token_reused")
         || normalized.contains("token_invalidated")
@@ -4979,6 +5025,35 @@ command = "demo-server"
         assert!(should_refresh_access_token(Some(now - 1), 0));
         assert!(!should_refresh_access_token(Some(now + 3_600), 0));
         assert!(should_refresh_access_token(Some(now + 3_600), 3_600));
+    }
+
+    #[test]
+    fn token_keepalive_skips_only_current_and_relogin_required_profiles() {
+        let current = test_profile("current", "acc-1", "one@example.com");
+        let mut relogin = test_profile("relogin", "acc-2", "two@example.com");
+        relogin.usage.last_token_refresh_status = Some("relogin_required".to_string());
+        let other = test_profile("other", "acc-3", "three@example.com");
+
+        assert!(should_skip_profile_token_keepalive(
+            &current,
+            Some("current"),
+            false
+        ));
+        assert!(should_skip_profile_token_keepalive(
+            &relogin,
+            Some("current"),
+            false
+        ));
+        assert!(!should_skip_profile_token_keepalive(
+            &other,
+            Some("current"),
+            false
+        ));
+        assert!(!should_skip_profile_token_keepalive(
+            &current,
+            Some("current"),
+            true
+        ));
     }
 
     #[test]

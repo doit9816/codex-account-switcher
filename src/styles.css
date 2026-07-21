@@ -734,7 +734,8 @@ input:focus {
 }
 
 .routing-takeover-card span,
-.routing-status-grid span {
+.routing-status-grid span,
+.routing-check-card span {
   color: #6b7788;
   display: block;
   font-size: 12px;
@@ -743,7 +744,8 @@ input:focus {
 }
 
 .routing-takeover-card strong,
-.routing-status-grid strong {
+.routing-status-grid strong,
+.routing-check-card strong {
   color: #102033;
   display: block;
   font-size: 14px;
@@ -751,6 +753,7 @@ input:focus {
 }
 
 .routing-takeover-card p,
+.routing-check-card p,
 .routing-help-text {
   color: #607086;
   font-size: 12px;
@@ -761,7 +764,7 @@ input:focus {
 .routing-status-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .routing-status-grid > div {
@@ -774,6 +777,37 @@ input:focus {
 
 .routing-help-text {
   margin: 0;
+}
+
+.routing-inline-warning {
+  color: #9a5b00;
+  font-size: 12px;
+  margin: -2px 0 0;
+}
+
+.routing-check-card {
+  align-items: flex-start;
+  background: #fff8ed;
+  border: 1px solid #eed3a7;
+  border-radius: 12px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.routing-check-card.ok {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.routing-check-flags {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 160px;
 }
 
 .routing-pool-tools {
@@ -1722,6 +1756,15 @@ input:focus {
   .list-columns {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .routing-check-card {
+    flex-direction: column;
+  }
+
+  .routing-check-flags {
+    justify-content: flex-start;
+    min-width: 0;
   }
 
   .account-row {

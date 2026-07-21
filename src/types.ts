@@ -135,6 +135,18 @@ export type RoutingStatus = {
   activeConnections: number;
   settings: RoutingSettings;
   recentLogs: RoutingLogEntry[];
+  codexCheck: RoutingCodexCheck;
+};
+
+export type RoutingCodexCheck = {
+  configPath: string;
+  selectedProvider?: string;
+  providerPresent: boolean;
+  baseUrlMatches: boolean;
+  tokenPresent: boolean;
+  serviceRunning: boolean;
+  healthOk: boolean;
+  diagnostics: string[];
 };
 
 export type CodexScan = {

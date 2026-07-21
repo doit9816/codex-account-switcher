@@ -244,6 +244,20 @@ export default function App() {
   const latestRoutingText = latestRoutingLog
     ? `${latestRoutingLog.alias || latestRoutingLog.profileId || "未知账号"} · ${latestRoutingLog.httpStatus || latestRoutingLog.status}`
     : "暂无请求";
+  const routingCodexCheck = routingStatus?.codexCheck;
+  const routingCodexCheckOk = !!routingCodexCheck
+    && routingCodexCheck.selectedProvider === "codex-switcher-router"
+    && routingCodexCheck.providerPresent
+    && routingCodexCheck.baseUrlMatches
+    && routingCodexCheck.tokenPresent
+    && routingCodexCheck.serviceRunning
+    && routingCodexCheck.healthOk;
+  const routingCodexCheckText = routingCodexCheckOk
+    ? "配置与服务正常"
+    : routingCodexCheck
+      ? "需要检查"
+      : "未自检";
+  const routingFixedModeIncomplete = routingMode === "fixed" && !routingFixedProfileId;
   const passwordTooShort = password.length > 0 && password.length < 8;
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
@@ -1573,7 +1587,7 @@ export default function App() {
                   <h2>服务设置</h2>
                   <p>{routingStatus?.baseUrl || `http://${routingHost}:${routingPort}/v1`}</p>
                 </div>
-                <button className="icon-button primary" onClick={() => void toggleRoutingService()} disabled={busy || routingBusy}>
+                <button className="icon-button primary" onClick={() => void toggleRoutingService()} disabled={busy || routingBusy || routingFixedModeIncomplete}>
                   <Power size={17} />
                   {routingBusy ? "处理中..." : routingStatus?.running ? "停止" : "启动"}
                 </button>
@@ -1611,6 +1625,9 @@ export default function App() {
                   </label>
                 )}
               </div>
+              {routingFixedModeIncomplete && (
+                <p className="routing-inline-warning">固定模式需要先选择账号；也可以在账号池里直接点“固定”。</p>
+              )}
 
               <label className="checkline routing-risk">
                 <input
@@ -1622,7 +1639,7 @@ export default function App() {
               </label>
 
               <div className="action-row">
-                <button className="icon-button" onClick={() => void saveRoutingSettings()} disabled={busy}>
+                <button className="icon-button" onClick={() => void saveRoutingSettings()} disabled={busy || routingFixedModeIncomplete}>
                   <ShieldCheck size={17} /> 保存设置
                 </button>
                 <button className="icon-button" onClick={() => void reloadRoutingStatus()} disabled={busy}>
@@ -1643,7 +1660,7 @@ export default function App() {
                 <div>
                   <span>Codex 接管状态</span>
                   <strong>{store?.settings.routing.appliedToCodex ? "已接管到本路由" : "未接管"}</strong>
-                  <p>{store?.settings.routing.appliedToCodex ? "本机 Codex 会请求下面的 Base URL。" : "点击一键接管后，本机 Codex 才会走路由。"}</p>
+                  <p>{store?.settings.routing.appliedToCodex ? "配置已写入本机 Codex；已有会话可能需要重启或新建线程才会生效。" : "点击一键接管后，本机 Codex 才会走路由。"}</p>
                 </div>
                 <StatusPill ok={!!store?.settings.routing.appliedToCodex} text={store?.settings.routing.appliedToCodex ? "接管中" : "未接管"} />
               </div>
@@ -1660,7 +1677,25 @@ export default function App() {
                   <span>最近实际命中</span>
                   <strong>{latestRoutingText}</strong>
                 </div>
+                <div>
+                  <span>接管自检</span>
+                  <strong>{routingCodexCheckText}</strong>
+                </div>
               </div>
+              {routingCodexCheck && (
+                <div className={`routing-check-card ${routingCodexCheckOk ? "ok" : "warn"}`}>
+                  <div>
+                    <strong>{routingCodexCheckOk ? "接管链路自检通过" : "接管链路还有异常"}</strong>
+                    <p>{routingCodexCheck.diagnostics[0] || "等待刷新状态"}</p>
+                  </div>
+                  <div className="routing-check-flags">
+                    <StatusPill ok={routingCodexCheck.selectedProvider === "codex-switcher-router"} text="Provider" />
+                    <StatusPill ok={routingCodexCheck.baseUrlMatches} text="Base URL" />
+                    <StatusPill ok={routingCodexCheck.tokenPresent} text="Key" />
+                    <StatusPill ok={routingCodexCheck.healthOk} text="服务" />
+                  </div>
+                </div>
+              )}
               <div className="routing-secret">
                 <span>Base URL</span>
                 <strong>{routingStatus?.baseUrl || "-"}</strong>
@@ -1675,6 +1710,9 @@ export default function App() {
                 </button>
                 <button className="icon-button" onClick={() => void regenerateRoutingKey()} disabled={busy}>
                   <KeyRound size={17} /> 重生成 Key
+                </button>
+                <button className="icon-button" onClick={() => void reloadRoutingStatus()} disabled={busy}>
+                  <RefreshCcw size={17} /> 自检接管
                 </button>
               </div>
               <div className="action-row">
@@ -1737,11 +1775,8 @@ export default function App() {
                     </label>
                     <button
                       className="mini-button primary"
-                      onClick={() => {
-                        setRoutingMode("fixed");
-                        setRoutingFixedProfileId(profile.id);
-                        setActivePage("routing");
-                      }}
+                      onClick={() => void fixProfileToRouting(profile.id)}
+                      disabled={busy}
                     >
                       固定
                     </button>
@@ -1775,7 +1810,7 @@ export default function App() {
                   <div className="routing-log-empty">
                     <strong>暂无请求日志</strong>
                     <p>接管后需要让 Codex 发起一次新请求，这里才会出现实际命中的账号、状态和耗时。</p>
-                    <small>如果刚接管过，请重启正在运行的 Codex 会话，或确认 Codex 配置里的 Base URL 是 {routingStatus?.baseUrl || `http://${routingHost}:${routingPort}/v1`}。</small>
+                    <small>如果自检通过但一直为空，请完全退出并重开 Codex，或新建线程后再发送一条消息；老会话通常不会重新读取刚写入的 provider。</small>
                   </div>
                 )}
               </div>
