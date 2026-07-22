@@ -24,7 +24,7 @@ use std::io::{Cursor, Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
 #[cfg(not(windows))]
@@ -1506,19 +1506,6 @@ async fn switch_profile(
     }
 
     let config_path = path.join("config.toml");
-    if profile.api_config.is_none() {
-        append_switch_diagnostic(
-            &app,
-            &switch_id,
-            &profile_id,
-            "config_cleanup_start",
-            config_path.to_string_lossy(),
-        );
-        restore_api_config_backup(&path)?;
-        remove_longcat_config_for_non_api_account(&config_path)?;
-        append_switch_diagnostic(&app, &switch_id, &profile_id, "config_cleanup_done", "");
-    }
-
     let config_backup_path = path.join("config.toml.account-switcher.backup");
     append_switch_diagnostic(&app, &switch_id, &profile_id, "auth_write_start", "");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
@@ -1565,6 +1552,17 @@ async fn switch_profile(
     };
     verify_auth_json_written(&auth_path, &auth_json)?;
     append_switch_diagnostic(&app, &switch_id, &profile_id, "auth_write_done", "");
+    let config_cleanup_warning = if profile.api_config.is_none() {
+        cleanup_non_api_config_with_timeout(
+            app.clone(),
+            switch_id.clone(),
+            profile_id.clone(),
+            path.clone(),
+            config_path.clone(),
+        )
+    } else {
+        None
+    };
 
     store.settings.codex_home = Some(path.to_string_lossy().to_string());
     store.settings.current_profile_id = Some(profile_id.clone());
@@ -1575,6 +1573,9 @@ async fn switch_profile(
         "info",
         &format!("已写入 Codex auth.json：{}", profile.alias),
     );
+    if let Some(warning) = config_cleanup_warning {
+        push_event(&mut store, "warn", &warning);
+    }
     append_switch_diagnostic(
         &app,
         &switch_id,
@@ -2764,6 +2765,90 @@ fn remove_longcat_config_for_non_api_account(config_path: &Path) -> Result<(), S
     replace_file_with_rollback(config_path, document.to_string().as_bytes(), None)
 }
 
+fn cleanup_non_api_config_with_timeout(
+    app: AppHandle,
+    switch_id: String,
+    profile_id: String,
+    codex_home: PathBuf,
+    config_path: PathBuf,
+) -> Option<String> {
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "config_cleanup_start",
+        config_path.to_string_lossy(),
+    );
+    let (sender, receiver) = mpsc::channel();
+    let worker_app = app.clone();
+    let worker_switch_id = switch_id.clone();
+    let worker_profile_id = profile_id.clone();
+    thread::spawn(move || {
+        append_switch_diagnostic(
+            &worker_app,
+            &worker_switch_id,
+            &worker_profile_id,
+            "config_restore_backup_start",
+            codex_home.to_string_lossy(),
+        );
+        let result = restore_api_config_backup(&codex_home)
+            .and_then(|_| {
+                append_switch_diagnostic(
+                    &worker_app,
+                    &worker_switch_id,
+                    &worker_profile_id,
+                    "config_remove_longcat_start",
+                    config_path.to_string_lossy(),
+                );
+                remove_longcat_config_for_non_api_account(&config_path)
+            })
+            .map(|_| {
+                append_switch_diagnostic(
+                    &worker_app,
+                    &worker_switch_id,
+                    &worker_profile_id,
+                    "config_cleanup_done",
+                    "",
+                );
+            });
+        if let Err(error) = &result {
+            append_switch_diagnostic(
+                &worker_app,
+                &worker_switch_id,
+                &worker_profile_id,
+                "config_cleanup_failed",
+                error,
+            );
+        }
+        let _ = sender.send(result);
+    });
+
+    match receiver.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("config.toml 清理失败，auth.json 已写入：{error}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            append_switch_diagnostic(
+                &app,
+                &switch_id,
+                &profile_id,
+                "config_cleanup_timeout",
+                "background cleanup exceeded 2s; switch continues",
+            );
+            Some("config.toml 清理超过 2 秒，已转后台继续；auth.json 已写入".to_string())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            append_switch_diagnostic(
+                &app,
+                &switch_id,
+                &profile_id,
+                "config_cleanup_disconnected",
+                "background cleanup worker disconnected",
+            );
+            Some("config.toml 清理线程异常退出，auth.json 已写入".to_string())
+        }
+    }
+}
+
 fn remove_longcat_codex_options(document: &mut toml_edit::DocumentMut) {
     remove_bool_root_if_matches(document, "disable_response_storage", true);
     remove_str_root_if_matches(document, "web_search", "disabled");
@@ -3502,17 +3587,32 @@ if ($entry) { Write-Output $entry.AppID }"#;
 fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
     match snapshot.launch_kind() {
         Some(CodexLaunchKind::Desktop) => {
+            if let Some(path) = snapshot.executable_path().filter(|path| path.exists()) {
+                match Command::new(path).spawn() {
+                    Ok(_) => return Ok(()),
+                    Err(error) => {
+                        let fallback_error =
+                            format!("无法通过已捕获路径启动 Codex 桌面应用: {error}");
+                        if let Some(app_id) = windows_codex_app_user_model_id() {
+                            Command::new("explorer.exe")
+                                .arg(format!("shell:AppsFolder\\{app_id}"))
+                                .spawn()
+                                .map_err(|error| {
+                                    format!(
+                                        "{fallback_error}；且无法通过 Windows 应用入口启动 Codex: {error}"
+                                    )
+                                })?;
+                            return Ok(());
+                        }
+                        return Err(fallback_error);
+                    }
+                }
+            }
             if let Some(app_id) = windows_codex_app_user_model_id() {
                 Command::new("explorer.exe")
                     .arg(format!("shell:AppsFolder\\{app_id}"))
                     .spawn()
                     .map_err(|error| format!("无法通过 Windows 应用入口启动 Codex: {error}"))?;
-                return Ok(());
-            }
-            if let Some(path) = snapshot.executable_path().filter(|path| path.exists()) {
-                Command::new(path)
-                    .spawn()
-                    .map_err(|error| format!("无法启动 Codex 桌面应用: {error}"))?;
                 return Ok(());
             }
             Err("未找到 Codex 桌面应用启动入口".to_string())
