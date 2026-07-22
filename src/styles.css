@@ -1047,6 +1047,24 @@ input:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.api-advanced-settings {
+  grid-column: 1 / -1;
+}
+
+.api-advanced-settings summary {
+  color: #526276;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.api-advanced-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-top: 10px;
+}
+
 .edit-oauth-form {
   grid-template-columns: minmax(0, 1fr);
 }

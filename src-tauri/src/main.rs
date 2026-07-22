@@ -26,9 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{mpsc, Mutex};
 use std::thread;
-use std::time::Duration;
-#[cfg(not(windows))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -50,6 +48,17 @@ const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 const OFFICIAL_CLIENT_DISPLAY_NAME: &str = "Codex/ChatGPT";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const LOOPBACK_NO_PROXY_VALUES: [&str; 5] = ["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"];
+const CODEX_PROXY_ENV_KEYS: [&str; 8] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
 pub(crate) const ROUTER_PROVIDER_ID: &str = "codex-switcher-router";
 static STORE_IO_MUTEX: Mutex<()> = Mutex::new(());
 pub(crate) use proxy::{build_probe_client, normalize_proxy_url, ProxySettings, CHATGPT_USAGE_URL};
@@ -59,6 +68,263 @@ fn hidden_command<S: AsRef<OsStr>>(program: S) -> Command {
     let mut command = Command::new(program);
     command.creation_flags(CREATE_NO_WINDOW);
     command
+}
+
+fn merge_loopback_no_proxy(existing: Option<&str>) -> String {
+    let mut values = existing
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .collect::<Vec<_>>();
+
+    for required in LOOPBACK_NO_PROXY_VALUES {
+        if !values
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(required))
+        {
+            values.push(required.to_string());
+        }
+    }
+
+    values.join(",")
+}
+
+fn codex_launch_proxy_url(proxy: Option<&ProxySettings>) -> Option<String> {
+    let proxy = proxy?;
+    if !proxy.enabled {
+        return None;
+    }
+    normalize_proxy_url(&proxy.url)
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn chromium_proxy_url(proxy: Option<&ProxySettings>) -> Option<String> {
+    codex_launch_proxy_url(proxy).map(|value| {
+        value
+            .strip_prefix("socks5h://")
+            .map(|rest| format!("socks5://{rest}"))
+            .unwrap_or(value)
+    })
+}
+
+fn chromium_proxy_bypass_list() -> String {
+    LOOPBACK_NO_PROXY_VALUES.join(";")
+}
+
+#[cfg(windows)]
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(windows)]
+fn windows_proxy_server_value(proxy: Option<&ProxySettings>) -> Option<String> {
+    let proxy_url = codex_launch_proxy_url(proxy)?;
+    let parsed = url::Url::parse(&proxy_url).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port()?;
+    let address = format!("{host}:{port}");
+    match parsed.scheme().to_ascii_lowercase().as_str() {
+        "socks5" | "socks5h" => Some(format!("socks={address}")),
+        _ => Some(address),
+    }
+}
+
+#[cfg(windows)]
+fn windows_proxy_override_value() -> String {
+    let mut values = LOOPBACK_NO_PROXY_VALUES
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    values.push("<local>".to_string());
+    values.join(";")
+}
+
+fn apply_codex_desktop_launch_args(command: &mut Command, proxy: Option<&ProxySettings>) {
+    if let Some(proxy_url) = chromium_proxy_url(proxy) {
+        command
+            .arg(format!("--proxy-server={proxy_url}"))
+            .arg(format!(
+                "--proxy-bypass-list={}",
+                chromium_proxy_bypass_list()
+            ));
+    }
+}
+
+#[cfg(windows)]
+fn enable_windows_system_proxy_temporarily(
+    proxy: Option<&ProxySettings>,
+    duration: Duration,
+) -> Result<(), String> {
+    let Some(proxy_server) = windows_proxy_server_value(proxy) else {
+        return Ok(());
+    };
+    let proxy_override = windows_proxy_override_value();
+    let ready_path = std::env::temp_dir().join(format!(
+        "codex-switcher-system-proxy-{}.ready",
+        Uuid::new_v4()
+    ));
+    let ready = ready_path.to_string_lossy().to_string();
+    let seconds = duration.as_secs().max(5);
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+$notify = @'
+using System;
+using System.Runtime.InteropServices;
+public static class NativeInternetOptions {{
+  [DllImport("wininet.dll", SetLastError=true)]
+  public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+}}
+'@
+if (-not ('NativeInternetOptions' -as [type])) {{ Add-Type $notify }}
+$props = Get-ItemProperty -Path $key
+$hadEnable = $props.PSObject.Properties.Name -contains 'ProxyEnable'
+$hadServer = $props.PSObject.Properties.Name -contains 'ProxyServer'
+$hadOverride = $props.PSObject.Properties.Name -contains 'ProxyOverride'
+$oldEnable = if ($hadEnable) {{ $props.ProxyEnable }} else {{ $null }}
+$oldServer = if ($hadServer) {{ $props.ProxyServer }} else {{ $null }}
+$oldOverride = if ($hadOverride) {{ $props.ProxyOverride }} else {{ $null }}
+Set-ItemProperty -Path $key -Name ProxyEnable -Type DWord -Value 1
+Set-ItemProperty -Path $key -Name ProxyServer -Type String -Value {proxy_server}
+Set-ItemProperty -Path $key -Name ProxyOverride -Type String -Value {proxy_override}
+[NativeInternetOptions]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+[NativeInternetOptions]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+New-Item -ItemType File -Path {ready} -Force | Out-Null
+Start-Sleep -Seconds {seconds}
+if ($hadEnable) {{ Set-ItemProperty -Path $key -Name ProxyEnable -Type DWord -Value $oldEnable }} else {{ Remove-ItemProperty -Path $key -Name ProxyEnable -ErrorAction SilentlyContinue }}
+if ($hadServer) {{ Set-ItemProperty -Path $key -Name ProxyServer -Type String -Value $oldServer }} else {{ Remove-ItemProperty -Path $key -Name ProxyServer -ErrorAction SilentlyContinue }}
+if ($hadOverride) {{ Set-ItemProperty -Path $key -Name ProxyOverride -Type String -Value $oldOverride }} else {{ Remove-ItemProperty -Path $key -Name ProxyOverride -ErrorAction SilentlyContinue }}
+[NativeInternetOptions]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+[NativeInternetOptions]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+Remove-Item -Path {ready} -Force -ErrorAction SilentlyContinue
+"#,
+        proxy_server = powershell_single_quote(&proxy_server),
+        proxy_override = powershell_single_quote(&proxy_override),
+        ready = powershell_single_quote(&ready),
+        seconds = seconds,
+    );
+    hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .spawn()
+        .map_err(|error| format!("无法临时启用系统代理: {error}"))?;
+
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(2) {
+        if ready_path.exists() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn env_line_key(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let assignment = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+    assignment
+        .split_once('=')
+        .map(|(key, _)| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+}
+
+fn env_line_value(line: &str) -> Option<&str> {
+    line.trim_start()
+        .strip_prefix("export ")
+        .unwrap_or_else(|| line.trim_start())
+        .split_once('=')
+        .map(|(_, value)| value.trim())
+}
+
+fn is_codex_proxy_env_key(key: &str) -> bool {
+    CODEX_PROXY_ENV_KEYS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
+fn render_codex_proxy_env(content: &str, proxy: &ProxySettings) -> String {
+    let existing_no_proxy = content.lines().find_map(|line| {
+        env_line_key(line)
+            .filter(|key| {
+                key.eq_ignore_ascii_case("NO_PROXY") || key.eq_ignore_ascii_case("no_proxy")
+            })
+            .and_then(|_| env_line_value(line))
+    });
+    let no_proxy = merge_loopback_no_proxy(existing_no_proxy);
+    let mut lines = content
+        .lines()
+        .filter(|line| {
+            env_line_key(line)
+                .map(|key| !is_codex_proxy_env_key(&key))
+                .unwrap_or(true)
+        })
+        .map(String::from)
+        .collect::<Vec<_>>();
+
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+        .push("# Managed by CodexSwitcher. Used by Codex app-server without TUN mode.".to_string());
+    if let Some(proxy_url) = codex_launch_proxy_url(Some(proxy)) {
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            lines.push(format!("{key}={proxy_url}"));
+        }
+    }
+    lines.push(format!("NO_PROXY={no_proxy}"));
+    lines.push(format!("no_proxy={no_proxy}"));
+    format!("{}\n", lines.join("\n"))
+}
+
+fn sync_codex_proxy_env_file(codex_home: &Path, proxy: &ProxySettings) -> Result<(), String> {
+    fs::create_dir_all(codex_home).map_err(display_err)?;
+    let env_path = codex_home.join(".env");
+    let content = fs::read_to_string(&env_path).unwrap_or_default();
+    fs::write(&env_path, render_codex_proxy_env(&content, proxy)).map_err(display_err)
+}
+
+fn apply_codex_launch_env(command: &mut Command, proxy: Option<&ProxySettings>) {
+    if let Some(proxy_url) = codex_launch_proxy_url(proxy) {
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            command.env(key, &proxy_url);
+        }
+    }
+    let existing = std::env::var("NO_PROXY")
+        .ok()
+        .or_else(|| std::env::var("no_proxy").ok());
+    let no_proxy = merge_loopback_no_proxy(existing.as_deref());
+    command.env("NO_PROXY", &no_proxy);
+    command.env("no_proxy", no_proxy);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -729,13 +995,17 @@ fn add_api_profile(
     model: String,
     api_key: String,
 ) -> Result<StoreView, String> {
-    let provider_id = normalize_provider_id(&provider_id)?;
     let base_url = normalize_api_base_url(&base_url)?;
     let model = model.trim();
     let api_key = api_key.trim();
     if model.is_empty() || api_key.is_empty() {
         return Err("模型和 API Key 不能为空".to_string());
     }
+    let provider_id = if provider_id.trim().is_empty() {
+        normalize_provider_id(&format!("api-{}", Uuid::new_v4().simple()))?
+    } else {
+        normalize_provider_id(&provider_id)?
+    };
 
     let auth_json = serde_json::to_string_pretty(&serde_json::json!({
         "auth_mode": "apikey",
@@ -959,13 +1229,16 @@ fn save_proxy_settings(app: AppHandle, enabled: bool, url: String) -> Result<Sto
         enabled,
         url: normalized,
     };
+    if let Ok(codex_home) = resolve_codex_home(&app, store.settings.codex_home.clone()) {
+        sync_codex_proxy_env_file(&codex_home, &store.settings.probe_proxy)?;
+    }
     push_event(
         &mut store,
         "info",
         if enabled {
-            "已保存额度探测代理设置"
+            "已保存代理设置并同步 Codex .env"
         } else {
-            "已关闭额度探测代理"
+            "已关闭代理并同步 Codex .env"
         },
     );
     save_store(&app, &store)?;
@@ -1507,6 +1780,8 @@ async fn switch_profile(
 
     let config_path = path.join("config.toml");
     let config_backup_path = path.join("config.toml.account-switcher.backup");
+    sync_codex_proxy_env_file(&path, &store.settings.probe_proxy)?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "proxy_env_synced", ".env");
     append_switch_diagnostic(&app, &switch_id, &profile_id, "auth_write_start", "");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
         if !config_backup_path.exists() {
@@ -1599,7 +1874,10 @@ async fn switch_profile(
         match terminate_codex_processes(&codex_runtime) {
             Ok(()) => {
                 append_switch_diagnostic(&app, &switch_id, &profile_id, "codex_terminate_done", "");
-                relaunch_guard.arm(codex_runtime.clone());
+                relaunch_guard.arm(
+                    codex_runtime.clone(),
+                    Some(store.settings.probe_proxy.clone()),
+                );
                 append_switch_diagnostic(&app, &switch_id, &profile_id, "codex_relaunch_start", "");
                 match relaunch_guard.relaunch() {
                     Ok(()) => {
@@ -2956,7 +3234,9 @@ fn open_external_url(url: &str) -> Result<(), String> {
 fn start_official_cli_login() -> Result<(), String> {
     let mut last_error = None;
     for command in ["codex", "chatgpt"] {
-        match Command::new(command).arg("login").spawn() {
+        let mut launch = Command::new(command);
+        apply_codex_launch_env(&mut launch, None);
+        match launch.arg("login").spawn() {
             Ok(_) => return Ok(()),
             Err(error) => last_error = Some(format!("{command}: {error}")),
         }
@@ -3207,25 +3487,27 @@ impl CodexProcessSnapshot {
 #[derive(Debug, Default)]
 struct CodexRelaunchGuard {
     snapshot: Option<CodexProcessSnapshot>,
+    proxy: Option<ProxySettings>,
 }
 
 impl CodexRelaunchGuard {
-    fn arm(&mut self, snapshot: CodexProcessSnapshot) {
+    fn arm(&mut self, snapshot: CodexProcessSnapshot, proxy: Option<ProxySettings>) {
         self.snapshot = Some(snapshot);
+        self.proxy = proxy;
     }
 
     fn relaunch(&mut self) -> Result<(), String> {
         let Some(snapshot) = self.snapshot.take() else {
             return Ok(());
         };
-        relaunch_codex_processes(&snapshot)
+        relaunch_codex_processes(&snapshot, self.proxy.as_ref())
     }
 }
 
 impl Drop for CodexRelaunchGuard {
     fn drop(&mut self) {
         if let Some(snapshot) = self.snapshot.take() {
-            let _ = relaunch_codex_processes(&snapshot);
+            let _ = relaunch_codex_processes(&snapshot, self.proxy.as_ref());
         }
     }
 }
@@ -3474,19 +3756,23 @@ fn wait_for_processes_exit(pids: &[u32], timeout: Duration) -> bool {
 }
 
 #[cfg(windows)]
-fn relaunch_official_cli(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+fn relaunch_official_cli(
+    snapshot: &CodexProcessSnapshot,
+    proxy: Option<&ProxySettings>,
+) -> Result<(), String> {
     if let Some(path) = snapshot.executable_path().filter(|path| path.exists()) {
-        Command::new(path)
+        let mut command = Command::new(path);
+        apply_codex_launch_env(&mut command, proxy);
+        command
             .spawn()
             .map_err(|error| format!("无法重新启动 {OFFICIAL_CLIENT_DISPLAY_NAME} CLI: {error}"))?;
         return Ok(());
     }
     let mut last_error = None;
     for command in ["codex", "chatgpt"] {
-        match hidden_command("cmd")
-            .args(["/C", "start", "", command])
-            .spawn()
-        {
+        let mut launch = hidden_command("cmd");
+        apply_codex_launch_env(&mut launch, proxy);
+        match launch.args(["/C", "start", "", command]).spawn() {
             Ok(_) => return Ok(()),
             Err(error) => last_error = Some(format!("{command}: {error}")),
         }
@@ -3500,16 +3786,23 @@ fn relaunch_official_cli(snapshot: &CodexProcessSnapshot) -> Result<(), String> 
 }
 
 #[cfg(not(windows))]
-fn relaunch_official_cli(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+fn relaunch_official_cli(
+    snapshot: &CodexProcessSnapshot,
+    proxy: Option<&ProxySettings>,
+) -> Result<(), String> {
     if let Some(path) = snapshot.executable_path().filter(|path| path.exists()) {
-        Command::new(path)
+        let mut command = Command::new(path);
+        apply_codex_launch_env(&mut command, proxy);
+        command
             .spawn()
             .map_err(|error| format!("无法重新启动 {OFFICIAL_CLIENT_DISPLAY_NAME} CLI: {error}"))?;
         return Ok(());
     }
     let mut last_error = None;
     for command in ["codex", "chatgpt"] {
-        match Command::new(command).spawn() {
+        let mut launch = Command::new(command);
+        apply_codex_launch_env(&mut launch, proxy);
+        match launch.spawn() {
             Ok(_) => return Ok(()),
             Err(error) => last_error = Some(format!("{command}: {error}")),
         }
@@ -3584,17 +3877,26 @@ if ($entry) { Write-Output $entry.AppID }"#;
 }
 
 #[cfg(windows)]
-fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+fn relaunch_codex_processes(
+    snapshot: &CodexProcessSnapshot,
+    proxy: Option<&ProxySettings>,
+) -> Result<(), String> {
     match snapshot.launch_kind() {
         Some(CodexLaunchKind::Desktop) => {
+            enable_windows_system_proxy_temporarily(proxy, Duration::from_secs(45))?;
             if let Some(path) = snapshot.executable_path().filter(|path| path.exists()) {
-                match Command::new(path).spawn() {
+                let mut command = Command::new(path);
+                apply_codex_launch_env(&mut command, proxy);
+                apply_codex_desktop_launch_args(&mut command, proxy);
+                match command.spawn() {
                     Ok(_) => return Ok(()),
                     Err(error) => {
                         let fallback_error =
                             format!("无法通过已捕获路径启动 Codex 桌面应用: {error}");
                         if let Some(app_id) = windows_codex_app_user_model_id() {
-                            Command::new("explorer.exe")
+                            let mut command = Command::new("explorer.exe");
+                            apply_codex_launch_env(&mut command, proxy);
+                            command
                                 .arg(format!("shell:AppsFolder\\{app_id}"))
                                 .spawn()
                                 .map_err(|error| {
@@ -3609,7 +3911,9 @@ fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), Strin
                 }
             }
             if let Some(app_id) = windows_codex_app_user_model_id() {
-                Command::new("explorer.exe")
+                let mut command = Command::new("explorer.exe");
+                apply_codex_launch_env(&mut command, proxy);
+                command
                     .arg(format!("shell:AppsFolder\\{app_id}"))
                     .spawn()
                     .map_err(|error| format!("无法通过 Windows 应用入口启动 Codex: {error}"))?;
@@ -3617,26 +3921,37 @@ fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), Strin
             }
             Err("未找到 Codex 桌面应用启动入口".to_string())
         }
-        Some(CodexLaunchKind::Cli) => relaunch_official_cli(snapshot),
+        Some(CodexLaunchKind::Cli) => relaunch_official_cli(snapshot, proxy),
         None => Ok(()),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
+fn relaunch_codex_processes(
+    snapshot: &CodexProcessSnapshot,
+    proxy: Option<&ProxySettings>,
+) -> Result<(), String> {
     match snapshot.launch_kind() {
         Some(CodexLaunchKind::Desktop) => {
-            let status = Command::new("open")
-                .args(["-a", "Codex"])
-                .status()
-                .map_err(display_err)?;
+            let mut command = Command::new("open");
+            apply_codex_launch_env(&mut command, proxy);
+            command.args(["-a", "Codex"]);
+            if chromium_proxy_url(proxy).is_some() {
+                command.arg("--args");
+            }
+            apply_codex_desktop_launch_args(&mut command, proxy);
+            let status = command.status().map_err(display_err)?;
             if status.success() {
                 Ok(())
             } else {
-                let status = Command::new("open")
-                    .args(["-a", "ChatGPT"])
-                    .status()
-                    .map_err(display_err)?;
+                let mut command = Command::new("open");
+                apply_codex_launch_env(&mut command, proxy);
+                command.args(["-a", "ChatGPT"]);
+                if chromium_proxy_url(proxy).is_some() {
+                    command.arg("--args");
+                }
+                apply_codex_desktop_launch_args(&mut command, proxy);
+                let status = command.status().map_err(display_err)?;
                 if status.success() {
                     Ok(())
                 } else {
@@ -3644,14 +3959,17 @@ fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), Strin
                 }
             }
         }
-        Some(CodexLaunchKind::Cli) => relaunch_official_cli(snapshot),
+        Some(CodexLaunchKind::Cli) => relaunch_official_cli(snapshot, proxy),
         None => Ok(()),
     }
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
-fn relaunch_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
-    relaunch_official_cli(snapshot)
+fn relaunch_codex_processes(
+    snapshot: &CodexProcessSnapshot,
+    proxy: Option<&ProxySettings>,
+) -> Result<(), String> {
+    relaunch_official_cli(snapshot, proxy)
 }
 
 fn codex_process_ids_from_wmic_output(output: &str, current_exe: &str) -> Vec<u32> {
@@ -4561,6 +4879,75 @@ mod tests {
         let encrypted = encrypt_secret(b"hello", &key).unwrap();
         let decrypted = decrypt_secret(&encrypted, &key).unwrap();
         assert_eq!(decrypted, b"hello");
+    }
+
+    #[test]
+    fn codex_launch_env_keeps_loopback_out_of_proxy() {
+        let merged = merge_loopback_no_proxy(Some("example.com,127.0.0.1"));
+
+        assert!(merged.contains("example.com"));
+        assert!(merged.contains("127.0.0.1"));
+        assert!(merged.contains("localhost"));
+        assert!(merged.contains("::1"));
+    }
+
+    #[test]
+    fn codex_launch_env_uses_saved_proxy_url() {
+        assert_eq!(
+            codex_launch_proxy_url(Some(&ProxySettings {
+                enabled: true,
+                url: "127.0.0.1:7890".to_string(),
+            }))
+            .as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        assert!(codex_launch_proxy_url(Some(&ProxySettings {
+            enabled: false,
+            url: "127.0.0.1:7890".to_string(),
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn chromium_proxy_url_uses_chrome_compatible_scheme() {
+        assert_eq!(
+            chromium_proxy_url(Some(&ProxySettings {
+                enabled: true,
+                url: "socks5h://127.0.0.1:7898".to_string(),
+            }))
+            .as_deref(),
+            Some("socks5://127.0.0.1:7898")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_proxy_uses_wininet_format() {
+        assert_eq!(
+            windows_proxy_server_value(Some(&ProxySettings {
+                enabled: true,
+                url: "socks5h://127.0.0.1:7898".to_string(),
+            }))
+            .as_deref(),
+            Some("socks=127.0.0.1:7898")
+        );
+    }
+
+    #[test]
+    fn codex_env_file_replaces_only_proxy_keys() {
+        let rendered = render_codex_proxy_env(
+            "OPENAI_API_KEY=keep\nALL_PROXY=socks5://127.0.0.1:1080\nNO_PROXY=example.com\n",
+            &ProxySettings {
+                enabled: true,
+                url: "socks5h://127.0.0.1:7898".to_string(),
+            },
+        );
+
+        assert!(rendered.contains("OPENAI_API_KEY=keep"));
+        assert!(rendered.contains("ALL_PROXY=socks5h://127.0.0.1:7898"));
+        assert!(rendered.contains("HTTPS_PROXY=socks5h://127.0.0.1:7898"));
+        assert!(rendered.contains("NO_PROXY=example.com,localhost,127.0.0.1,::1,[::1],0.0.0.0"));
+        assert!(!rendered.contains("ALL_PROXY=socks5://127.0.0.1:1080"));
     }
 
     #[test]

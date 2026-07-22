@@ -72,6 +72,16 @@ import {
 
 const UI_BUSY_TIMEOUT_MS = 90_000;
 
+function generatedApiProviderId(alias: string, model: string) {
+  const source = `${alias || model || "api"}`
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return `${source || "api"}-${Date.now().toString(36)}`;
+}
+
 export default function App() {
   const [store, setStore] = useState<StoreView | null>(null);
   const [scan, setScan] = useState<CodexScan | null>(null);
@@ -1082,9 +1092,10 @@ export default function App() {
 
   async function addApiProvider() {
     const result = await run(async () => {
+      const providerAlias = apiProviderName.trim() || alias.trim() || apiModel.trim() || "API Key";
       const view = await invoke<StoreView>("add_api_profile", {
-        alias: apiProviderName || alias,
-        providerId: apiProviderId,
+        alias: providerAlias,
+        providerId: apiProviderId.trim() || generatedApiProviderId(providerAlias, apiModel),
         baseUrl: apiBaseUrl,
         model: apiModel,
         apiKey
@@ -1391,10 +1402,12 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <label className="add-account-field">
-              {t.importAlias}
-              <input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder={t.importAlias} />
-            </label>
+            {addAccountTab !== "api" && (
+              <label className="add-account-field">
+                {t.importAlias}
+                <input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder={t.importAlias} />
+              </label>
+            )}
             {addAccountTab === "oauth" && (
               <div className="add-account-content">
                 <p>{t.oauthLoginHint}</p>
@@ -1461,12 +1474,17 @@ export default function App() {
             )}
             {addAccountTab === "api" && (
               <div className="api-provider-form add-account-content">
-                <label>{t.apiProviderName}<input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="LongCat / OpenAI Compatible" /></label>
-                <label>{t.providerId}<input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="openai-compatible" /></label>
-                <label>{t.apiBaseUrl}<input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
                 <label>{t.apiModel}<input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" /></label>
                 <label>{t.apiKey}<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
-                <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}>
+                <label>{t.importAlias}<input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="可空，默认使用模型名" /></label>
+                <details className="api-advanced-settings">
+                  <summary>高级设置（可选）</summary>
+                  <div className="api-advanced-grid">
+                    <label>{t.providerId}<input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="自动生成" /></label>
+                    <label>{t.apiBaseUrl}<input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="默认 https://api.openai.com/v1" /></label>
+                  </div>
+                </details>
+                <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiModel.trim() || !apiKey.trim()}>
                   <KeyRound size={17} /> {t.addApiProvider}
                 </button>
               </div>
@@ -1500,16 +1518,8 @@ export default function App() {
             {editingProfile.apiConfig ? (
               <div className="api-provider-form edit-api-provider-form add-account-content">
                 <label>
-                  {t.apiProviderName}
-                  <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} placeholder="LongCat / OpenAI Compatible" />
-                </label>
-                <label>
-                  {t.providerId}
-                  <input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} placeholder="openai-compatible" />
-                </label>
-                <label>
-                  {t.apiBaseUrl}
-                  <input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="https://api.openai.com/v1" />
+                  {t.accountAlias}
+                  <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} placeholder={t.accountAlias} />
                 </label>
                 <label>
                   {t.apiModel}
@@ -1519,6 +1529,19 @@ export default function App() {
                   {t.apiKeyOptional}
                   <input type="password" value={editApiKeyDraft} onChange={(event) => setEditApiKeyDraft(event.target.value)} />
                 </label>
+                <details className="api-advanced-settings form-span-all">
+                  <summary>高级设置（可选）</summary>
+                  <div className="api-advanced-grid">
+                    <label>
+                      {t.providerId}
+                      <input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} placeholder="自动生成" />
+                    </label>
+                    <label>
+                      {t.apiBaseUrl}
+                      <input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="默认 https://api.openai.com/v1" />
+                    </label>
+                  </div>
+                </details>
                 <label className="form-span-all">
                   {t.accountNote}
                   <textarea
@@ -1533,7 +1556,7 @@ export default function App() {
                   <button
                     className="icon-button primary"
                     onClick={() => void saveProfileDetails()}
-                    disabled={busy || !editAliasDraft.trim() || !editProviderIdDraft.trim() || !editModelDraft.trim()}
+                    disabled={busy || !editAliasDraft.trim() || !editModelDraft.trim()}
                   >
                     <ShieldCheck size={17} /> {t.saveRules}
                   </button>
@@ -2068,26 +2091,6 @@ export default function App() {
             <p>{t.apiResponsesHint}</p>
             <div className="api-provider-form">
               <label>
-                {t.apiProviderName}
-                <input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} />
-              </label>
-              <label>
-                {t.providerId}
-                <input
-                  value={apiProviderId}
-                  onChange={(event) => setApiProviderId(event.target.value)}
-                  placeholder="openai-compatible"
-                />
-              </label>
-              <label>
-                {t.apiBaseUrl}
-                <input
-                  value={apiBaseUrl}
-                  onChange={(event) => setApiBaseUrl(event.target.value)}
-                  placeholder="默认 https://api.openai.com/v1"
-                />
-              </label>
-              <label>
                 {t.apiModel}
                 <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" />
               </label>
@@ -2095,10 +2098,35 @@ export default function App() {
                 {t.apiKey}
                 <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
               </label>
+              <label>
+                {t.importAlias}
+                <input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="可空，默认使用模型名" />
+              </label>
+              <details className="api-advanced-settings">
+                <summary>高级设置（可选）</summary>
+                <div className="api-advanced-grid">
+                  <label>
+                    {t.providerId}
+                    <input
+                      value={apiProviderId}
+                      onChange={(event) => setApiProviderId(event.target.value)}
+                      placeholder="自动生成"
+                    />
+                  </label>
+                  <label>
+                    {t.apiBaseUrl}
+                    <input
+                      value={apiBaseUrl}
+                      onChange={(event) => setApiBaseUrl(event.target.value)}
+                      placeholder="默认 https://api.openai.com/v1"
+                    />
+                  </label>
+                </div>
+              </details>
               <button
                 className="icon-button primary"
                 onClick={() => void addApiProvider()}
-                disabled={busy || !apiProviderId.trim() || !apiModel.trim() || !apiKey.trim()}
+                disabled={busy || !apiModel.trim() || !apiKey.trim()}
               >
                 <KeyRound size={16} /> {t.addApiProvider}
               </button>
