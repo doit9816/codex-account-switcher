@@ -38,6 +38,7 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 const STORE_FILE: &str = "store.json";
+const SWITCH_DIAGNOSTICS_FILE: &str = "switch-diagnostics.log";
 const LOCAL_KEY_FILE: &str = "local-profile.key";
 const EXPORT_FORMAT: &str = "codex-switcher.bundle";
 const EXPORT_VERSION: u32 = 1;
@@ -1333,15 +1334,43 @@ async fn switch_profile(
     codex_home: Option<String>,
     force: bool,
 ) -> Result<SwitchResult, String> {
+    let switch_id = Uuid::new_v4().to_string();
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "start",
+        format!("force={force}, codex_home={codex_home:?}"),
+    );
     let mut store = load_store(&app)?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "store_loaded", "");
     let path = resolve_codex_home(&app, codex_home)?;
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "home_resolved",
+        path.to_string_lossy(),
+    );
     let key = load_master_key(&app)?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "master_key_loaded", "");
     let mut idx = store
         .profiles
         .iter()
         .position(|p| p.id == profile_id)
         .ok_or_else(|| "账号不存在".to_string())?;
     let mut profile = store.profiles[idx].clone();
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "profile_selected",
+        format!(
+            "alias={}, api={}",
+            profile.alias,
+            profile.api_config.is_some()
+        ),
+    );
     if store.settings.routing.applied_to_codex {
         return Err(
             "路由 API 已接管本机 Codex 配置；请在路由页固定账号或先恢复配置后再切换全局账号"
@@ -1362,20 +1391,55 @@ async fn switch_profile(
     }
     let codex_runtime = collect_codex_process_snapshot();
     let codex_running = codex_runtime.is_running();
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "codex_snapshot",
+        format!(
+            "running={codex_running}, processes={}",
+            codex_runtime.processes.len()
+        ),
+    );
     if codex_running && !force {
         return Err("检测到 Codex 正在运行。为避免当前会话账号不匹配，请先关闭 Codex，或勾选强制切换后再继续。".to_string());
     }
 
     fs::create_dir_all(&path).map_err(display_err)?;
     let lock_path = path.join(".account-switcher.lock");
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "lock_open_start",
+        lock_path.to_string_lossy(),
+    );
     let lock = OpenOptions::new()
         .create(true)
         .write(true)
         .open(&lock_path)
         .map_err(display_err)?;
-    lock.lock_exclusive().map_err(display_err)?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "lock_open_done", "");
+    if let Err(error) = lock.try_lock_exclusive() {
+        append_switch_diagnostic(
+            &app,
+            &switch_id,
+            &profile_id,
+            "lock_busy",
+            error.to_string(),
+        );
+        return Err("已有账号切换任务仍在执行，请关闭并重开 CodexSwitcher 后再试".to_string());
+    }
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "lock_acquired", "");
 
     let auth_path = path.join("auth.json");
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "current_auth_sync_start",
+        auth_path.to_string_lossy(),
+    );
     if auth_path.exists() {
         let current_auth_json =
             fs::read_to_string(&auth_path).map_err(|e| format!("无法读取当前 auth.json: {e}"))?;
@@ -1398,16 +1462,27 @@ async fn switch_profile(
             }
         }
     }
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "current_auth_sync_done", "");
 
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "decrypt_profile_start", "");
     let mut auth_json = String::from_utf8(decrypt_secret(&profile.encrypted_auth_json, &key)?)
         .map_err(|e| e.to_string())?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "decrypt_profile_done", "");
     if profile.api_config.is_none()
         && should_refresh_access_token(profile.summary.access_token_exp, 0)
     {
+        append_switch_diagnostic(&app, &switch_id, &profile_id, "token_refresh_start", "");
         let client = build_probe_client(&store.settings.probe_proxy)?;
         auth_json = match refresh_auth_json_with_client(&client, &auth_json).await {
             Ok(updated) => updated,
             Err(error) => {
+                append_switch_diagnostic(
+                    &app,
+                    &switch_id,
+                    &profile_id,
+                    "token_refresh_failed",
+                    &error,
+                );
                 store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
                 store.profiles[idx].usage.last_token_refresh_status = Some(
                     if refresh_error_requires_relogin(&error) {
@@ -1427,15 +1502,25 @@ async fn switch_profile(
         store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
         store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
         store.profiles[idx].usage.last_token_refresh_error = None;
+        append_switch_diagnostic(&app, &switch_id, &profile_id, "token_refresh_done", "");
     }
 
     let config_path = path.join("config.toml");
     if profile.api_config.is_none() {
+        append_switch_diagnostic(
+            &app,
+            &switch_id,
+            &profile_id,
+            "config_cleanup_start",
+            config_path.to_string_lossy(),
+        );
         restore_api_config_backup(&path)?;
         remove_longcat_config_for_non_api_account(&config_path)?;
+        append_switch_diagnostic(&app, &switch_id, &profile_id, "config_cleanup_done", "");
     }
 
     let config_backup_path = path.join("config.toml.account-switcher.backup");
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "auth_write_start", "");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
         if !config_backup_path.exists() {
             if config_path.exists() {
@@ -1479,6 +1564,7 @@ async fn switch_profile(
         backup_path
     };
     verify_auth_json_written(&auth_path, &auth_json)?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "auth_write_done", "");
 
     store.settings.codex_home = Some(path.to_string_lossy().to_string());
     store.settings.current_profile_id = Some(profile_id.clone());
@@ -1489,16 +1575,40 @@ async fn switch_profile(
         "info",
         &format!("已写入 Codex auth.json：{}", profile.alias),
     );
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "store_save_after_write_start",
+        "",
+    );
     save_store(&app, &store)?;
+    append_switch_diagnostic(
+        &app,
+        &switch_id,
+        &profile_id,
+        "store_save_after_write_done",
+        "",
+    );
 
     let mut restart_message = None;
     if codex_running && force {
         let mut relaunch_guard = CodexRelaunchGuard::default();
+        append_switch_diagnostic(&app, &switch_id, &profile_id, "codex_terminate_start", "");
         match terminate_codex_processes(&codex_runtime) {
             Ok(()) => {
+                append_switch_diagnostic(&app, &switch_id, &profile_id, "codex_terminate_done", "");
                 relaunch_guard.arm(codex_runtime.clone());
+                append_switch_diagnostic(&app, &switch_id, &profile_id, "codex_relaunch_start", "");
                 match relaunch_guard.relaunch() {
                     Ok(()) => {
+                        append_switch_diagnostic(
+                            &app,
+                            &switch_id,
+                            &profile_id,
+                            "codex_relaunch_done",
+                            "",
+                        );
                         thread::sleep(Duration::from_millis(800));
                         if let Err(error) = verify_auth_json_written(&auth_path, &auth_json) {
                             push_event(
@@ -1517,6 +1627,13 @@ async fn switch_profile(
                         );
                     }
                     Err(error) => {
+                        append_switch_diagnostic(
+                            &app,
+                            &switch_id,
+                            &profile_id,
+                            "codex_relaunch_failed",
+                            &error,
+                        );
                         restart_message = Some(format!("已切换账号，但重启 Codex 失败：{error}"));
                         push_event(
                             &mut store,
@@ -1527,6 +1644,13 @@ async fn switch_profile(
                 }
             }
             Err(error) => {
+                append_switch_diagnostic(
+                    &app,
+                    &switch_id,
+                    &profile_id,
+                    "codex_terminate_failed",
+                    &error,
+                );
                 restart_message = Some(format!(
                     "已写入账号，但关闭 Codex 失败；请手动重启 Codex：{error}"
                 ));
@@ -1554,7 +1678,9 @@ async fn switch_profile(
             &format!("已切换到账号 {}", profile.alias),
         );
     }
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "final_store_save_start", "");
     save_store(&app, &store)?;
+    append_switch_diagnostic(&app, &switch_id, &profile_id, "done", "");
 
     Ok(SwitchResult {
         profile_id,
@@ -3994,6 +4120,33 @@ pub(crate) fn push_event(store: &mut AppStore, level: &str, message: &str) {
         },
     );
     store.events.truncate(100);
+}
+
+fn append_switch_diagnostic(
+    app: &AppHandle,
+    switch_id: &str,
+    profile_id: &str,
+    stage: &str,
+    detail: impl AsRef<str>,
+) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let _ = fs::create_dir_all(&dir);
+    let line = serde_json::json!({
+        "ts": now_string(),
+        "switchId": switch_id,
+        "profileId": profile_id,
+        "stage": stage,
+        "detail": detail.as_ref(),
+    });
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(SWITCH_DIAGNOSTICS_FILE))
+    {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 pub(crate) fn now_string() -> String {
