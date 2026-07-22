@@ -1427,13 +1427,18 @@ async fn switch_profile(
         store.profiles[idx].usage.last_token_refresh_error = None;
     }
 
+    let config_path = path.join("config.toml");
+    if profile.api_config.is_none() {
+        restore_api_config_backup(&path)?;
+        remove_longcat_config_for_non_api_account(&config_path)?;
+    }
+
     let mut relaunch_guard = CodexRelaunchGuard::default();
     if codex_running && force {
         terminate_codex_processes(&codex_runtime)?;
         relaunch_guard.arm(codex_runtime.clone());
     }
 
-    let config_path = path.join("config.toml");
     let config_backup_path = path.join("config.toml.account-switcher.backup");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
         if !config_backup_path.exists() {
@@ -1473,12 +1478,11 @@ async fn switch_profile(
         )?;
         auth_backup_path
     } else {
-        restore_api_config_backup(&path)?;
-        remove_longcat_config_for_non_api_account(&config_path)?;
         let backup_path = backup_auth_file(&auth_path)?;
         replace_file_with_rollback(&auth_path, auth_json.as_bytes(), backup_path.as_deref())?;
         backup_path
     };
+    verify_auth_json_written(&auth_path, &auth_json)?;
 
     store.settings.codex_home = Some(path.to_string_lossy().to_string());
     store.settings.current_profile_id = Some(profile_id.clone());
@@ -1488,6 +1492,16 @@ async fn switch_profile(
     if codex_running && force {
         match relaunch_guard.relaunch() {
             Ok(()) => {
+                thread::sleep(Duration::from_millis(800));
+                if let Err(error) = verify_auth_json_written(&auth_path, &auth_json) {
+                    push_event(
+                        &mut store,
+                        "warn",
+                        &format!("切换后 auth.json 校验失败：{error}"),
+                    );
+                    save_store(&app, &store)?;
+                    return Err(error);
+                }
                 restart_message = Some("已强制切换并重启 Codex".to_string());
                 push_event(
                     &mut store,
@@ -2885,6 +2899,22 @@ pub(crate) fn replace_file_with_rollback(
             let _ = fs::copy(backup, target);
         }
         return Err(err.to_string());
+    }
+    Ok(())
+}
+
+fn verify_auth_json_written(auth_path: &Path, expected_auth_json: &str) -> Result<(), String> {
+    let actual = fs::read(auth_path).map_err(|error| {
+        format!(
+            "无法读取切换后的 auth.json {}: {error}",
+            auth_path.display()
+        )
+    })?;
+    if actual != expected_auth_json.as_bytes() {
+        return Err(format!(
+            "auth.json 写入校验失败，目标文件未保持为所选账号：{}",
+            auth_path.display()
+        ));
     }
     Ok(())
 }
@@ -4586,6 +4616,16 @@ ProcessId=5678
         write_text(&chatgpt.join("auth.json"), "{}");
 
         assert_eq!(compatible_official_home(codex), chatgpt);
+    }
+
+    #[test]
+    fn verify_auth_json_written_detects_mismatch() {
+        let dir = tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+        write_text(&auth_path, r#"{"account":"one"}"#);
+
+        verify_auth_json_written(&auth_path, r#"{"account":"one"}"#).unwrap();
+        assert!(verify_auth_json_written(&auth_path, r#"{"account":"two"}"#).is_err());
     }
 
     #[test]
