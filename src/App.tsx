@@ -70,7 +70,7 @@ import {
   tokenState
 } from "./profileUtils";
 
-const UI_BUSY_TIMEOUT_MS = 30_000;
+const UI_BUSY_TIMEOUT_MS = 90_000;
 
 export default function App() {
   const [store, setStore] = useState<StoreView | null>(null);

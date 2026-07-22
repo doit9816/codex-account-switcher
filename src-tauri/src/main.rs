@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(windows))]
+use std::time::Instant;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -1433,12 +1435,6 @@ async fn switch_profile(
         remove_longcat_config_for_non_api_account(&config_path)?;
     }
 
-    let mut relaunch_guard = CodexRelaunchGuard::default();
-    if codex_running && force {
-        terminate_codex_processes(&codex_runtime)?;
-        relaunch_guard.arm(codex_runtime.clone());
-    }
-
     let config_backup_path = path.join("config.toml.account-switcher.backup");
     let backup_path = if let Some(api_config) = profile.api_config.as_ref() {
         if !config_backup_path.exists() {
@@ -1488,11 +1484,57 @@ async fn switch_profile(
     store.settings.current_profile_id = Some(profile_id.clone());
     store.profiles[idx].usage.last_used_at = Some(now_string());
     store.profiles[idx].updated_at = now_string();
+    push_event(
+        &mut store,
+        "info",
+        &format!("已写入 Codex auth.json：{}", profile.alias),
+    );
+    save_store(&app, &store)?;
+
     let mut restart_message = None;
     if codex_running && force {
-        match relaunch_guard.relaunch() {
+        let mut relaunch_guard = CodexRelaunchGuard::default();
+        match terminate_codex_processes(&codex_runtime) {
             Ok(()) => {
-                thread::sleep(Duration::from_millis(800));
+                relaunch_guard.arm(codex_runtime.clone());
+                match relaunch_guard.relaunch() {
+                    Ok(()) => {
+                        thread::sleep(Duration::from_millis(800));
+                        if let Err(error) = verify_auth_json_written(&auth_path, &auth_json) {
+                            push_event(
+                                &mut store,
+                                "warn",
+                                &format!("切换后 auth.json 校验失败：{error}"),
+                            );
+                            save_store(&app, &store)?;
+                            return Err(error);
+                        }
+                        restart_message = Some("已强制切换并重启 Codex".to_string());
+                        push_event(
+                            &mut store,
+                            "info",
+                            &format!("已切换到账号 {}，并重启 Codex", profile.alias),
+                        );
+                    }
+                    Err(error) => {
+                        restart_message = Some(format!("已切换账号，但重启 Codex 失败：{error}"));
+                        push_event(
+                            &mut store,
+                            "warn",
+                            &format!("已切换到账号 {}，但重启 Codex 失败：{error}", profile.alias),
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                restart_message = Some(format!(
+                    "已写入账号，但关闭 Codex 失败；请手动重启 Codex：{error}"
+                ));
+                push_event(
+                    &mut store,
+                    "warn",
+                    &format!("已写入账号 {}，但关闭 Codex 失败：{error}", profile.alias),
+                );
                 if let Err(error) = verify_auth_json_written(&auth_path, &auth_json) {
                     push_event(
                         &mut store,
@@ -1502,20 +1544,6 @@ async fn switch_profile(
                     save_store(&app, &store)?;
                     return Err(error);
                 }
-                restart_message = Some("已强制切换并重启 Codex".to_string());
-                push_event(
-                    &mut store,
-                    "info",
-                    &format!("已切换到账号 {}，并重启 Codex", profile.alias),
-                );
-            }
-            Err(error) => {
-                restart_message = Some(format!("已切换账号，但重启 Codex 失败：{error}"));
-                push_event(
-                    &mut store,
-                    "warn",
-                    &format!("已切换到账号 {}，但重启 Codex 失败：{error}", profile.alias),
-                );
             }
         }
     }
@@ -3213,29 +3241,16 @@ fn is_codex_running() -> bool {
     collect_codex_process_snapshot().is_running()
 }
 
+#[cfg(not(windows))]
 fn process_is_running(pid: u32) -> bool {
-    #[cfg(windows)]
-    {
-        hidden_command("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .split_whitespace()
-                    .any(|value| value == pid.to_string())
-            })
-            .unwrap_or(false)
-    }
-    #[cfg(not(windows))]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
+#[cfg(not(windows))]
 fn wait_for_processes_exit(pids: &[u32], timeout: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < timeout {
@@ -3298,28 +3313,14 @@ fn relaunch_official_cli(snapshot: &CodexProcessSnapshot) -> Result<(), String> 
 
 #[cfg(windows)]
 fn terminate_codex_processes(snapshot: &CodexProcessSnapshot) -> Result<(), String> {
-    let pids = snapshot
-        .processes
-        .iter()
-        .map(|process| process.pid)
-        .collect::<Vec<_>>();
-    for pid in &pids {
-        let output = hidden_command("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output()
+    for process in &snapshot.processes {
+        hidden_command("taskkill")
+            .args(["/PID", &process.pid.to_string(), "/T", "/F"])
+            .spawn()
             .map_err(display_err)?;
-        if !output.status.success() && process_is_running(*pid) {
-            return Err(format!(
-                "无法关闭 Codex 进程 {pid}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
     }
-    if wait_for_processes_exit(&pids, Duration::from_secs(8)) {
-        Ok(())
-    } else {
-        Err("Codex 进程未能完全退出，请手动关闭后重试".to_string())
-    }
+    thread::sleep(Duration::from_millis(1200));
+    Ok(())
 }
 
 #[cfg(not(windows))]
