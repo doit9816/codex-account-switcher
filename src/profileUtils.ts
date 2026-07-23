@@ -55,6 +55,12 @@ export function formatSubscriptionValidity(profile: Profile, t: I18n) {
   return `${hours}h ${minutes}m`;
 }
 
+export function formatResetExpiry(profile: Profile, t: I18n) {
+  const expiresAt = profile.usage.availableResetExpiresAt;
+  if (!expiresAt) return t.resetExpiryUnknown;
+  return `${t.resetExpiresAt}: ${formatReset(expiresAt)}`;
+}
+
 export function quotaSummary(profile: Profile, t: I18n) {
   const items = profile.usage.detectedLimits || [];
   if (items.length > 0) {
@@ -67,9 +73,11 @@ export function quotaSummary(profile: Profile, t: I18n) {
         return `${label} ${formatUsage(item.used, item.limit, t)}`;
       })
       .join(" / ");
-    return profile.usage.availableResetCount != null
-      ? `${limits} · ${t.usageResets} ${profile.usage.availableResetCount}`
-      : limits;
+    if (profile.usage.availableResetCount == null) return limits;
+    const resets = `${t.usageResets} ${profile.usage.availableResetCount}`;
+    return profile.usage.availableResetCount > 0
+      ? `${limits} · ${resets} · ${formatResetExpiry(profile, t)}`
+      : `${limits} · ${resets}`;
   }
   if (profile.usage.detectedSummary) return localizeDetectedText(profile.usage.detectedSummary.replace(/^unparsed:\s*/, ""), t).slice(0, 36);
   return `${formatUsage(profile.usage.hourlyUsed, profile.quotaRule.hourlyLimit, t)} / ${formatUsage(profile.usage.dailyUsed, profile.quotaRule.dailyLimit, t)}`;
@@ -107,20 +115,30 @@ export function isCooling(profile: Profile) {
 export function accountState(profile: Profile, t: I18n) {
   if (!profile.enabled) return t.disabled;
   if (isCooling(profile)) return t.cooling;
+  if (profileNeedsReauthorization(profile)) return t.reloginRequired;
   if (profile.usage.lastError) return t.probeFailed;
   return t.available;
+}
+
+function refreshErrorRequiresRelogin(error: string) {
+  const normalized = error.toLowerCase();
+  return normalized.includes("refresh_token_invalidated")
+    || normalized.includes("token_invalidated")
+    || normalized.includes("refresh_token_reused")
+    || normalized.includes("invalid_grant")
+    || normalized.includes("invalid_refresh_token")
+    || normalized.includes("invalid refresh token");
 }
 
 export function tokenState(profile: Profile, t: I18n) {
   const error = profile.usage.lastTokenRefreshError || profile.usage.lastError || "";
   const accessTokenExpired = !!profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now();
   const accessTokenValid = !!profile.summary.accessTokenExp && !accessTokenExpired;
-  if (error.includes("token_invalidated")) return t.authInvalid;
   if (
     profile.usage.lastTokenRefreshStatus === "relogin_required" ||
-    error.includes("refresh_token_reused") ||
-    error.includes("invalid_grant")
+    refreshErrorRequiresRelogin(error)
   ) return t.reloginRequired;
+  if (error.includes("token_invalidated")) return t.authInvalid;
   if (profile.usage.lastTokenRefreshStatus === "ok") return t.keptAlive;
   if (accessTokenExpired) return t.expired;
   if (profile.usage.lastTokenRefreshStatus === "error" && !accessTokenValid) return t.keepaliveFailed;
@@ -134,9 +152,7 @@ export function profileNeedsReauthorization(profile: Profile) {
   return (
     profile.usage.lastTokenRefreshStatus === "relogin_required" ||
     (profile.usage.lastTokenRefreshStatus === "error" && accessTokenExpired) ||
-    error.includes("token_invalidated") ||
-    error.includes("refresh_token_reused") ||
-    error.includes("invalid_grant")
+    refreshErrorRequiresRelogin(error)
   );
 }
 
@@ -154,17 +170,15 @@ export function friendlyProbeSummary(profile: Profile | undefined, t: I18n) {
   }
   const summary = localizeDetectedText(profile.usage.detectedSummary || "", t);
   const error = profile.usage.lastError || profile.usage.lastTokenRefreshError || "";
-  if (summary.includes("token_invalidated") || error.includes("token_invalidated")) {
-    return t.tokenInvalidatedHint;
-  }
   if (
     profile.usage.lastTokenRefreshStatus === "relogin_required" ||
-    summary.includes("refresh_token_reused") ||
-    error.includes("refresh_token_reused") ||
-    summary.includes("invalid_grant") ||
-    error.includes("invalid_grant")
+    refreshErrorRequiresRelogin(summary) ||
+    refreshErrorRequiresRelogin(error)
   ) {
-    return t.refreshTokenReusedHint;
+    return t.reloginRequiredHint;
+  }
+  if (summary.includes("token_invalidated") || error.includes("token_invalidated")) {
+    return t.tokenInvalidatedHint;
   }
   return summary || t.noParsedQuota;
 }

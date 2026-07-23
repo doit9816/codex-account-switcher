@@ -1243,6 +1243,23 @@ input:focus {
   min-width: 0;
 }
 
+.account-identity-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.account-identity-row small {
+  min-width: 0;
+}
+
+.account-copy-button {
+  flex: 0 0 auto;
+  height: 25px;
+  width: 25px;
+}
+
 .account-card-title strong,
 .account-card-title small {
   display: block;
@@ -1298,6 +1315,19 @@ input:focus {
   background: #f0f4f8;
   border-radius: 999px;
   padding: 4px 8px;
+}
+
+.account-relogin-alert {
+  align-items: center;
+  background: #fff3ed;
+  border: 1px solid #ffd0c0;
+  border-radius: 10px;
+  color: #b9431f;
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 7px;
+  padding: 9px 10px;
 }
 
 .account-limit-list {
@@ -1673,6 +1703,99 @@ input:focus {
 
 .migration-controls input[type="password"] {
   width: 180px;
+}
+
+.export-selector {
+  position: relative;
+}
+
+.export-selector summary {
+  align-items: center;
+  background: #fbfcfd;
+  border: 1px solid #cbd5df;
+  border-radius: 6px;
+  color: #263342;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  height: 38px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.export-selector summary strong {
+  color: #2357c6;
+  font-size: 12px;
+}
+
+.export-selector[open] summary {
+  border-color: #4676df;
+  box-shadow: 0 0 0 3px rgba(70, 118, 223, 0.14);
+}
+
+.export-selector-actions,
+.export-account-list {
+  background: #ffffff;
+  border: 1px solid #d8e0e8;
+  box-shadow: 0 12px 30px rgba(20, 38, 61, 0.14);
+  position: absolute;
+  right: 0;
+  width: min(360px, 82vw);
+  z-index: 20;
+}
+
+.export-selector-actions {
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+}
+
+.export-account-list {
+  border-radius: 0 0 8px 8px;
+  margin-top: 58px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+}
+
+.export-account-row {
+  align-items: center;
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 8px;
+}
+
+.export-account-row:hover {
+  background: #f4f7fb;
+}
+
+.export-account-row input {
+  height: 16px;
+  width: 16px;
+}
+
+.export-account-row span {
+  min-width: 0;
+}
+
+.export-account-row strong,
+.export-account-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-account-row small {
+  color: #657283;
+  font-weight: 500;
+  margin-top: 3px;
 }
 
 .field-warning {

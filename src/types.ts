@@ -32,6 +32,7 @@ export type UsageStats = {
   lastTokenRefreshStatus?: string;
   lastTokenRefreshError?: string;
   availableResetCount?: number;
+  availableResetExpiresAt?: string;
 };
 
 export type RouteHealth = {

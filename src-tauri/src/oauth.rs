@@ -420,9 +420,9 @@ pub async fn complete_with_client(
         let guard = pending()
             .lock()
             .map_err(|_| "OAuth state lock poisoned".to_string())?;
-        let value = guard
-            .as_ref()
-            .ok_or_else(|| "OAuth session does not exist. Start authorization again.".to_string())?;
+        let value = guard.as_ref().ok_or_else(|| {
+            "OAuth session does not exist. Start authorization again.".to_string()
+        })?;
         if value.expires_at <= now() {
             return Err("OAuth session expired. Start authorization again.".to_string());
         }
@@ -512,7 +512,6 @@ pub async fn exchange_code_for_tokens_at(
             .map(String::from),
     })
 }
-
 
 fn compact_oauth_error_body(body: &str) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");

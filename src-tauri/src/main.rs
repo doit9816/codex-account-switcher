@@ -538,6 +538,8 @@ pub(crate) struct UsageStats {
     pub(crate) last_token_refresh_error: Option<String>,
     #[serde(default)]
     pub(crate) available_reset_count: Option<i64>,
+    #[serde(default)]
+    pub(crate) available_reset_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2246,6 +2248,7 @@ fn export_all_accounts_bundle(
     output_path: String,
     password: String,
     include_conversations: bool,
+    profile_ids: Option<Vec<String>>,
 ) -> Result<BundleManifest, String> {
     if !password.is_empty() && password.len() < 8 {
         return Err("导出口令至少需要 8 位；如需明文导出请留空".to_string());
@@ -2253,9 +2256,9 @@ fn export_all_accounts_bundle(
     let store = load_store(&app)?;
     let key = load_master_key(&app)?;
     let codex_home = resolve_codex_home(&app, store.settings.codex_home.clone())?;
-    let export_profiles = store
-        .profiles
-        .iter()
+    let profiles = select_profiles_for_export(&store.profiles, profile_ids.as_deref())?;
+    let export_profiles = profiles
+        .into_iter()
         .map(|p| {
             let auth_json = String::from_utf8(decrypt_secret(&p.encrypted_auth_json, &key)?)
                 .map_err(|e| e.to_string())?;
@@ -2321,6 +2324,36 @@ fn export_all_accounts_bundle(
     }
 
     Ok(payload.manifest)
+}
+
+fn select_profiles_for_export<'a>(
+    profiles: &'a [AccountProfile],
+    profile_ids: Option<&[String]>,
+) -> Result<Vec<&'a AccountProfile>, String> {
+    let Some(profile_ids) = profile_ids else {
+        if profiles.is_empty() {
+            return Err("请选择至少一个账号导出".to_string());
+        }
+        return Ok(profiles.iter().collect());
+    };
+    let requested = profile_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Err("请选择至少一个账号导出".to_string());
+    }
+    if let Some(missing_id) = requested
+        .iter()
+        .find(|id| !profiles.iter().any(|profile| profile.id.as_str() == **id))
+    {
+        return Err(format!("导出账号不存在: {}", missing_id));
+    }
+    Ok(profiles
+        .iter()
+        .filter(|profile| requested.iter().any(|id| profile.id.as_str() == *id))
+        .collect())
 }
 
 #[tauri::command]
@@ -4186,6 +4219,7 @@ fn apply_usage_probe_body(profile: &mut AccountProfile, body: &Value) {
         .pointer("/rate_limit_reset_credits/available_count")
         .or_else(|| body.pointer("/rateLimitResetCredits/availableCount"))
         .and_then(Value::as_i64);
+    profile.usage.available_reset_expires_at = pick_reset_credit_expires_at(body);
     let detected = detect_usage_limits(body);
     if detected.is_empty() {
         profile.usage.detected_summary = Some(summarize_usage_body(body));
@@ -4461,6 +4495,36 @@ fn pick_reset_at(map: &serde_json::Map<String, Value>) -> Option<String> {
         return Some(text);
     }
     None
+}
+
+fn pick_reset_credit_expires_at(body: &Value) -> Option<String> {
+    let credits = body
+        .pointer("/rate_limit_reset_credits")
+        .or_else(|| body.pointer("/rateLimitResetCredits"))?;
+    let map = credits.as_object()?;
+    let text = pick_string(
+        map,
+        &[
+            "expires_at",
+            "expiresAt",
+            "expire_at",
+            "expireAt",
+            "expiration",
+            "expiration_at",
+            "expirationAt",
+            "valid_until",
+            "validUntil",
+            "reset_expires_at",
+            "resetExpiresAt",
+        ],
+    )?;
+    if let Ok(epoch) = text.parse::<i64>() {
+        return Utc
+            .timestamp_opt(epoch, 0)
+            .single()
+            .map(|dt| dt.to_rfc3339());
+    }
+    Some(text)
 }
 
 fn dedupe_detected_limits(items: Vec<DetectedLimit>) -> Vec<DetectedLimit> {
@@ -5063,6 +5127,32 @@ mod tests {
         let result = delete_profile_from_store(&mut store, "missing");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn export_profile_selection_filters_by_requested_ids() {
+        let profiles = vec![
+            test_profile("profile-1", "acc-1", "one@example.com"),
+            test_profile("profile-2", "acc-2", "two@example.com"),
+            test_profile("profile-3", "acc-3", "three@example.com"),
+        ];
+        let requested = vec!["profile-3".to_string(), "profile-1".to_string()];
+
+        let selected = select_profiles_for_export(&profiles, Some(&requested)).unwrap();
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["profile-1", "profile-3"]
+        );
+        assert_eq!(
+            select_profiles_for_export(&profiles, None).unwrap().len(),
+            3
+        );
+        assert!(select_profiles_for_export(&profiles, Some(&Vec::new())).is_err());
+        assert!(select_profiles_for_export(&profiles, Some(&vec!["missing".to_string()])).is_err());
     }
 
     #[test]
@@ -6041,12 +6131,19 @@ command = "demo-server"
         let body = serde_json::json!({
             "plan_type": "plus",
             "rate_limit": { "allowed": true, "limit_reached": false },
-            "rate_limit_reset_credits": { "available_count": 2 }
+            "rate_limit_reset_credits": {
+                "available_count": 2,
+                "expires_at": "2026-08-01T00:00:00Z"
+            }
         });
 
         apply_usage_probe_body(&mut profile, &body);
 
         assert_eq!(profile.usage.available_reset_count, Some(2));
+        assert_eq!(
+            profile.usage.available_reset_expires_at.as_deref(),
+            Some("2026-08-01T00:00:00Z")
+        );
         assert_eq!(profile.summary.plan.as_deref(), Some("plus"));
     }
 

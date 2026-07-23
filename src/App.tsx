@@ -52,6 +52,7 @@ import {
   formatDate,
   formatLimitChip,
   formatReset,
+  formatResetExpiry,
   formatSubscriptionValidity,
   formatUsage,
   friendlyProbeSummary,
@@ -109,6 +110,7 @@ export default function App() {
   const [configTomlDraft, setConfigTomlDraft] = useState("");
   const [password, setPassword] = useState("");
   const [includeConversations, setIncludeConversations] = useState(false);
+  const [exportProfileIds, setExportProfileIds] = useState<string[]>([]);
   const [restoreConversations, setRestoreConversations] = useState(false);
   const [forceSwitch, setForceSwitch] = useState(false);
   const [proxyEnabled, setProxyEnabled] = useState(false);
@@ -202,6 +204,10 @@ export default function App() {
       return values.some((value) => String(value || "").toLowerCase().includes(query));
     });
   }, [store?.profiles, accountFilter, currentGlobalProfileId, t]);
+  const selectedExportProfiles = useMemo(() => {
+    const selected = new Set(exportProfileIds);
+    return (store?.profiles || []).filter((profile) => selected.has(profile.id));
+  }, [store?.profiles, exportProfileIds]);
   const routingProfiles = useMemo(() => {
     const routeRank = (profile: Profile) => {
       if (!profile.enabled) return 4;
@@ -365,6 +371,15 @@ export default function App() {
     setRoutingFixedProfileId(routing.fixedProfileId || "");
     setRoutingStickyTtlSecs(routing.stickyTtlSecs || 3600);
   }, [store]);
+
+  useEffect(() => {
+    const profileIds = (store?.profiles || []).map((profile) => profile.id);
+    setExportProfileIds((current) => {
+      const retained = current.filter((id) => profileIds.includes(id));
+      if (retained.length > 0 || current.length > 0) return retained;
+      return profileIds;
+    });
+  }, [store?.profiles]);
 
   useEffect(() => {
     if (!store?.settings.autoProbeEnabled) return;
@@ -682,6 +697,13 @@ export default function App() {
   function closeEditProfile() {
     setEditingProfileId(null);
     setEditApiKeyDraft("");
+  }
+
+  async function copyProfileAccount(profile: Profile) {
+    const text = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || "";
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    setNotice({ kind: "ok", text: `${t.accountCopied}: ${text}` });
   }
 
   async function saveProfileDetails() {
@@ -1195,6 +1217,12 @@ export default function App() {
       setNotice({ kind: "warn", text: t.passwordTooShortExport });
       return;
     }
+    const selectableProfileIds = (store?.profiles || []).map((profile) => profile.id);
+    const profileIds = exportProfileIds.filter((id) => selectableProfileIds.includes(id));
+    if (profileIds.length === 0) {
+      setNotice({ kind: "warn", text: t.exportNoAccount });
+      return;
+    }
     const path = await save({
       title: t.exportTitle,
       defaultPath: password ? "codex-switcher.zip.enc" : "codex-switcher.zip",
@@ -1205,7 +1233,8 @@ export default function App() {
       const manifest = await invoke<BundleManifest>("export_all_accounts_bundle", {
         outputPath: path,
         password,
-        includeConversations
+        includeConversations,
+        profileIds
       });
       const conversationCount = manifest.files.filter((file) => isConversationFile(file.path)).length;
       setNotice({
@@ -1214,6 +1243,14 @@ export default function App() {
       });
       return manifest;
     });
+  }
+
+  function toggleExportProfile(profileId: string) {
+    setExportProfileIds((current) => (
+      current.includes(profileId)
+        ? current.filter((id) => id !== profileId)
+        : [...current, profileId]
+    ));
   }
 
   async function importBundle() {
@@ -2137,6 +2174,9 @@ export default function App() {
             {filteredProfiles.map((profile) => {
               const isCurrent = currentGlobalProfileId === profile.id;
               const limits = profile.usage.detectedLimits || [];
+              const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
+              const canCopyAccount = accountText !== t.unknownAccount;
+              const needsReauthorization = profileNeedsReauthorization(profile);
               return (
                 <article
                   key={profile.id}
@@ -2146,7 +2186,22 @@ export default function App() {
                   <div className="account-card-head">
                     <div className="account-card-title">
                       <strong>{profile.alias}</strong>
-                      <small>{profile.summary.email || profile.summary.accountId || t.unknownAccount}</small>
+                      <div className="account-identity-row">
+                        <small>{accountText}</small>
+                        {canCopyAccount && (
+                          <button
+                            className="mini-button icon-only account-copy-button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void copyProfileAccount(profile);
+                            }}
+                            title={t.copyAccount}
+                            aria-label={t.copyAccount}
+                          >
+                            <Copy size={13} />
+                          </button>
+                        )}
+                      </div>
                       {profile.note && <small className="account-note">{profile.note}</small>}
                     </div>
                     <div className="account-card-badges">
@@ -2155,11 +2210,21 @@ export default function App() {
                     </div>
                   </div>
 
+                  {needsReauthorization && (
+                    <div className="account-relogin-alert">
+                      <KeyRound size={14} />
+                      <span>{t.reloginRequiredHint}</span>
+                    </div>
+                  )}
+
                   <div className="account-card-meta">
                     <StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} />
                     <span>{t.token}: {tokenState(profile, t)}</span>
                     {profile.usage.availableResetCount != null && (
-                      <span>{t.usageResets}: {profile.usage.availableResetCount}</span>
+                      <span title={formatResetExpiry(profile, t)}>
+                        {t.usageResets}: {profile.usage.availableResetCount}
+                        {(profile.usage.availableResetCount || 0) > 0 && ` · ${formatResetExpiry(profile, t)}`}
+                      </span>
                     )}
                   </div>
 
@@ -2225,7 +2290,7 @@ export default function App() {
                           <RotateCcw size={14} />
                         </button>
                       )}
-                      {profileNeedsReauthorization(profile) && (
+                      {needsReauthorization && (
                         <button
                           className="mini-button icon-only"
                           onClick={(event) => {
@@ -2325,6 +2390,7 @@ export default function App() {
                 {selectedProfile?.usage.availableResetCount != null && (
                   <span className="limit-chip">
                     {t.usageResets}: {selectedProfile.usage.availableResetCount}
+                    {(selectedProfile.usage.availableResetCount || 0) > 0 && ` · ${formatResetExpiry(selectedProfile, t)}`}
                   </span>
                 )}
                 {(selectedProfile?.usage.availableResetCount || 0) > 0 && (
@@ -2470,9 +2536,49 @@ export default function App() {
             />
             {t.restoreConversations}
           </label>
-          <button className="icon-button primary" onClick={() => void exportBundle()} disabled={busy || passwordTooShort} title={t.exportAll}>
+          <details className="export-selector">
+            <summary>
+              <span>{t.exportAccountSelection}</span>
+              <strong>{selectedExportProfiles.length}/{store?.profiles.length || 0}</strong>
+            </summary>
+            <div className="export-selector-actions">
+              <button type="button" className="mini-button" onClick={() => setExportProfileIds((store?.profiles || []).map((profile) => profile.id))}>
+                {t.selectAll}
+              </button>
+              <button
+                type="button"
+                className="mini-button"
+                onClick={() => selectedProfile && setExportProfileIds([selectedProfile.id])}
+                disabled={!selectedProfile}
+              >
+                {t.selectCurrent}
+              </button>
+              <button type="button" className="mini-button" onClick={() => setExportProfileIds([])}>
+                {t.clearSelection}
+              </button>
+            </div>
+            <div className="export-account-list">
+              {(store?.profiles || []).map((profile) => {
+                const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
+                return (
+                  <label className="export-account-row" key={profile.id} title={`${profile.alias}\n${accountText}`}>
+                    <input
+                      type="checkbox"
+                      checked={exportProfileIds.includes(profile.id)}
+                      onChange={() => toggleExportProfile(profile.id)}
+                    />
+                    <span>
+                      <strong>{profile.alias}</strong>
+                      <small>{accountText}</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </details>
+          <button className="icon-button primary" onClick={() => void exportBundle()} disabled={busy || passwordTooShort || selectedExportProfiles.length === 0} title={t.exportSelected}>
             <Download size={17} />
-            {t.exportAll}
+            {t.exportSelected}
           </button>
           <button className="icon-button" onClick={() => void importBundle()} disabled={busy || passwordTooShort} title={t.importBundle}>
             <Upload size={17} />
