@@ -1,3 +1,4 @@
+use crate::routing_protocol::{prepare_api_request, transform_chat_response, WireProtocol};
 use crate::{
     app_data_dir, build_probe_client, decrypt_secret, display_err, encrypt_secret, load_master_key,
     load_store, mutate_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
@@ -29,6 +30,9 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 const ROUTER_BACKUP_FILE: &str = "config.toml.account-switcher-router.backup";
 const ROUTER_LOG_FILE: &str = "routing-requests.jsonl";
 const MAX_REQUEST_BYTES: usize = 20 * 1024 * 1024;
+const MAX_TRANSFORM_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_ERROR_MESSAGE_CHARS: usize = 500;
 const TEMP_NETWORK_COOLDOWN_SECS: i64 = 60;
 
 static ROUTER: OnceLock<Mutex<Option<RouterHandle>>> = OnceLock::new();
@@ -78,6 +82,16 @@ pub(crate) struct RoutingCodexCheck {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoutingLogEntry {
     ts: String,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    wire_protocol: Option<String>,
+    #[serde(default)]
+    upstream_url: Option<String>,
     session_hash: Option<String>,
     profile_id: Option<String>,
     alias: Option<String>,
@@ -88,6 +102,20 @@ pub(crate) struct RoutingLogEntry {
     latency_ms: u128,
     fallback: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoutingProbeResult {
+    ok: bool,
+    request_id: String,
+    http_status: u16,
+    elapsed_ms: u128,
+    profile_id: Option<String>,
+    actual_model: Option<String>,
+    response_status: Option<String>,
+    output_items: usize,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,8 +139,21 @@ struct SelectedProfile {
 
 #[derive(Debug)]
 struct PreparedRequest {
+    request_id: String,
     requested_model: Option<String>,
     actual_model: Option<String>,
+    protocol: WireProtocol,
+    streaming: bool,
+    upstream_url: String,
+}
+
+#[derive(Debug)]
+struct PreparedUpstream {
+    url: String,
+    auth_token: String,
+    account_id: Option<String>,
+    body: Vec<u8>,
+    request: PreparedRequest,
 }
 
 #[derive(Debug)]
@@ -261,6 +302,126 @@ pub(crate) fn read_logs(app: AppHandle, limit: usize) -> Vec<RoutingLogEntry> {
     read_recent_logs(&app, limit.clamp(1, 500))
 }
 
+pub(crate) fn test_request(app: AppHandle) -> Result<RoutingProbeResult, String> {
+    let store = load_store(&app)?;
+    if store.settings.routing.mode == RoutingMode::Fixed
+        && store.settings.routing.fixed_profile_id.is_none()
+    {
+        return Err("当前是固定账号模式，但尚未选择账号".to_string());
+    }
+    let model = test_request_model(&store);
+    if !is_running() {
+        start(app.clone())?;
+    }
+    let store = load_store(&app)?;
+    let key = load_master_key(&app)?;
+    let access_key = decrypt_access_key(&store.settings.routing, &key)?;
+    let host = display_host(&store.settings.routing.listen_host);
+    let request_id = format!("probe_{}", uuid::Uuid::new_v4().simple());
+    let started = Instant::now();
+    let response = Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(display_err)?
+        .post(format!(
+            "http://{}:{}/v1/responses",
+            host, store.settings.routing.port
+        ))
+        .bearer_auth(access_key)
+        .header("x-client-request-id", &request_id)
+        .json(&serde_json::json!({
+            "model": model,
+            "input": "Reply with exactly OK.",
+            "stream": true,
+            "store": false
+        }))
+        .send()
+        .map_err(|error| format!("路由测试请求失败: {error}"))?;
+    let http_status = response.status().as_u16();
+    let profile_id = response
+        .headers()
+        .get("x-codex-switcher-profile-id")
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    let actual_model = response
+        .headers()
+        .get("x-codex-switcher-model")
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    let body = response
+        .bytes()
+        .map_err(|error| format!("无法读取路由测试响应: {error}"))?;
+    let body_json = serde_json::from_slice::<Value>(&body).ok();
+    let body_text = std::str::from_utf8(&body).unwrap_or_default();
+    let response_status = body_json
+        .as_ref()
+        .and_then(|body| body.get("status"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            body_text
+                .contains("event: response.completed")
+                .then(|| "completed".to_string())
+        });
+    let output_items = body_json
+        .as_ref()
+        .and_then(|body| body.get("output"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_else(|| {
+            body_text
+                .matches("event: response.output_item.done")
+                .count()
+        });
+    let error_message = body_json
+        .as_ref()
+        .and_then(|body| body.pointer("/error/message"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    Ok(RoutingProbeResult {
+        ok: http_status < 400 && error_message.is_none(),
+        request_id,
+        http_status,
+        elapsed_ms: started.elapsed().as_millis(),
+        profile_id,
+        actual_model,
+        response_status,
+        output_items,
+        message: error_message.unwrap_or_else(|| {
+            if http_status < 400 {
+                "路由测试请求成功".to_string()
+            } else {
+                format!("路由测试返回 HTTP {http_status}")
+            }
+        }),
+    })
+}
+
+fn config_selects_router(document: &toml_edit::DocumentMut) -> bool {
+    document
+        .get("model_provider")
+        .and_then(|item| item.as_str())
+        == Some(ROUTER_PROVIDER_ID)
+}
+
+fn refresh_router_backup(
+    config_path: &std::path::Path,
+    backup_path: &std::path::Path,
+    document: &toml_edit::DocumentMut,
+) -> Result<(), String> {
+    if config_selects_router(document) && backup_path.exists() {
+        return Ok(());
+    }
+    if config_path.exists() {
+        fs::copy(config_path, backup_path).map_err(display_err)?;
+    } else {
+        fs::write(backup_path, []).map_err(display_err)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String> {
     let mut store = load_store(&app)?;
     ensure_access_key(&app, &mut store)?;
@@ -270,14 +431,6 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
     fs::create_dir_all(&codex_home).map_err(display_err)?;
     let config_path = codex_home.join("config.toml");
     let backup_path = codex_home.join(ROUTER_BACKUP_FILE);
-    if !backup_path.exists() {
-        if config_path.exists() {
-            fs::copy(&config_path, &backup_path).map_err(display_err)?;
-        } else {
-            fs::write(&backup_path, []).map_err(display_err)?;
-        }
-    }
-
     let current = fs::read_to_string(&config_path).unwrap_or_default();
     let mut document = if current.trim().is_empty() {
         toml_edit::DocumentMut::new()
@@ -286,6 +439,7 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
             .parse::<toml_edit::DocumentMut>()
             .map_err(|error| format!("config.toml 解析失败: {error}"))?
     };
+    refresh_router_backup(&config_path, &backup_path, &document)?;
     document["model_provider"] = toml_edit::value(ROUTER_PROVIDER_ID);
     if !document.as_table().contains_key("model_providers")
         || !document["model_providers"].is_table()
@@ -426,13 +580,20 @@ pub(crate) fn restore_codex_config(app: AppHandle) -> Result<RoutingStatus, Stri
     let config_path = codex_home.join("config.toml");
     let backup_path = codex_home.join(ROUTER_BACKUP_FILE);
     if backup_path.exists() {
-        let backup = fs::read(&backup_path).map_err(display_err)?;
-        if backup.is_empty() {
-            if config_path.exists() {
-                fs::remove_file(&config_path).map_err(display_err)?;
+        let current = fs::read_to_string(&config_path).unwrap_or_default();
+        let currently_routed = current
+            .parse::<toml_edit::DocumentMut>()
+            .map(|document| config_selects_router(&document))
+            .unwrap_or(false);
+        if currently_routed {
+            let backup = fs::read(&backup_path).map_err(display_err)?;
+            if backup.is_empty() {
+                if config_path.exists() {
+                    fs::remove_file(&config_path).map_err(display_err)?;
+                }
+            } else {
+                replace_file_with_rollback(&config_path, &backup, None)?;
             }
-        } else {
-            replace_file_with_rollback(&config_path, &backup, None)?;
         }
         fs::remove_file(&backup_path).map_err(display_err)?;
     }
@@ -523,6 +684,9 @@ fn proxy_responses(
     let body = read_body(request)?;
     let decoded = decode_body(&body, header_value(&headers, "content-encoding").as_deref())?;
     let routing_key = routing_key(&headers);
+    let request_id = header_value(&headers, "x-client-request-id")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("route_{}", uuid::Uuid::new_v4().simple()));
     let session_hash = routing_key.as_deref().map(hash_text);
     let mut attempted = HashSet::new();
     let mut last_error = None;
@@ -537,7 +701,7 @@ fn proxy_responses(
         )
         .map_err(|message| RouterError::new(503, message))?;
         attempted.insert(selected.profile.id.clone());
-        match prepare_and_send(&headers, &decoded, selected) {
+        match prepare_and_send(&headers, &decoded, selected, &request_id) {
             Ok(AttemptOutcome::Response(response, selected, prepared)) => {
                 let status = response.status().as_u16();
                 if matches!(status, 401 | 403)
@@ -566,14 +730,14 @@ fn proxy_responses(
                     &selected.profile.id,
                     store.settings.routing.sticky_ttl_secs,
                 );
-                return Ok(build_stream_response(
+                return build_stream_response(
                     app,
                     response,
                     selected,
                     prepared,
                     session_hash,
                     started,
-                ));
+                );
             }
             Err(error) => {
                 mark_route_failure(&app, &error.0, None, &error.1);
@@ -593,16 +757,21 @@ fn prepare_and_send(
     headers: &HashMap<String, String>,
     decoded_body: &[u8],
     selected: SelectedProfile,
+    request_id: &str,
 ) -> Result<AttemptOutcome, (String, String)> {
-    let (upstream_url, auth_token, account_id, body, requested_model, actual_model) =
-        prepare_upstream(&selected, decoded_body)
-            .map_err(|error| (selected.profile.id.clone(), error))?;
+    let prepared = prepare_upstream(&selected, decoded_body, request_id)
+        .map_err(|error| (selected.profile.id.clone(), error))?;
+    let accept = if prepared.request.streaming {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
     let mut builder = blocking_client()
-        .post(&upstream_url)
-        .header("accept", "text/event-stream")
+        .post(&prepared.url)
+        .header("accept", accept)
         .header("content-type", "application/json")
-        .bearer_auth(&auth_token);
-    if let Some(account_id) = &account_id {
+        .bearer_auth(&prepared.auth_token);
+    if let Some(account_id) = &prepared.account_id {
         builder = builder.header("ChatGPT-Account-Id", account_id);
     }
     for (name, value) in headers {
@@ -611,16 +780,13 @@ fn prepare_and_send(
         }
     }
     let response = builder
-        .body(body.clone())
+        .body(prepared.body)
         .send()
         .map_err(|error| (selected.profile.id.clone(), error.to_string()))?;
     Ok(AttemptOutcome::Response(
         response,
         selected,
-        PreparedRequest {
-            requested_model,
-            actual_model,
-        },
+        prepared.request,
     ))
 }
 
@@ -662,38 +828,40 @@ fn refresh_profile_access(app: &AppHandle, profile_id: &str) -> Result<(), Strin
 fn prepare_upstream(
     selected: &SelectedProfile,
     decoded_body: &[u8],
-) -> Result<
-    (
-        String,
-        String,
-        Option<String>,
-        Vec<u8>,
-        Option<String>,
-        Option<String>,
-    ),
-    String,
-> {
+    request_id: &str,
+) -> Result<PreparedUpstream, String> {
     let mut json: Value = serde_json::from_slice(decoded_body).map_err(display_err)?;
     let requested_model = json
         .get("model")
         .and_then(Value::as_str)
         .map(ToString::to_string);
     if let Some(api_config) = &selected.profile.api_config {
-        json["model"] = Value::String(api_config.model.clone());
         let auth: Value = serde_json::from_str(&selected.auth_json).map_err(display_err)?;
         let api_key = auth
             .get("OPENAI_API_KEY")
             .and_then(Value::as_str)
             .ok_or_else(|| "API Provider missing OPENAI_API_KEY".to_string())?
             .to_string();
-        return Ok((
-            format!("{}/responses", api_config.base_url.trim_end_matches('/')),
-            api_key,
-            None,
-            serde_json::to_vec(&json).map_err(display_err)?,
-            requested_model,
-            Some(api_config.model.clone()),
-        ));
+        let prepared = prepare_api_request(
+            &api_config.base_url,
+            &api_config.model,
+            &api_config.wire_api,
+            json,
+        )?;
+        return Ok(PreparedUpstream {
+            url: prepared.endpoint.clone(),
+            auth_token: api_key,
+            account_id: None,
+            body: prepared.body,
+            request: PreparedRequest {
+                request_id: request_id.to_string(),
+                requested_model,
+                actual_model: Some(api_config.model.clone()),
+                protocol: prepared.protocol,
+                streaming: prepared.streaming,
+                upstream_url: prepared.endpoint,
+            },
+        });
     }
 
     let auth: Value = serde_json::from_str(&selected.auth_json).map_err(display_err)?;
@@ -702,25 +870,38 @@ fn prepare_upstream(
         .and_then(Value::as_str)
         .ok_or_else(|| "auth.json missing access_token".to_string())?
         .to_string();
-    Ok((
-        "https://chatgpt.com/backend-api/codex/responses".to_string(),
-        access_token,
-        selected.profile.summary.account_id.clone(),
-        serde_json::to_vec(&json).map_err(display_err)?,
-        requested_model.clone(),
-        requested_model,
-    ))
+    normalize_oauth_input(&mut json);
+    let streaming = json.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    Ok(PreparedUpstream {
+        url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
+        auth_token: access_token,
+        account_id: selected.profile.summary.account_id.clone(),
+        body: serde_json::to_vec(&json).map_err(display_err)?,
+        request: PreparedRequest {
+            request_id: request_id.to_string(),
+            requested_model: requested_model.clone(),
+            actual_model: requested_model,
+            protocol: WireProtocol::Responses,
+            streaming,
+            upstream_url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
+        },
+    })
 }
 
 fn build_stream_response(
     app: AppHandle,
-    upstream: reqwest::blocking::Response,
+    mut upstream: reqwest::blocking::Response,
     selected: SelectedProfile,
     prepared: PreparedRequest,
     session_hash: Option<String>,
     started: Instant,
-) -> Response<Box<dyn Read + Send>> {
+) -> Result<Response<Box<dyn Read + Send>>, RouterError> {
     let status = upstream.status().as_u16();
+    let upstream_content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
     let mut headers = upstream
         .headers()
         .iter()
@@ -728,13 +909,68 @@ fn build_stream_response(
             let lower = name.as_str().to_ascii_lowercase();
             if matches!(
                 lower.as_str(),
-                "content-length" | "content-encoding" | "connection" | "transfer-encoding"
+                "content-length"
+                    | "content-encoding"
+                    | "connection"
+                    | "transfer-encoding"
+                    | "content-type"
             ) {
                 return None;
             }
             Header::from_bytes(name.as_str().as_bytes(), value.as_bytes()).ok()
         })
         .collect::<Vec<_>>();
+    let mut upstream_error = None;
+    let body_reader: Box<dyn Read + Send> = if status >= 400 {
+        let mut body = Vec::new();
+        (&mut upstream)
+            .take(MAX_ERROR_RESPONSE_BYTES as u64 + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| RouterError::new(502, format!("读取上游错误响应失败: {error}")))?;
+        if body.len() > MAX_ERROR_RESPONSE_BYTES {
+            upstream_error = Some("上游错误响应过大，详情已省略".to_string());
+        } else {
+            upstream_error = summarize_upstream_error(&body);
+        }
+        if let Some(content_type) = upstream_content_type {
+            if let Ok(header) =
+                Header::from_bytes(b"content-type".as_slice(), content_type.as_bytes())
+            {
+                headers.push(header);
+            }
+        }
+        Box::new(Cursor::new(body).chain(upstream))
+    } else if prepared.protocol == WireProtocol::ChatCompletions {
+        let mut body = Vec::new();
+        (&mut upstream)
+            .take(MAX_TRANSFORM_RESPONSE_BYTES as u64 + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| RouterError::new(502, format!("读取上游响应失败: {error}")))?;
+        if body.len() > MAX_TRANSFORM_RESPONSE_BYTES {
+            return Err(RouterError::new(502, "上游响应过大，无法转换协议"));
+        }
+        let transformed =
+            transform_chat_response(&body, upstream_content_type.as_deref(), prepared.streaming)
+                .map_err(|error| {
+                    RouterError::new(502, format!("Chat Completions 响应转换失败: {error}"))
+                })?;
+        if let Ok(header) = Header::from_bytes(
+            b"content-type".as_slice(),
+            transformed.content_type.as_bytes(),
+        ) {
+            headers.push(header);
+        }
+        Box::new(Cursor::new(transformed.body))
+    } else {
+        if let Some(content_type) = upstream_content_type {
+            if let Ok(header) =
+                Header::from_bytes(b"content-type".as_slice(), content_type.as_bytes())
+            {
+                headers.push(header);
+            }
+        }
+        Box::new(upstream)
+    };
     if let Ok(header) = Header::from_bytes(
         b"x-codex-switcher-profile-id".as_slice(),
         selected.profile.id.as_bytes(),
@@ -754,47 +990,52 @@ fn build_stream_response(
         headers.push(header);
     }
     let reader = RouteResponseReader {
-        inner: Some(upstream),
+        inner: body_reader,
         app,
+        request_id: prepared.request_id,
         profile_id: selected.profile.id.clone(),
         alias: selected.profile.alias.clone(),
         requested_model: prepared.requested_model,
         actual_model: prepared.actual_model,
+        wire_protocol: prepared.protocol.canonical().to_string(),
+        upstream_url: prepared.upstream_url,
         fallback: selected.fallback,
         session_hash,
         started,
         status,
+        upstream_error,
         finished: false,
     };
-    Response::new(
+    Ok(Response::new(
         StatusCode(status),
         headers,
         Box::new(reader) as Box<dyn Read + Send>,
         None,
         None,
-    )
+    ))
 }
 
 struct RouteResponseReader {
-    inner: Option<reqwest::blocking::Response>,
+    inner: Box<dyn Read + Send>,
     app: AppHandle,
+    request_id: String,
     profile_id: String,
     alias: String,
     requested_model: Option<String>,
     actual_model: Option<String>,
+    wire_protocol: String,
+    upstream_url: String,
     fallback: Option<String>,
     session_hash: Option<String>,
     started: Instant,
     status: u16,
+    upstream_error: Option<String>,
     finished: bool,
 }
 
 impl Read for RouteResponseReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let Some(inner) = &mut self.inner else {
-            return Ok(0);
-        };
-        let read = match inner.read(buf) {
+        let read = match self.inner.read(buf) {
             Ok(read) => read,
             Err(error) => {
                 self.finish(Some(error.to_string()));
@@ -820,11 +1061,17 @@ impl RouteResponseReader {
             return;
         }
         self.finished = true;
+        let error = error.or_else(|| self.upstream_error.clone());
         mark_route_finished(&self.app, &self.profile_id, self.status, error.clone());
         append_log(
             &self.app,
             RoutingLogEntry {
                 ts: now_string(),
+                request_id: Some(self.request_id.clone()),
+                method: Some("POST".to_string()),
+                path: Some("/v1/responses".to_string()),
+                wire_protocol: Some(self.wire_protocol.clone()),
+                upstream_url: Some(self.upstream_url.clone()),
                 session_hash: self.session_hash.clone(),
                 profile_id: Some(self.profile_id.clone()),
                 alias: Some(self.alias.clone()),
@@ -843,6 +1090,60 @@ impl RouteResponseReader {
             },
         );
     }
+}
+
+fn summarize_upstream_error(body: &[u8]) -> Option<String> {
+    let message = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .or_else(|| value.get("message"))
+                .or_else(|| value.get("detail"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(ToString::to_string)
+        })?;
+    Some(message.chars().take(MAX_ERROR_MESSAGE_CHARS).collect())
+}
+
+fn test_request_model(store: &AppStore) -> String {
+    if store.settings.routing.mode != RoutingMode::Fixed {
+        return "gpt-5.4".to_string();
+    }
+    store
+        .settings
+        .routing
+        .fixed_profile_id
+        .as_deref()
+        .and_then(|profile_id| {
+            store
+                .profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+        })
+        .and_then(|profile| profile.api_config.as_ref())
+        .map(|config| config.model.clone())
+        .unwrap_or_else(|| "gpt-5.4".to_string())
+}
+
+fn normalize_oauth_input(body: &mut Value) {
+    let Some(input) = body
+        .get("input")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    else {
+        return;
+    };
+    body["input"] = serde_json::json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": input
+        }]
+    }]);
 }
 
 fn select_profile(
@@ -1170,7 +1471,9 @@ fn preserve_client_header(name: &str) -> bool {
     !matches!(
         name.to_ascii_lowercase().as_str(),
         "authorization"
+            | "accept"
             | "content-length"
+            | "content-type"
             | "content-encoding"
             | "connection"
             | "cookie"
@@ -1286,10 +1589,16 @@ fn respond_error(
     started: Instant,
     error: RouterError,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let headers = request_headers(&request);
     append_log(
         &app,
         RoutingLogEntry {
             ts: now_string(),
+            request_id: header_value(&headers, "x-client-request-id"),
+            method: Some(request.method().as_str().to_string()),
+            path: Some(request.url().to_string()),
+            wire_protocol: None,
+            upstream_url: None,
             session_hash: None,
             profile_id: None,
             alias: None,
@@ -1379,6 +1688,7 @@ fn drop_existing(handle: &mut Option<RouterHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn profile(id: &str, priority: i32, expiry: Option<&str>, hourly_used: u32) -> AccountProfile {
         AccountProfile {
@@ -1415,6 +1725,26 @@ mod tests {
     }
 
     #[test]
+    fn refreshes_takeover_backup_after_external_config_change() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let backup_path = dir.path().join(ROUTER_BACKUP_FILE);
+        fs::write(&config_path, "model_provider = \"external\"\n").unwrap();
+        fs::write(&backup_path, "model_provider = \"stale\"\n").unwrap();
+        let document = fs::read_to_string(&config_path)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+
+        refresh_router_backup(&config_path, &backup_path, &document).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&backup_path).unwrap(),
+            "model_provider = \"external\"\n"
+        );
+    }
+
+    #[test]
     fn expiring_subscription_sorts_before_open_ended_provider() {
         let mut profiles = vec![
             profile("api", 500, None, 0),
@@ -1438,5 +1768,52 @@ mod tests {
     fn quota_exhausted_profile_is_unavailable() {
         let profile = profile("used", 100, Some("2099-01-01T00:00:00Z"), 100);
         assert!(!profile_available(&profile));
+    }
+
+    #[test]
+    fn fixed_oauth_probe_does_not_borrow_api_provider_model() {
+        let oauth = profile("oauth", 100, None, 0);
+        let mut api = profile("api", 90, None, 0);
+        api.api_config = Some(crate::ApiProviderConfig {
+            provider_id: "longcat".to_string(),
+            base_url: "https://example.com".to_string(),
+            model: "LongCat-2.0".to_string(),
+            wire_api: "responses".to_string(),
+        });
+        let mut store = AppStore {
+            profiles: vec![oauth, api],
+            ..Default::default()
+        };
+        store.settings.routing.mode = RoutingMode::Fixed;
+        store.settings.routing.fixed_profile_id = Some("oauth".to_string());
+
+        assert_eq!(test_request_model(&store), "gpt-5.4");
+    }
+
+    #[test]
+    fn upstream_error_summary_uses_message_without_full_body() {
+        let body = br#"{"error":{"message":"unsupported model","internal":"secret"}}"#;
+        assert_eq!(
+            summarize_upstream_error(body).as_deref(),
+            Some("unsupported model")
+        );
+        assert_eq!(summarize_upstream_error(b"plain response body"), None);
+    }
+
+    #[test]
+    fn proxy_owns_upstream_content_negotiation_headers() {
+        assert!(!preserve_client_header("content-type"));
+        assert!(!preserve_client_header("accept"));
+        assert!(preserve_client_header("x-client-request-id"));
+    }
+
+    #[test]
+    fn oauth_upstream_normalizes_string_input_to_message_list() {
+        let mut body = serde_json::json!({"input": "Reply with OK"});
+        normalize_oauth_input(&mut body);
+
+        assert!(body["input"].is_array());
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["content"][0]["text"], "Reply with OK");
     }
 }

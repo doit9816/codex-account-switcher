@@ -42,6 +42,8 @@ import type {
   OAuthLoginSession,
   Profile,
   QuotaRule,
+  RoutingLogEntry,
+  RoutingProbeResult,
   RoutingStatus,
   StoreView
 } from "./types";
@@ -104,6 +106,7 @@ export default function App() {
   const [apiProviderId, setApiProviderId] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [apiModel, setApiModel] = useState("");
+  const [apiWireApi, setApiWireApi] = useState("responses");
   const [apiKey, setApiKey] = useState("");
   const [codexConfig, setCodexConfig] = useState<CodexConfigFiles | null>(null);
   const [authJsonDraft, setAuthJsonDraft] = useState("");
@@ -129,6 +132,7 @@ export default function App() {
   const [routingFixedProfileId, setRoutingFixedProfileId] = useState("");
   const [routingStickyTtlSecs, setRoutingStickyTtlSecs] = useState(3600);
   const [routingBusy, setRoutingBusy] = useState(false);
+  const [selectedRoutingLog, setSelectedRoutingLog] = useState<RoutingLogEntry | null>(null);
   const [routingPoolSort, setRoutingPoolSort] = useState<"route" | "priority" | "expiry" | "connections" | "status">("route");
   const [routingPriorityDrafts, setRoutingPriorityDrafts] = useState<Record<string, string>>({});
   const [quotaDraft, setQuotaDraft] = useState<QuotaRule>(emptyQuota);
@@ -261,16 +265,21 @@ export default function App() {
     ? `${latestRoutingLog.alias || latestRoutingLog.profileId || "未知账号"} · ${latestRoutingLog.httpStatus || latestRoutingLog.status}`
     : "暂无请求";
   const routingCodexCheck = routingStatus?.codexCheck;
-  const routingCodexCheckOk = !!routingCodexCheck
+  const routingTakeoverConfigured = !!routingCodexCheck
     && routingCodexCheck.selectedProvider === "codex-switcher-router"
     && routingCodexCheck.providerPresent
     && routingCodexCheck.baseUrlMatches
-    && routingCodexCheck.tokenPresent
+    && routingCodexCheck.tokenPresent;
+  const routingTakeoverExpected = !!store?.settings.routing.appliedToCodex;
+  const routingCodexCheckOk = routingTakeoverConfigured
+    && !!routingCodexCheck
     && routingCodexCheck.serviceRunning
     && routingCodexCheck.healthOk;
   const routingCodexCheckText = routingCodexCheckOk
     ? "配置与服务正常"
-    : routingCodexCheck
+    : !routingTakeoverExpected && !routingTakeoverConfigured
+      ? "未接管"
+      : routingCodexCheck
       ? "需要检查"
       : "未自检";
   const routingFixedModeIncomplete = routingMode === "fixed" && !routingFixedProfileId;
@@ -1120,6 +1129,7 @@ export default function App() {
         providerId: apiProviderId.trim() || generatedApiProviderId(providerAlias, apiModel),
         baseUrl: apiBaseUrl,
         model: apiModel,
+        wireApi: apiWireApi,
         apiKey
       });
       setStore(view);
@@ -1129,6 +1139,7 @@ export default function App() {
       setApiProviderId("");
       setApiBaseUrl("");
       setApiModel("");
+      setApiWireApi("responses");
       setApiKey("");
       return view;
     }, t.apiProviderAdded);
@@ -1242,6 +1253,24 @@ export default function App() {
         text: `${password ? t.encryptedExported : t.plaintextExported}: ${manifest.profileCount} ${t.accountCount}, ${manifest.files.length} ${t.configFiles}, ${t.conversationFiles} ${conversationCount}`
       });
       return manifest;
+    });
+  }
+
+  async function testRoutingRequest() {
+    await run(async () => {
+      const result = await invoke<RoutingProbeResult>("routing_test_request");
+      const routing = await reloadRoutingStatus();
+      setSelectedRoutingLog(
+        routing.recentLogs
+          .slice()
+          .reverse()
+          .find((log) => log.requestId === result.requestId) || null
+      );
+      setNotice({
+        kind: result.ok ? "ok" : "error",
+        text: `${result.message} · HTTP ${result.httpStatus} · ${result.elapsedMs} ms`
+      });
+      return result;
     });
   }
 
@@ -1519,6 +1548,13 @@ export default function App() {
                   <div className="api-advanced-grid">
                     <label>{t.providerId}<input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="自动生成" /></label>
                     <label>{t.apiBaseUrl}<input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="默认 https://api.openai.com/v1" /></label>
+                    <label>
+                      {t.apiProtocol}
+                      <select value={apiWireApi} onChange={(event) => setApiWireApi(event.target.value)}>
+                        <option value="responses">{t.apiProtocolResponses}</option>
+                        <option value="chat_completions">{t.apiProtocolChat}</option>
+                      </select>
+                    </label>
                   </div>
                 </details>
                 <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiModel.trim() || !apiKey.trim()}>
@@ -1577,6 +1613,13 @@ export default function App() {
                       {t.apiBaseUrl}
                       <input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="默认 https://api.openai.com/v1" />
                     </label>
+                    <label>
+                      {t.apiProtocol}
+                      <select value={editWireApiDraft} onChange={(event) => setEditWireApiDraft(event.target.value)}>
+                        <option value="responses">{t.apiProtocolResponses}</option>
+                        <option value="chat_completions">{t.apiProtocolChat}</option>
+                      </select>
+                    </label>
                   </div>
                 </details>
                 <label className="form-span-all">
@@ -1626,6 +1669,44 @@ export default function App() {
                 </div>
               </div>
             )}
+          </section>
+        </div>
+      )}
+
+      {selectedRoutingLog && (
+        <div className="update-dialog-backdrop" role="presentation" onMouseDown={() => setSelectedRoutingLog(null)}>
+          <section
+            className="routing-log-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="routing-log-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="update-dialog-head">
+              <div>
+                <h2 id="routing-log-title">请求详情</h2>
+                <span className="edit-account-type">{formatDate(selectedRoutingLog.ts)}</span>
+              </div>
+              <button className="notice-close" onClick={() => setSelectedRoutingLog(null)} title="关闭请求详情">
+                <X size={18} />
+              </button>
+            </div>
+            <dl className="routing-log-detail-grid">
+              <div><dt>请求 ID</dt><dd>{selectedRoutingLog.requestId || "-"}</dd></div>
+              <div><dt>入口</dt><dd>{selectedRoutingLog.method || "POST"} {selectedRoutingLog.path || "/v1/responses"}</dd></div>
+              <div><dt>状态</dt><dd>{selectedRoutingLog.httpStatus || selectedRoutingLog.status}</dd></div>
+              <div><dt>耗时</dt><dd>{selectedRoutingLog.latencyMs} ms</dd></div>
+              <div><dt>命中账号</dt><dd>{selectedRoutingLog.alias || selectedRoutingLog.profileId || "-"}</dd></div>
+              <div><dt>Profile ID</dt><dd>{selectedRoutingLog.profileId || "-"}</dd></div>
+              <div><dt>请求模型</dt><dd>{selectedRoutingLog.requestedModel || "-"}</dd></div>
+              <div><dt>实际模型</dt><dd>{selectedRoutingLog.actualModel || "-"}</dd></div>
+              <div><dt>上游协议</dt><dd>{selectedRoutingLog.wireProtocol || "-"}</dd></div>
+              <div className="detail-span-all"><dt>上游地址</dt><dd>{selectedRoutingLog.upstreamUrl || "-"}</dd></div>
+              <div><dt>会话哈希</dt><dd>{selectedRoutingLog.sessionHash || "-"}</dd></div>
+              <div><dt>回退信息</dt><dd>{selectedRoutingLog.fallback || "-"}</dd></div>
+              <div className={`detail-span-all ${selectedRoutingLog.error ? "detail-error" : ""}`}><dt>错误</dt><dd>{selectedRoutingLog.error || "无"}</dd></div>
+            </dl>
+            <p className="routing-log-privacy">为保护隐私，请求提示词、响应正文和密钥不会写入日志。</p>
           </section>
         </div>
       )}
@@ -1716,13 +1797,13 @@ export default function App() {
                 </div>
                 <KeyRound size={22} />
               </div>
-              <div className={`routing-takeover-card ${store?.settings.routing.appliedToCodex ? "active" : ""}`}>
+              <div className={`routing-takeover-card ${routingTakeoverConfigured ? "active" : ""}`}>
                 <div>
                   <span>Codex 接管状态</span>
-                  <strong>{store?.settings.routing.appliedToCodex ? "已接管到本路由" : "未接管"}</strong>
-                  <p>{store?.settings.routing.appliedToCodex ? "配置已写入本机 Codex；已有会话可能需要重启或新建线程才会生效。" : "点击一键接管后，本机 Codex 才会走路由。"}</p>
+                  <strong>{routingTakeoverConfigured ? "已接管到本路由" : routingTakeoverExpected ? "接管配置已失效" : "未接管"}</strong>
+                  <p>{routingTakeoverConfigured ? "配置已写入本机 Codex；已有会话可能需要重启或新建线程才会生效。" : routingTakeoverExpected ? "本机 Codex 配置被其他工具修改，请点击重新接管。" : "点击一键接管后，本机 Codex 才会走路由。"}</p>
                 </div>
-                <StatusPill ok={!!store?.settings.routing.appliedToCodex} text={store?.settings.routing.appliedToCodex ? "接管中" : "未接管"} />
+                <StatusPill ok={routingTakeoverConfigured} text={routingTakeoverConfigured ? "接管中" : routingTakeoverExpected ? "已失效" : "未接管"} />
               </div>
               <div className="routing-status-grid">
                 <div>
@@ -1742,7 +1823,7 @@ export default function App() {
                   <strong>{routingCodexCheckText}</strong>
                 </div>
               </div>
-              {routingCodexCheck && (
+              {routingCodexCheck && (routingTakeoverExpected || routingTakeoverConfigured) && (
                 <div className={`routing-check-card ${routingCodexCheckOk ? "ok" : "warn"}`}>
                   <div>
                     <strong>{routingCodexCheckOk ? "接管链路自检通过" : "接管链路还有异常"}</strong>
@@ -1777,9 +1858,9 @@ export default function App() {
               </div>
               <div className="action-row">
                 <button className="icon-button primary" onClick={() => void applyRoutingCodexConfig()} disabled={busy || !routingStatus?.accessKey}>
-                  <Zap size={17} /> 一键接管 Codex
+                  <Zap size={17} /> {routingTakeoverExpected && !routingTakeoverConfigured ? "重新接管 Codex" : "一键接管 Codex"}
                 </button>
-                <button className="icon-button" onClick={() => void restoreRoutingCodexConfig()} disabled={busy || !store?.settings.routing.appliedToCodex}>
+                <button className="icon-button" onClick={() => void restoreRoutingCodexConfig()} disabled={busy || (!routingTakeoverExpected && !routingTakeoverConfigured)}>
                   <RotateCcw size={17} /> 恢复配置
                 </button>
               </div>
@@ -1851,20 +1932,36 @@ export default function App() {
                   <h2>最近请求</h2>
                   <p>仅记录路由元数据，不记录提示词或响应正文。</p>
                 </div>
-                <FileText size={22} />
+                <div className="panel-header-actions">
+                  <button className="mini-button primary" onClick={() => void testRoutingRequest()} disabled={busy || routingBusy}>
+                    <Zap size={15} /> 测试请求
+                  </button>
+                  <FileText size={22} />
+                </div>
               </div>
               <div className="routing-log-list">
                 {(routingStatus?.recentLogs || []).slice().reverse().map((log, index) => (
-                  <div className="routing-log-row" key={`${log.ts}-${index}`}>
-                    <div>
+                  <button
+                    type="button"
+                    className="routing-log-row"
+                    key={`${log.ts}-${index}`}
+                    onClick={() => setSelectedRoutingLog(log)}
+                    title="查看请求详情"
+                  >
+                    <div className="routing-log-main">
                       <strong>{log.alias || log.profileId || "-"}</strong>
                       <small>{formatDate(log.ts)}</small>
                     </div>
-                    <span>{log.httpStatus || log.status}</span>
-                    <span>{log.actualModel || log.requestedModel || "-"}</span>
-                    <span>{log.latencyMs} ms</span>
-                    <small>{log.fallback || log.error || log.sessionHash || "-"}</small>
-                  </div>
+                    <span className={`routing-log-status ${(log.httpStatus || 0) >= 400 ? "error" : "ok"}`}>
+                      {log.httpStatus || log.status}
+                    </span>
+                    <span className="routing-log-latency">{log.latencyMs} ms</span>
+                    <div className="routing-log-meta">
+                      <span>{log.actualModel || log.requestedModel || "未知模型"}</span>
+                      {log.wireProtocol && <span>{log.wireProtocol}</span>}
+                    </div>
+                    <small className="routing-log-summary">{log.fallback || log.error || log.requestId || log.sessionHash || "点击查看详情"}</small>
+                  </button>
                 ))}
                 {(routingStatus?.recentLogs || []).length === 0 && (
                   <div className="routing-log-empty">
@@ -2158,6 +2255,13 @@ export default function App() {
                       placeholder="默认 https://api.openai.com/v1"
                     />
                   </label>
+                  <label>
+                    {t.apiProtocol}
+                    <select value={apiWireApi} onChange={(event) => setApiWireApi(event.target.value)}>
+                      <option value="responses">{t.apiProtocolResponses}</option>
+                      <option value="chat_completions">{t.apiProtocolChat}</option>
+                    </select>
+                  </label>
                 </div>
               </details>
               <button
@@ -2232,7 +2336,7 @@ export default function App() {
                     <div className="api-provider-summary">
                       <strong>{profile.apiConfig.model}</strong>
                       <small>{profile.apiConfig.baseUrl}</small>
-                      <span>Responses API</span>
+                      <span>{profile.apiConfig.wireApi === "chat_completions" ? t.apiProtocolChat : t.apiProtocolResponses}</span>
                     </div>
                   )}
 

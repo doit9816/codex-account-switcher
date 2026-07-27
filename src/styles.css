@@ -917,7 +917,75 @@ input:focus {
 }
 
 .routing-log-row {
-  grid-template-columns: minmax(150px, 1.3fr) 70px minmax(110px, 1fr) 80px minmax(120px, 1fr);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  text-align: left;
+  width: 100%;
+}
+
+.routing-log-row:hover {
+  background: #f4f7fb;
+  border-color: #b8c8dc;
+}
+
+.routing-log-main,
+.routing-log-meta,
+.routing-log-summary {
+  min-width: 0;
+}
+
+.routing-log-status {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.routing-log-status.ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.routing-log-status.error {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.routing-log-latency {
+  color: #475569;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.routing-log-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+
+.routing-log-meta span {
+  background: #eef2f7;
+  border-radius: 999px;
+  color: #475569;
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routing-log-summary {
+  grid-column: 1 / -1;
+}
+
+.panel-header-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
 }
 
 .routing-account-row strong,
@@ -958,6 +1026,64 @@ input:focus {
 .routing-log-empty small {
   margin: 0;
   max-width: 420px;
+}
+
+.routing-log-dialog {
+  background: #ffffff;
+  border: 1px solid #d9e3ee;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  display: grid;
+  gap: 16px;
+  max-height: calc(100vh - 48px);
+  max-width: 760px;
+  overflow: auto;
+  padding: 22px;
+  width: 100%;
+}
+
+.routing-log-detail-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.routing-log-detail-grid > div {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.routing-log-detail-grid .detail-span-all {
+  grid-column: 1 / -1;
+}
+
+.routing-log-detail-grid dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 750;
+  margin-bottom: 4px;
+}
+
+.routing-log-detail-grid dd {
+  color: #1e293b;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.routing-log-detail-grid .detail-error dd {
+  color: #b91c1c;
+}
+
+.routing-log-privacy {
+  color: #64748b;
+  font-size: 12px;
+  margin: 0;
 }
 
 .panel {

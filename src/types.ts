@@ -117,6 +117,11 @@ export type RoutingSettings = {
 
 export type RoutingLogEntry = {
   ts: string;
+  requestId?: string;
+  method?: string;
+  path?: string;
+  wireProtocol?: string;
+  upstreamUrl?: string;
   sessionHash?: string;
   profileId?: string;
   alias?: string;
@@ -127,6 +132,18 @@ export type RoutingLogEntry = {
   latencyMs: number;
   fallback?: string;
   error?: string;
+};
+
+export type RoutingProbeResult = {
+  ok: boolean;
+  requestId: string;
+  httpStatus: number;
+  elapsedMs: number;
+  profileId?: string;
+  actualModel?: string;
+  responseStatus?: string;
+  outputItems: number;
+  message: string;
 };
 
 export type RoutingStatus = {

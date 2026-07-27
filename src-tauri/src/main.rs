@@ -3,6 +3,7 @@
 mod oauth;
 mod proxy;
 mod routing;
+mod routing_protocol;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -496,6 +497,7 @@ pub(crate) struct ApiProviderConfig {
     pub(crate) provider_id: String,
     pub(crate) base_url: String,
     pub(crate) model: String,
+    #[serde(default = "routing_protocol::default_wire_api")]
     pub(crate) wire_api: String,
 }
 
@@ -995,9 +997,11 @@ fn add_api_profile(
     provider_id: String,
     base_url: String,
     model: String,
+    wire_api: String,
     api_key: String,
 ) -> Result<StoreView, String> {
     let base_url = normalize_api_base_url(&base_url)?;
+    let wire_api = routing_protocol::normalize_wire_api(&wire_api)?;
     let model = model.trim();
     let api_key = api_key.trim();
     if model.is_empty() || api_key.is_empty() {
@@ -1056,7 +1060,7 @@ fn add_api_profile(
             provider_id,
             base_url,
             model: model.to_string(),
-            wire_api: "responses".to_string(),
+            wire_api,
         }),
         usage: UsageStats::default(),
         route_health: RouteHealth::default(),
@@ -1148,7 +1152,8 @@ fn update_profile_details(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(String::from);
+        .map(routing_protocol::normalize_wire_api)
+        .transpose()?;
     let api_key = api_key
         .as_deref()
         .map(str::trim)
@@ -1322,6 +1327,11 @@ fn routing_regenerate_access_key(app: AppHandle) -> Result<routing::RoutingStatu
 #[tauri::command]
 fn routing_read_logs(app: AppHandle, limit: usize) -> Vec<routing::RoutingLogEntry> {
     routing::read_logs(app, limit)
+}
+
+#[tauri::command]
+fn routing_test_request(app: AppHandle) -> Result<routing::RoutingProbeResult, String> {
+    routing::test_request(app)
 }
 
 #[tauri::command]
@@ -1649,6 +1659,16 @@ async fn switch_profile(
     if store.settings.routing.applied_to_codex {
         return Err(
             "路由 API 已接管本机 Codex 配置；请在路由页固定账号或先恢复配置后再切换全局账号"
+                .to_string(),
+        );
+    }
+    if profile.api_config.as_ref().is_some_and(|config| {
+        routing_protocol::WireProtocol::parse(&config.wire_api)
+            .map(|protocol| protocol == routing_protocol::WireProtocol::ChatCompletions)
+            .unwrap_or(true)
+    }) {
+        return Err(
+            "Chat Completions 账号不能直接写入 Codex 配置；请启动路由并在路由页固定该账号"
                 .to_string(),
         );
     }
@@ -4700,6 +4720,7 @@ fn main() {
             routing_stop,
             routing_regenerate_access_key,
             routing_read_logs,
+            routing_test_request,
             routing_apply_codex_config,
             routing_restore_codex_config,
             refresh_profile_tokens_from_codex_home,
