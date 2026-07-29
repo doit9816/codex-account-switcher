@@ -18,7 +18,6 @@ import {
   LayoutDashboard,
   Network,
   Pencil,
-  Power,
   RefreshCcw,
   RotateCcw,
   Settings,
@@ -30,6 +29,10 @@ import {
   Zap
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { RoutingPage } from "./components/routing/RoutingPage";
+import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
+import { ProfileRuleFields } from "./components/ProfileRuleFields";
+import { StatusPill } from "./components/StatusPill";
 import type {
   AuthSummary,
   BundleManifest,
@@ -52,19 +55,16 @@ import {
   accountState,
   authSummariesMatch,
   formatDate,
-  formatLimitChip,
   formatReset,
   formatResetExpiry,
   formatSubscriptionValidity,
   formatUsage,
-  friendlyProbeSummary,
   isConversationFile,
   isCooling,
   limitRemainingPercent,
   localizedLimitLabel,
   localizeDetectedText,
   normalizeNumber,
-  parseOptionalNumber,
   planBadge,
   profileNeedsReauthorization,
   profileScore,
@@ -131,21 +131,18 @@ export default function App() {
   const [routingMode, setRoutingMode] = useState<"auto" | "fixed">("auto");
   const [routingFixedProfileId, setRoutingFixedProfileId] = useState("");
   const [routingStickyTtlSecs, setRoutingStickyTtlSecs] = useState(3600);
+  const [routingLogRetentionDays, setRoutingLogRetentionDays] = useState(7);
   const [routingBusy, setRoutingBusy] = useState(false);
-  const [selectedRoutingLog, setSelectedRoutingLog] = useState<RoutingLogEntry | null>(null);
-  const [routingPoolSort, setRoutingPoolSort] = useState<"route" | "priority" | "expiry" | "connections" | "status">("route");
-  const [routingPriorityDrafts, setRoutingPriorityDrafts] = useState<Record<string, string>>({});
-  const [quotaDraft, setQuotaDraft] = useState<QuotaRule>(emptyQuota);
-  const [aliasDraft, setAliasDraft] = useState("");
   const [editAliasDraft, setEditAliasDraft] = useState("");
   const [editNoteDraft, setEditNoteDraft] = useState("");
+  const [editQuotaDraft, setEditQuotaDraft] = useState<QuotaRule>(emptyQuota);
+  const [editPriorityDraft, setEditPriorityDraft] = useState(100);
+  const [editEnabledDraft, setEditEnabledDraft] = useState(true);
   const [editProviderIdDraft, setEditProviderIdDraft] = useState("");
   const [editBaseUrlDraft, setEditBaseUrlDraft] = useState("");
   const [editModelDraft, setEditModelDraft] = useState("");
   const [editWireApiDraft, setEditWireApiDraft] = useState("responses");
   const [editApiKeyDraft, setEditApiKeyDraft] = useState("");
-  const [priorityDraft, setPriorityDraft] = useState(100);
-  const [enabledDraft, setEnabledDraft] = useState(true);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
   const [activePage, setActivePage] = useState<"dashboard" | "routing" | "settings">("dashboard");
@@ -212,77 +209,6 @@ export default function App() {
     const selected = new Set(exportProfileIds);
     return (store?.profiles || []).filter((profile) => selected.has(profile.id));
   }, [store?.profiles, exportProfileIds]);
-  const routingProfiles = useMemo(() => {
-    const routeRank = (profile: Profile) => {
-      if (!profile.enabled) return 4;
-      if (isCooling(profile)) return 3;
-      if (tokenState(profile, t) === t.reloginRequired || tokenState(profile, t) === t.authInvalid) return 2;
-      return 0;
-    };
-    const expiryValue = (profile: Profile) => {
-      const expiresAt = subscriptionExpiryState(profile).expiresAt;
-      return expiresAt == null ? Number.MAX_SAFE_INTEGER : expiresAt;
-    };
-    return (store?.profiles || []).slice().sort((left, right) => {
-      if (routingPoolSort === "priority") return right.priority - left.priority || left.alias.localeCompare(right.alias);
-      if (routingPoolSort === "expiry") return expiryValue(left) - expiryValue(right) || right.priority - left.priority;
-      if (routingPoolSort === "connections") {
-        return (right.routeHealth?.activeConnections || 0) - (left.routeHealth?.activeConnections || 0) || right.priority - left.priority;
-      }
-      if (routingPoolSort === "status") return routeRank(left) - routeRank(right) || right.priority - left.priority;
-      return (
-        routeRank(left) - routeRank(right) ||
-        expiryValue(left) - expiryValue(right) ||
-        right.priority - left.priority ||
-        (right.routeHealth?.activeConnections || 0) - (left.routeHealth?.activeConnections || 0) ||
-        left.alias.localeCompare(right.alias)
-      );
-    });
-  }, [routingPoolSort, store?.profiles, t]);
-  const routingPreviewProfile = useMemo(() => {
-    if (routingMode === "fixed") {
-      return (store?.profiles || []).find((profile) => profile.id === routingFixedProfileId);
-    }
-    return routingProfiles.find((profile) => (
-      profile.enabled &&
-      !isCooling(profile) &&
-      tokenState(profile, t) !== t.reloginRequired &&
-      tokenState(profile, t) !== t.authInvalid
-    ));
-  }, [routingFixedProfileId, routingMode, routingProfiles, store?.profiles, t]);
-  const latestRoutingLog = routingStatus?.recentLogs.length
-    ? routingStatus.recentLogs[routingStatus.recentLogs.length - 1]
-    : undefined;
-  const routingModeLabel = routingMode === "fixed" ? "固定账号" : "自动会话粘性";
-  const routingPreviewText = routingMode === "fixed"
-    ? routingPreviewProfile
-      ? `固定使用：${routingPreviewProfile.alias}`
-      : "固定账号未选择"
-    : routingPreviewProfile
-      ? `新会话优先：${routingPreviewProfile.alias}`
-      : "暂无可用账号";
-  const latestRoutingText = latestRoutingLog
-    ? `${latestRoutingLog.alias || latestRoutingLog.profileId || "未知账号"} · ${latestRoutingLog.httpStatus || latestRoutingLog.status}`
-    : "暂无请求";
-  const routingCodexCheck = routingStatus?.codexCheck;
-  const routingTakeoverConfigured = !!routingCodexCheck
-    && routingCodexCheck.selectedProvider === "codex-switcher-router"
-    && routingCodexCheck.providerPresent
-    && routingCodexCheck.baseUrlMatches
-    && routingCodexCheck.tokenPresent;
-  const routingTakeoverExpected = !!store?.settings.routing.appliedToCodex;
-  const routingCodexCheckOk = routingTakeoverConfigured
-    && !!routingCodexCheck
-    && routingCodexCheck.serviceRunning
-    && routingCodexCheck.healthOk;
-  const routingCodexCheckText = routingCodexCheckOk
-    ? "配置与服务正常"
-    : !routingTakeoverExpected && !routingTakeoverConfigured
-      ? "未接管"
-      : routingCodexCheck
-      ? "需要检查"
-      : "未自检";
-  const routingFixedModeIncomplete = routingMode === "fixed" && !routingFixedProfileId;
   const passwordTooShort = password.length > 0 && password.length < 8;
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
@@ -379,6 +305,7 @@ export default function App() {
     setRoutingMode(routing.mode || "auto");
     setRoutingFixedProfileId(routing.fixedProfileId || "");
     setRoutingStickyTtlSecs(routing.stickyTtlSecs || 3600);
+    setRoutingLogRetentionDays(routing.logRetentionDays || 7);
   }, [store]);
 
   useEffect(() => {
@@ -411,14 +338,6 @@ export default function App() {
     store?.settings.backgroundTokenRefreshIntervalSecs,
     store?.settings.tokenRefreshThresholdSecs
   ]);
-
-  useEffect(() => {
-    if (!selectedProfile) return;
-    setQuotaDraft(selectedProfile.quotaRule);
-    setAliasDraft(selectedProfile.alias);
-    setPriorityDraft(selectedProfile.priority);
-    setEnabledDraft(selectedProfile.enabled);
-  }, [selectedProfile]);
 
   useEffect(() => {
     if (!notice) return;
@@ -675,27 +594,13 @@ export default function App() {
     if (result) setShowAddAccountDialog(false);
   }
 
-  async function saveQuota() {
-    if (!selectedProfile) return;
-    await run(async () => {
-      const view = await invoke<StoreView>("save_quota_rule", {
-        profileId: selectedProfile.id,
-        alias: aliasDraft.trim(),
-        hourlyLimit: normalizeNumber(quotaDraft.hourlyLimit),
-        dailyLimit: normalizeNumber(quotaDraft.dailyLimit),
-        cooldownMinutes: quotaDraft.cooldownMinutes || 180,
-        enabled: enabledDraft,
-        priority: priorityDraft
-      });
-      setStore(view);
-      return view;
-    }, t.savedRules);
-  }
-
   function openEditProfile(profile: Profile) {
     setEditingProfileId(profile.id);
     setEditAliasDraft(profile.alias);
     setEditNoteDraft(profile.note || "");
+    setEditQuotaDraft(profile.quotaRule);
+    setEditPriorityDraft(profile.priority);
+    setEditEnabledDraft(profile.enabled);
     setEditProviderIdDraft(profile.apiConfig?.providerId || "");
     setEditBaseUrlDraft(profile.apiConfig?.baseUrl || "");
     setEditModelDraft(profile.apiConfig?.model || "");
@@ -722,6 +627,11 @@ export default function App() {
         profileId: editingProfile.id,
         alias: editAliasDraft.trim(),
         note: editNoteDraft,
+        hourlyLimit: normalizeNumber(editQuotaDraft.hourlyLimit),
+        dailyLimit: normalizeNumber(editQuotaDraft.dailyLimit),
+        cooldownMinutes: editQuotaDraft.cooldownMinutes || 180,
+        enabled: editEnabledDraft,
+        priority: editPriorityDraft,
         providerId: editingProfile.apiConfig ? editProviderIdDraft : undefined,
         baseUrl: editingProfile.apiConfig ? editBaseUrlDraft : undefined,
         model: editingProfile.apiConfig ? editModelDraft : undefined,
@@ -844,12 +754,22 @@ export default function App() {
   }
 
   async function applyRoutingCodexConfig() {
+    const codexRunning = await invoke<boolean>("is_codex_process_running");
+    if (codexRunning) {
+      const confirmed = await confirmDialog(t.routingTakeoverRestartConfirm, {
+        title: t.routingTakeoverRestartTitle,
+        kind: "warning"
+      });
+      if (!confirmed) return;
+    }
     await run(async () => {
-      const routing = await invoke<RoutingStatus>("routing_apply_codex_config");
+      const routing = await invoke<RoutingStatus>("routing_apply_codex_config", {
+        restartCodex: codexRunning
+      });
       setRoutingStatus(routing);
       await refresh();
       return routing;
-    }, "已接管本机 Codex 配置");
+    }, codexRunning ? t.routingTakeoverRestarted : t.routingTakeoverApplied);
   }
 
   async function restoreRoutingCodexConfig() {
@@ -882,10 +802,8 @@ export default function App() {
     }, "已固定到路由");
   }
 
-  async function saveRoutingProfilePriority(profile: Profile) {
-    const draft = Number(routingPriorityDrafts[profile.id] ?? profile.priority);
-    const priority = Number.isFinite(draft) ? draft : profile.priority;
-    await run(async () => {
+  async function saveRoutingProfilePriority(profile: Profile, priority: number) {
+    const saved = await run(async () => {
       const view = await invoke<StoreView>("save_quota_rule", {
         profileId: profile.id,
         alias: profile.alias,
@@ -896,13 +814,9 @@ export default function App() {
         priority
       });
       setStore(view);
-      setRoutingPriorityDrafts((current) => {
-        const next = { ...current };
-        delete next[profile.id];
-        return next;
-      });
       return view;
     }, "优先级已保存");
+    return !!saved;
   }
 
   async function checkForUpdate(manual = true) {
@@ -1067,10 +981,6 @@ export default function App() {
       setNotice({ kind: result.message.includes("失败") || (result.codexRunning && !force) ? "warn" : "ok", text: result.message });
       return result;
     });
-  }
-
-  async function switchSelected() {
-    await switchProfile();
   }
 
   async function autoSwitch() {
@@ -1256,22 +1166,35 @@ export default function App() {
     });
   }
 
-  async function testRoutingRequest() {
+  async function saveRoutingLogSettings() {
     await run(async () => {
+      const routing = await invoke<RoutingStatus>("routing_save_log_settings", {
+        retentionDays: Math.min(365, Math.max(1, routingLogRetentionDays))
+      });
+      setRoutingStatus(routing);
+      await refresh();
+      return routing;
+    }, t.savedRoutingLogSettings);
+  }
+
+  async function testRoutingRequest(): Promise<RoutingLogEntry | null> {
+    setNotice(null);
+    try {
       const result = await invoke<RoutingProbeResult>("routing_test_request");
       const routing = await reloadRoutingStatus();
-      setSelectedRoutingLog(
-        routing.recentLogs
-          .slice()
-          .reverse()
-          .find((log) => log.requestId === result.requestId) || null
-      );
+      const log = routing.recentLogs
+        .slice()
+        .reverse()
+        .find((entry) => entry.requestId === result.requestId) || null;
       setNotice({
         kind: result.ok ? "ok" : "error",
         text: `${result.message} · HTTP ${result.httpStatus} · ${result.elapsedMs} ms`
       });
-      return result;
-    });
+      return log;
+    } catch (error) {
+      setNotice({ kind: "error", text: String(error) });
+      return null;
+    }
   }
 
   function toggleExportProfile(profileId: string) {
@@ -1631,6 +1554,15 @@ export default function App() {
                     placeholder={t.notePlaceholder}
                   />
                 </label>
+                <ProfileRuleFields
+                  t={t}
+                  quota={editQuotaDraft}
+                  priority={editPriorityDraft}
+                  enabled={editEnabledDraft}
+                  onQuotaChange={setEditQuotaDraft}
+                  onPriorityChange={setEditPriorityDraft}
+                  onEnabledChange={setEditEnabledDraft}
+                />
                 <div className="edit-form-actions">
                   <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
                   <button
@@ -1657,6 +1589,15 @@ export default function App() {
                     placeholder={t.notePlaceholder}
                   />
                 </label>
+                <ProfileRuleFields
+                  t={t}
+                  quota={editQuotaDraft}
+                  priority={editPriorityDraft}
+                  enabled={editEnabledDraft}
+                  onQuotaChange={setEditQuotaDraft}
+                  onPriorityChange={setEditPriorityDraft}
+                  onEnabledChange={setEditEnabledDraft}
+                />
                 <div className="edit-form-actions">
                   <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
                   <button
@@ -1673,307 +1614,37 @@ export default function App() {
         </div>
       )}
 
-      {selectedRoutingLog && (
-        <div className="update-dialog-backdrop" role="presentation" onMouseDown={() => setSelectedRoutingLog(null)}>
-          <section
-            className="routing-log-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="routing-log-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="update-dialog-head">
-              <div>
-                <h2 id="routing-log-title">请求详情</h2>
-                <span className="edit-account-type">{formatDate(selectedRoutingLog.ts)}</span>
-              </div>
-              <button className="notice-close" onClick={() => setSelectedRoutingLog(null)} title="关闭请求详情">
-                <X size={18} />
-              </button>
-            </div>
-            <dl className="routing-log-detail-grid">
-              <div><dt>请求 ID</dt><dd>{selectedRoutingLog.requestId || "-"}</dd></div>
-              <div><dt>入口</dt><dd>{selectedRoutingLog.method || "POST"} {selectedRoutingLog.path || "/v1/responses"}</dd></div>
-              <div><dt>状态</dt><dd>{selectedRoutingLog.httpStatus || selectedRoutingLog.status}</dd></div>
-              <div><dt>耗时</dt><dd>{selectedRoutingLog.latencyMs} ms</dd></div>
-              <div><dt>命中账号</dt><dd>{selectedRoutingLog.alias || selectedRoutingLog.profileId || "-"}</dd></div>
-              <div><dt>Profile ID</dt><dd>{selectedRoutingLog.profileId || "-"}</dd></div>
-              <div><dt>请求模型</dt><dd>{selectedRoutingLog.requestedModel || "-"}</dd></div>
-              <div><dt>实际模型</dt><dd>{selectedRoutingLog.actualModel || "-"}</dd></div>
-              <div><dt>上游协议</dt><dd>{selectedRoutingLog.wireProtocol || "-"}</dd></div>
-              <div className="detail-span-all"><dt>上游地址</dt><dd>{selectedRoutingLog.upstreamUrl || "-"}</dd></div>
-              <div><dt>会话哈希</dt><dd>{selectedRoutingLog.sessionHash || "-"}</dd></div>
-              <div><dt>回退信息</dt><dd>{selectedRoutingLog.fallback || "-"}</dd></div>
-              <div className={`detail-span-all ${selectedRoutingLog.error ? "detail-error" : ""}`}><dt>错误</dt><dd>{selectedRoutingLog.error || "无"}</dd></div>
-            </dl>
-            <p className="routing-log-privacy">为保护隐私，请求提示词、响应正文和密钥不会写入日志。</p>
-          </section>
-        </div>
-      )}
-
       {activePage === "routing" ? (
-        <section className="routing-page">
-          <div className="routing-hero panel">
-            <div>
-              <h2>路由 API</h2>
-              <p>单一转发 API，按规则在本地账号池中选择上游账号。</p>
-            </div>
-            <StatusPill ok={!!routingStatus?.running} text={routingBusy ? "处理中..." : routingStatus?.running ? "运行中" : "已停止"} />
-          </div>
-
-          <section className="routing-grid">
-            <div className="panel routing-settings-panel">
-              <div className="panel-header">
-                <div>
-                  <h2>服务设置</h2>
-                  <p>{routingStatus?.baseUrl || `http://${routingHost}:${routingPort}/v1`}</p>
-                </div>
-                <button className="icon-button primary" onClick={() => void toggleRoutingService()} disabled={busy || routingBusy || routingFixedModeIncomplete}>
-                  <Power size={17} />
-                  {routingBusy ? "处理中..." : routingStatus?.running ? "停止" : "启动"}
-                </button>
-              </div>
-
-              <div className="form-grid">
-                <label>
-                  监听地址
-                  <input value={routingHost} onChange={(event) => setRoutingHost(event.target.value)} />
-                </label>
-                <label>
-                  端口
-                  <input type="number" min={1} max={65535} value={routingPort} onChange={(event) => setRoutingPort(Number(event.target.value) || 15722)} />
-                </label>
-                <label>
-                  粘性 TTL 秒
-                  <input type="number" min={60} value={routingStickyTtlSecs} onChange={(event) => setRoutingStickyTtlSecs(Number(event.target.value) || 3600)} />
-                </label>
-                <label className="routing-mode-field">
-                  路由模式
-                  <select value={routingMode} onChange={(event) => setRoutingMode(event.target.value as "auto" | "fixed")}>
-                    <option value="auto">自动会话粘性</option>
-                    <option value="fixed">固定账号并兜底</option>
-                  </select>
-                </label>
-                {routingMode === "fixed" && (
-                  <label>
-                    固定账号
-                    <select value={routingFixedProfileId} onChange={(event) => setRoutingFixedProfileId(event.target.value)}>
-                      <option value="">未指定</option>
-                      {(store?.profiles || []).map((profile) => (
-                        <option value={profile.id} key={profile.id}>{profile.alias}</option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-              {routingFixedModeIncomplete && (
-                <p className="routing-inline-warning">固定模式需要先选择账号；也可以在账号池里直接点“固定”。</p>
-              )}
-
-              <label className="checkline routing-risk">
-                <input
-                  type="checkbox"
-                  checked={routingRiskConfirmed}
-                  onChange={(event) => setRoutingRiskConfirmed(event.target.checked)}
-                />
-                我确认 OAuth 订阅账号反代可能带来账号限制风险，仅在可信环境使用。
-              </label>
-
-              <div className="action-row">
-                <button className="icon-button" onClick={() => void saveRoutingSettings()} disabled={busy || routingFixedModeIncomplete}>
-                  <ShieldCheck size={17} /> 保存设置
-                </button>
-                <button className="icon-button" onClick={() => void reloadRoutingStatus()} disabled={busy}>
-                  <RefreshCcw size={17} /> 刷新状态
-                </button>
-              </div>
-            </div>
-
-            <div className="panel routing-key-panel">
-              <div className="panel-header">
-                <div>
-                  <h2>客户端配置</h2>
-                  <p>用于 Codex 自定义 provider 或其他兼容客户端。</p>
-                </div>
-                <KeyRound size={22} />
-              </div>
-              <div className={`routing-takeover-card ${routingTakeoverConfigured ? "active" : ""}`}>
-                <div>
-                  <span>Codex 接管状态</span>
-                  <strong>{routingTakeoverConfigured ? "已接管到本路由" : routingTakeoverExpected ? "接管配置已失效" : "未接管"}</strong>
-                  <p>{routingTakeoverConfigured ? "配置已写入本机 Codex；已有会话可能需要重启或新建线程才会生效。" : routingTakeoverExpected ? "本机 Codex 配置被其他工具修改，请点击重新接管。" : "点击一键接管后，本机 Codex 才会走路由。"}</p>
-                </div>
-                <StatusPill ok={routingTakeoverConfigured} text={routingTakeoverConfigured ? "接管中" : routingTakeoverExpected ? "已失效" : "未接管"} />
-              </div>
-              <div className="routing-status-grid">
-                <div>
-                  <span>当前策略</span>
-                  <strong>{routingModeLabel}</strong>
-                </div>
-                <div>
-                  <span>{routingMode === "fixed" ? "使用账号" : "预计下一跳"}</span>
-                  <strong>{routingPreviewText}</strong>
-                </div>
-                <div>
-                  <span>最近实际命中</span>
-                  <strong>{latestRoutingText}</strong>
-                </div>
-                <div>
-                  <span>接管自检</span>
-                  <strong>{routingCodexCheckText}</strong>
-                </div>
-              </div>
-              {routingCodexCheck && (routingTakeoverExpected || routingTakeoverConfigured) && (
-                <div className={`routing-check-card ${routingCodexCheckOk ? "ok" : "warn"}`}>
-                  <div>
-                    <strong>{routingCodexCheckOk ? "接管链路自检通过" : "接管链路还有异常"}</strong>
-                    <p>{routingCodexCheck.diagnostics[0] || "等待刷新状态"}</p>
-                  </div>
-                  <div className="routing-check-flags">
-                    <StatusPill ok={routingCodexCheck.selectedProvider === "codex-switcher-router"} text="Provider" />
-                    <StatusPill ok={routingCodexCheck.baseUrlMatches} text="Base URL" />
-                    <StatusPill ok={routingCodexCheck.tokenPresent} text="Key" />
-                    <StatusPill ok={routingCodexCheck.healthOk} text="服务" />
-                  </div>
-                </div>
-              )}
-              <div className="routing-secret">
-                <span>Base URL</span>
-                <strong>{routingStatus?.baseUrl || "-"}</strong>
-              </div>
-              <div className="routing-secret">
-                <span>API Key</span>
-                <strong>{routingStatus?.accessKey || "未生成"}</strong>
-              </div>
-              <div className="action-row">
-                <button className="icon-button" onClick={() => void copyRoutingConfig()} disabled={!routingStatus?.accessKey}>
-                  <Copy size={17} /> 复制配置
-                </button>
-                <button className="icon-button" onClick={() => void regenerateRoutingKey()} disabled={busy}>
-                  <KeyRound size={17} /> 重生成 Key
-                </button>
-                <button className="icon-button" onClick={() => void reloadRoutingStatus()} disabled={busy}>
-                  <RefreshCcw size={17} /> 自检接管
-                </button>
-              </div>
-              <div className="action-row">
-                <button className="icon-button primary" onClick={() => void applyRoutingCodexConfig()} disabled={busy || !routingStatus?.accessKey}>
-                  <Zap size={17} /> {routingTakeoverExpected && !routingTakeoverConfigured ? "重新接管 Codex" : "一键接管 Codex"}
-                </button>
-                <button className="icon-button" onClick={() => void restoreRoutingCodexConfig()} disabled={busy || (!routingTakeoverExpected && !routingTakeoverConfigured)}>
-                  <RotateCcw size={17} /> 恢复配置
-                </button>
-              </div>
-              <p className="routing-help-text">自动模式会按账号池排序选择新会话；同一会话在 TTL 内保持粘性。实际用了谁，看“最近实际命中”和下方请求日志。</p>
-            </div>
-          </section>
-
-          <section className="routing-grid">
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>账号池</h2>
-                  <p>{routingStatus?.activeConnections || 0} active connections</p>
-                </div>
-                <div className="routing-pool-tools">
-                  <Gauge size={22} />
-                  <select value={routingPoolSort} onChange={(event) => setRoutingPoolSort(event.target.value as typeof routingPoolSort)}>
-                    <option value="route">路由顺序</option>
-                    <option value="priority">优先级</option>
-                    <option value="expiry">到期时间</option>
-                    <option value="connections">连接数</option>
-                    <option value="status">状态</option>
-                  </select>
-                </div>
-              </div>
-              <div className="routing-account-list">
-                {routingProfiles.map((profile) => (
-                  <article className="routing-account-row" key={profile.id}>
-                    <div className="routing-account-main">
-                      <strong>{profile.alias}</strong>
-                      <small>{profile.summary.email || profile.apiConfig?.baseUrl || profile.summary.accountId || t.unknownAccount}</small>
-                    </div>
-                    <div className="routing-account-meta">
-                      <StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} />
-                      <span>{profile.apiConfig ? profile.apiConfig.model : formatSubscriptionValidity(profile, t)}</span>
-                      <span>连接 {profile.routeHealth?.activeConnections || 0}</span>
-                      <span>{profile.routeHealth?.lastStatus || "-"}</span>
-                    </div>
-                    <label className="routing-priority-control">
-                      <span>优先级</span>
-                      <input
-                        type="number"
-                        value={routingPriorityDrafts[profile.id] ?? String(profile.priority)}
-                        onChange={(event) => setRoutingPriorityDrafts((current) => ({ ...current, [profile.id]: event.target.value }))}
-                      />
-                      <button
-                        className="mini-button"
-                        onClick={() => void saveRoutingProfilePriority(profile)}
-                        disabled={busy || Number(routingPriorityDrafts[profile.id] ?? profile.priority) === profile.priority}
-                      >
-                        保存
-                      </button>
-                    </label>
-                    <button
-                      className="mini-button primary"
-                      onClick={() => void fixProfileToRouting(profile.id)}
-                      disabled={busy}
-                    >
-                      固定
-                    </button>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="panel-header">
-                <div>
-                  <h2>最近请求</h2>
-                  <p>仅记录路由元数据，不记录提示词或响应正文。</p>
-                </div>
-                <div className="panel-header-actions">
-                  <button className="mini-button primary" onClick={() => void testRoutingRequest()} disabled={busy || routingBusy}>
-                    <Zap size={15} /> 测试请求
-                  </button>
-                  <FileText size={22} />
-                </div>
-              </div>
-              <div className="routing-log-list">
-                {(routingStatus?.recentLogs || []).slice().reverse().map((log, index) => (
-                  <button
-                    type="button"
-                    className="routing-log-row"
-                    key={`${log.ts}-${index}`}
-                    onClick={() => setSelectedRoutingLog(log)}
-                    title="查看请求详情"
-                  >
-                    <div className="routing-log-main">
-                      <strong>{log.alias || log.profileId || "-"}</strong>
-                      <small>{formatDate(log.ts)}</small>
-                    </div>
-                    <span className={`routing-log-status ${(log.httpStatus || 0) >= 400 ? "error" : "ok"}`}>
-                      {log.httpStatus || log.status}
-                    </span>
-                    <span className="routing-log-latency">{log.latencyMs} ms</span>
-                    <div className="routing-log-meta">
-                      <span>{log.actualModel || log.requestedModel || "未知模型"}</span>
-                      {log.wireProtocol && <span>{log.wireProtocol}</span>}
-                    </div>
-                    <small className="routing-log-summary">{log.fallback || log.error || log.requestId || log.sessionHash || "点击查看详情"}</small>
-                  </button>
-                ))}
-                {(routingStatus?.recentLogs || []).length === 0 && (
-                  <div className="routing-log-empty">
-                    <strong>暂无请求日志</strong>
-                    <p>接管后需要让 Codex 发起一次新请求，这里才会出现实际命中的账号、状态和耗时。</p>
-                    <small>如果自检通过但一直为空，请完全退出并重开 Codex，或新建线程后再发送一条消息；老会话通常不会重新读取刚写入的 provider。</small>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        </section>
+        <RoutingPage
+          t={t}
+          busy={busy}
+          profiles={store?.profiles || []}
+          appliedToCodex={!!store?.settings.routing.appliedToCodex}
+          status={routingStatus}
+          host={routingHost}
+          port={routingPort}
+          riskConfirmed={routingRiskConfirmed}
+          mode={routingMode}
+          fixedProfileId={routingFixedProfileId}
+          stickyTtlSecs={routingStickyTtlSecs}
+          routingBusy={routingBusy}
+          onHostChange={setRoutingHost}
+          onPortChange={setRoutingPort}
+          onRiskConfirmedChange={setRoutingRiskConfirmed}
+          onModeChange={setRoutingMode}
+          onFixedProfileIdChange={setRoutingFixedProfileId}
+          onStickyTtlSecsChange={setRoutingStickyTtlSecs}
+          onToggleService={toggleRoutingService}
+          onSaveSettings={() => saveRoutingSettings()}
+          onReloadStatus={reloadRoutingStatus}
+          onCopyConfig={copyRoutingConfig}
+          onRegenerateKey={regenerateRoutingKey}
+          onApplyCodexConfig={applyRoutingCodexConfig}
+          onRestoreCodexConfig={restoreRoutingCodexConfig}
+          onFixProfile={fixProfileToRouting}
+          onSaveProfilePriority={saveRoutingProfilePriority}
+          onTestRequest={testRoutingRequest}
+        />
       ) : activePage === "settings" ? (
         <>
       <section className="toolbar-band">
@@ -2082,6 +1753,14 @@ export default function App() {
         <span className="proxy-hint">{t.autoHint}</span>
       </section>
 
+      <RoutingLogSettings
+        t={t}
+        retentionDays={routingLogRetentionDays}
+        busy={busy}
+        onRetentionDaysChange={setRoutingLogRetentionDays}
+        onSave={saveRoutingLogSettings}
+      />
+
       <section className="update-band">
         <div className="update-copy">
           <h2>{t.softwareUpdate}</h2>
@@ -2147,6 +1826,10 @@ export default function App() {
               <p>{filteredProfiles.length}/{store?.profiles.length || 0} {t.profiles}</p>
             </div>
             <div className="compact-actions">
+              <label className="checkline compact-checkline" title={t.forceSwitch}>
+                <input type="checkbox" checked={forceSwitch} onChange={(event) => setForceSwitch(event.target.checked)} />
+                {t.forceSwitch}
+              </label>
               <input
                 className="alias-input"
                 placeholder={t.searchPlaceholder}
@@ -2468,143 +2151,6 @@ export default function App() {
             )}
           </div>
 
-          <div className="inline-detail">
-            <div className="inline-detail-head">
-              <div>
-                <h3>{t.selectedRules}</h3>
-                <p>{selectedProfile?.summary.email || selectedProfile?.alias || t.selectAccount}</p>
-              </div>
-              <StatusPill
-                ok={currentGlobalProfileId === selectedProfile?.id}
-                text={currentGlobalProfileId === selectedProfile?.id ? t.currentGlobal : t.notWrittenGlobal}
-              />
-            </div>
-            <div className="probe-box compact-probe">
-              <div>
-                <span>{t.probeSummary}</span>
-                <strong>{friendlyProbeSummary(selectedProfile, t)}</strong>
-              </div>
-              <div className="detected-limits">
-                {(selectedProfile?.usage.detectedLimits || []).map((item, index) => (
-                  <span className="limit-chip" key={`${item.window}-${item.label || ""}-${index}`}>
-                    {formatLimitChip(item, t)}
-                    {item.remaining != null ? ` ${t.remaining} ${item.remaining}` : ""}
-                  </span>
-                ))}
-                {selectedProfile?.usage.availableResetCount != null && (
-                  <span className="limit-chip">
-                    {t.usageResets}: {selectedProfile.usage.availableResetCount}
-                    {(selectedProfile.usage.availableResetCount || 0) > 0 && ` · ${formatResetExpiry(selectedProfile, t)}`}
-                  </span>
-                )}
-                {(selectedProfile?.usage.availableResetCount || 0) > 0 && (
-                  <button
-                    className="mini-button primary"
-                    onClick={() => void consumeUsageReset(selectedProfile?.id)}
-                    disabled={busy}
-                    title={t.useReset}
-                  >
-                    {t.useReset}
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="form-grid">
-            <label>
-              {t.accountNote}
-              <input
-                value={aliasDraft}
-                onChange={(event) => setAliasDraft(event.target.value)}
-                title={t.accountNote}
-              />
-            </label>
-            <label>
-              {t.hourlyLimit}
-              <input
-                type="number"
-                min={0}
-                value={quotaDraft.hourlyLimit ?? ""}
-                onChange={(event) => setQuotaDraft({ ...quotaDraft, hourlyLimit: parseOptionalNumber(event.target.value) })}
-                title={t.hourlyLimit}
-              />
-            </label>
-            <label>
-              {t.dailyLimit}
-              <input
-                type="number"
-                min={0}
-                value={quotaDraft.dailyLimit ?? ""}
-                onChange={(event) => setQuotaDraft({ ...quotaDraft, dailyLimit: parseOptionalNumber(event.target.value) })}
-                title={t.dailyLimit}
-              />
-            </label>
-            <label>
-              {t.cooldownMinutes}
-              <input
-                type="number"
-                min={1}
-                value={quotaDraft.cooldownMinutes}
-                onChange={(event) => setQuotaDraft({ ...quotaDraft, cooldownMinutes: Number(event.target.value) || 180 })}
-                title={t.cooldownMinutes}
-              />
-            </label>
-            <label>
-              {t.priority}
-              <input
-                type="number"
-                value={priorityDraft}
-                onChange={(event) => setPriorityDraft(Number(event.target.value) || 0)}
-                title={t.priority}
-              />
-            </label>
-          </div>
-
-          <div className="switches">
-            <label className="checkline" title={t.enableAccount}>
-              <input type="checkbox" checked={enabledDraft} onChange={(event) => setEnabledDraft(event.target.checked)} />
-              {t.enableAccount}
-            </label>
-            <label className="checkline" title={t.forceSwitch}>
-              <input type="checkbox" checked={forceSwitch} onChange={(event) => setForceSwitch(event.target.checked)} />
-              {t.forceSwitch}
-            </label>
-          </div>
-
-          <div className="action-row">
-            <button className="icon-button" onClick={() => void saveQuota()} disabled={!selectedProfile || busy} title={t.saveRules}>
-              <ShieldCheck size={17} />
-              {t.saveRules}
-            </button>
-            <button className="icon-button" onClick={() => void probeSelected()} disabled={!selectedProfile || busy} title={t.probeQuota}>
-              <Gauge size={17} />
-              {t.probeQuota}
-            </button>
-            <button
-              className="icon-button primary"
-              onClick={() => void switchSelected()}
-              disabled={!selectedProfile || busy}
-              title={t.switch}
-            >
-              <Zap size={17} />
-              {t.switch}
-            </button>
-            {store?.settings.routing.appliedToCodex && (
-              <button
-                className="icon-button"
-                onClick={() => selectedProfile && void fixProfileToRouting(selectedProfile.id)}
-                disabled={!selectedProfile || busy}
-                title="固定到路由"
-              >
-                <Network size={17} />
-                固定到路由
-              </button>
-            )}
-            <button className="icon-button" onClick={() => void autoSwitch()} disabled={!store?.profiles.length || busy} title={t.autoSelect}>
-              <CheckCircle2 size={17} />
-              {t.autoSelect}
-            </button>
-          </div>
-          </div>
         </div>
       </section>
 
@@ -2743,10 +2289,6 @@ export default function App() {
       )}
     </main>
   );
-}
-
-function StatusPill({ ok, text }: { ok: boolean; text: string }) {
-  return <span className={`status-pill ${ok ? "ok" : "muted"}`}>{text}</span>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

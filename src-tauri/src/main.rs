@@ -404,6 +404,8 @@ pub(crate) struct RoutingSettings {
     pub(crate) fixed_profile_id: Option<String>,
     #[serde(default = "default_routing_sticky_ttl_secs")]
     pub(crate) sticky_ttl_secs: u64,
+    #[serde(default = "default_routing_log_retention_days")]
+    pub(crate) log_retention_days: u32,
     #[serde(default)]
     pub(crate) encrypted_access_key: Option<SecretEnvelope>,
 }
@@ -419,6 +421,7 @@ impl Default for RoutingSettings {
             mode: RoutingMode::Auto,
             fixed_profile_id: None,
             sticky_ttl_secs: default_routing_sticky_ttl_secs(),
+            log_retention_days: default_routing_log_retention_days(),
             encrypted_access_key: None,
         }
     }
@@ -447,6 +450,10 @@ fn default_routing_port() -> u16 {
 
 fn default_routing_sticky_ttl_secs() -> u64 {
     3_600
+}
+
+pub(crate) fn default_routing_log_retention_days() -> u32 {
+    7
 }
 
 fn default_auto_refresh_interval_secs() -> u64 {
@@ -1113,6 +1120,11 @@ fn update_profile_details(
     profile_id: String,
     alias: String,
     note: String,
+    hourly_limit: Option<u32>,
+    daily_limit: Option<u32>,
+    cooldown_minutes: u32,
+    enabled: bool,
+    priority: i32,
     provider_id: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
@@ -1181,6 +1193,13 @@ fn update_profile_details(
     }
     profile.alias = alias.to_string();
     profile.note = note.trim().to_string();
+    profile.quota_rule = QuotaRule {
+        hourly_limit,
+        daily_limit,
+        cooldown_minutes,
+    };
+    profile.enabled = enabled;
+    profile.priority = priority;
     if let Some(config) = profile.api_config.as_mut() {
         if let Some(provider_id) = provider_id {
             config.provider_id = provider_id;
@@ -1310,6 +1329,14 @@ fn routing_save_settings(
 }
 
 #[tauri::command]
+fn routing_save_log_settings(
+    app: AppHandle,
+    retention_days: u32,
+) -> Result<routing::RoutingStatus, String> {
+    routing::save_log_settings(app, retention_days)
+}
+
+#[tauri::command]
 fn routing_start(app: AppHandle) -> Result<routing::RoutingStatus, String> {
     routing::start(app)
 }
@@ -1335,8 +1362,22 @@ fn routing_test_request(app: AppHandle) -> Result<routing::RoutingProbeResult, S
 }
 
 #[tauri::command]
-fn routing_apply_codex_config(app: AppHandle) -> Result<routing::RoutingStatus, String> {
-    routing::apply_codex_config(app)
+fn routing_apply_codex_config(
+    app: AppHandle,
+    restart_codex: bool,
+) -> Result<routing::RoutingStatus, String> {
+    let codex_runtime = restart_codex.then(collect_codex_process_snapshot);
+    let status = routing::apply_codex_config(app.clone())?;
+    let Some(codex_runtime) = codex_runtime.filter(CodexProcessSnapshot::is_running) else {
+        return Ok(status);
+    };
+    let proxy = load_store(&app)?.settings.probe_proxy;
+    let mut relaunch_guard = CodexRelaunchGuard::default();
+    relaunch_guard.arm(codex_runtime.clone(), Some(proxy));
+    terminate_codex_processes(&codex_runtime)?;
+    relaunch_guard.relaunch()?;
+    thread::sleep(Duration::from_millis(800));
+    routing::status(app)
 }
 
 #[tauri::command]
@@ -4716,6 +4757,7 @@ fn main() {
             save_auto_settings,
             routing_status,
             routing_save_settings,
+            routing_save_log_settings,
             routing_start,
             routing_stop,
             routing_regenerate_access_key,

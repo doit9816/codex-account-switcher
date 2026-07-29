@@ -1,10 +1,11 @@
 use crate::routing_protocol::{prepare_api_request, transform_chat_response, WireProtocol};
 use crate::{
-    app_data_dir, build_probe_client, decrypt_secret, display_err, encrypt_secret, load_master_key,
-    load_store, mutate_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
-    refresh_error_requires_relogin, replace_file_with_rollback, resolve_codex_home, save_store,
-    should_refresh_access_token, summarize_auth, AccountProfile, AppStore, RouteHealth,
-    RoutingMode, RoutingSettings, ROUTER_PROVIDER_ID,
+    app_data_dir, build_probe_client, decrypt_secret, default_routing_log_retention_days,
+    display_err, encrypt_secret, load_master_key, load_store, mutate_store, now_string, parse_time,
+    push_event, refresh_auth_json_with_client, refresh_error_requires_relogin,
+    replace_file_with_rollback, resolve_codex_home, save_store, should_refresh_access_token,
+    summarize_auth, AccountProfile, AppStore, RouteHealth, RoutingMode, RoutingSettings,
+    ROUTER_PROVIDER_ID,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -20,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -28,15 +29,19 @@ use tauri::AppHandle;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const ROUTER_BACKUP_FILE: &str = "config.toml.account-switcher-router.backup";
+const ROUTER_AUTH_BACKUP_FILE: &str = "auth.json.account-switcher-router.backup";
 const ROUTER_LOG_FILE: &str = "routing-requests.jsonl";
 const MAX_REQUEST_BYTES: usize = 20 * 1024 * 1024;
 const MAX_TRANSFORM_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 500;
+const MAX_SSE_LINE_BYTES: usize = 64 * 1024;
 const TEMP_NETWORK_COOLDOWN_SECS: i64 = 60;
 
 static ROUTER: OnceLock<Mutex<Option<RouterHandle>>> = OnceLock::new();
 static STICKY: OnceLock<Mutex<HashMap<String, StickyBinding>>> = OnceLock::new();
+static LOG_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static LAST_LOG_PRUNE_AT: AtomicI64 = AtomicI64::new(0);
 static ACTIVE_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug)]
@@ -69,10 +74,12 @@ pub(crate) struct RoutingStatus {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoutingCodexCheck {
     config_path: String,
+    auth_path: String,
     selected_provider: Option<String>,
     provider_present: bool,
     base_url_matches: bool,
     token_present: bool,
+    auth_mode_matches: bool,
     service_running: bool,
     health_ok: bool,
     diagnostics: Vec<String>,
@@ -183,8 +190,11 @@ impl RouterError {
 pub(crate) fn status(app: AppHandle) -> Result<RoutingStatus, String> {
     let store = load_store(&app)?;
     let key = load_master_key(&app)?;
+    let access_key = decrypt_access_key(&store.settings.routing, &key).ok();
     let running = is_running();
     let settings = store.settings.routing.clone();
+    let retention_days = settings.log_retention_days;
+    let _ = prune_logs(&app, retention_days);
     let base_url = format!(
         "http://{}:{}/v1",
         display_host(&settings.listen_host),
@@ -193,11 +203,11 @@ pub(crate) fn status(app: AppHandle) -> Result<RoutingStatus, String> {
     Ok(RoutingStatus {
         running,
         base_url,
-        access_key: decrypt_access_key(&settings, &key).ok(),
+        access_key: access_key.clone(),
         active_connections: ACTIVE_CONNECTIONS.load(AtomicOrdering::Relaxed),
         settings,
-        recent_logs: read_recent_logs(&app, 40),
-        codex_check: codex_config_check(&app, &store, running),
+        recent_logs: read_recent_logs(&app, 200, retention_days),
+        codex_check: codex_config_check(&app, &store, running, access_key.as_deref()),
     })
 }
 
@@ -207,12 +217,14 @@ pub(crate) fn save_settings(
 ) -> Result<RoutingStatus, String> {
     validate_listen(&input.listen_host, input.port)?;
     let mut store = load_store(&app)?;
+    let fixed_profile_id = input.fixed_profile_id.filter(|id| !id.is_empty());
+    validate_fixed_profile(&store, input.mode, fixed_profile_id.as_deref())?;
     store.settings.routing.listen_host = input.listen_host.trim().to_string();
     store.settings.routing.port = input.port;
     store.settings.routing.enabled = input.enabled;
     store.settings.routing.risk_confirmed = input.risk_confirmed;
     store.settings.routing.mode = input.mode;
-    store.settings.routing.fixed_profile_id = input.fixed_profile_id.filter(|id| !id.is_empty());
+    store.settings.routing.fixed_profile_id = fixed_profile_id;
     store.settings.routing.sticky_ttl_secs = input.sticky_ttl_secs.clamp(60, 86_400);
     ensure_access_key(&app, &mut store)?;
     push_event(&mut store, "info", "已保存路由 API 设置");
@@ -236,9 +248,32 @@ pub(crate) fn regenerate_access_key(app: AppHandle) -> Result<RoutingStatus, Str
     status(app)
 }
 
+pub(crate) fn save_log_settings(
+    app: AppHandle,
+    retention_days: u32,
+) -> Result<RoutingStatus, String> {
+    let retention_days = retention_days.clamp(1, 365);
+    mutate_store(&app, |store| {
+        store.settings.routing.log_retention_days = retention_days;
+        push_event(
+            store,
+            "info",
+            &format!("路由请求日志保留天数已设为 {retention_days} 天"),
+        );
+        Ok(())
+    })?;
+    prune_logs(&app, retention_days)?;
+    status(app)
+}
+
 pub(crate) fn start(app: AppHandle) -> Result<RoutingStatus, String> {
     {
         let mut store = load_store(&app)?;
+        validate_fixed_profile(
+            &store,
+            store.settings.routing.mode,
+            store.settings.routing.fixed_profile_id.as_deref(),
+        )?;
         if !store.settings.routing.risk_confirmed && has_oauth_profiles(&store) {
             return Err("启用 OAuth 账号路由前需要确认账号风险".to_string());
         }
@@ -299,16 +334,19 @@ pub(crate) fn stop(app: AppHandle) -> Result<RoutingStatus, String> {
 }
 
 pub(crate) fn read_logs(app: AppHandle, limit: usize) -> Vec<RoutingLogEntry> {
-    read_recent_logs(&app, limit.clamp(1, 500))
+    let retention_days = load_store(&app)
+        .map(|store| store.settings.routing.log_retention_days)
+        .unwrap_or_else(|_| default_routing_log_retention_days());
+    read_recent_logs(&app, limit.clamp(1, 500), retention_days)
 }
 
 pub(crate) fn test_request(app: AppHandle) -> Result<RoutingProbeResult, String> {
     let store = load_store(&app)?;
-    if store.settings.routing.mode == RoutingMode::Fixed
-        && store.settings.routing.fixed_profile_id.is_none()
-    {
-        return Err("当前是固定账号模式，但尚未选择账号".to_string());
-    }
+    validate_fixed_profile(
+        &store,
+        store.settings.routing.mode,
+        store.settings.routing.fixed_profile_id.as_deref(),
+    )?;
     let model = test_request_model(&store);
     if !is_running() {
         start(app.clone())?;
@@ -350,21 +388,25 @@ pub(crate) fn test_request(app: AppHandle) -> Result<RoutingProbeResult, String>
         .get("x-codex-switcher-model")
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string);
+    let is_event_stream = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
     let body = response
         .bytes()
         .map_err(|error| format!("无法读取路由测试响应: {error}"))?;
     let body_json = serde_json::from_slice::<Value>(&body).ok();
     let body_text = std::str::from_utf8(&body).unwrap_or_default();
+    let mut stream_inspector = ResponseStreamInspector::default();
+    stream_inspector.observe(&body);
+    stream_inspector.finish();
     let response_status = body_json
         .as_ref()
         .and_then(|body| body.get("status"))
         .and_then(Value::as_str)
         .map(ToString::to_string)
-        .or_else(|| {
-            body_text
-                .contains("event: response.completed")
-                .then(|| "completed".to_string())
-        });
+        .or_else(|| stream_inspector.completed.then(|| "completed".to_string()));
     let output_items = body_json
         .as_ref()
         .and_then(|body| body.get("output"))
@@ -379,7 +421,12 @@ pub(crate) fn test_request(app: AppHandle) -> Result<RoutingProbeResult, String>
         .as_ref()
         .and_then(|body| body.pointer("/error/message"))
         .and_then(Value::as_str)
-        .map(ToString::to_string);
+        .map(ToString::to_string)
+        .or(stream_inspector.error)
+        .or_else(|| {
+            (http_status < 400 && is_event_stream && !stream_inspector.completed)
+                .then(|| "上游响应流未完成".to_string())
+        });
     Ok(RoutingProbeResult {
         ok: http_status < 400 && error_message.is_none(),
         request_id,
@@ -397,6 +444,27 @@ pub(crate) fn test_request(app: AppHandle) -> Result<RoutingProbeResult, String>
             }
         }),
     })
+}
+
+fn validate_fixed_profile(
+    store: &AppStore,
+    mode: RoutingMode,
+    fixed_profile_id: Option<&str>,
+) -> Result<(), String> {
+    if mode != RoutingMode::Fixed {
+        return Ok(());
+    }
+    let profile_id =
+        fixed_profile_id.ok_or_else(|| "固定账号模式必须先选择一个账号".to_string())?;
+    if store
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
+        Ok(())
+    } else {
+        Err("固定账号不存在，请重新选择".to_string())
+    }
 }
 
 fn config_selects_router(document: &toml_edit::DocumentMut) -> bool {
@@ -422,6 +490,70 @@ fn refresh_router_backup(
     Ok(())
 }
 
+fn router_token_from_config(document: &toml_edit::DocumentMut) -> Option<&str> {
+    if !config_selects_router(document) {
+        return None;
+    }
+    document
+        .get("model_providers")
+        .and_then(|providers| providers.get(ROUTER_PROVIDER_ID))
+        .and_then(|provider| provider.get("experimental_bearer_token"))
+        .and_then(|token| token.as_str())
+}
+
+fn auth_selects_router(contents: &str, access_key: &str) -> bool {
+    serde_json::from_str::<Value>(contents)
+        .ok()
+        .is_some_and(|auth| {
+            auth.get("auth_mode").and_then(Value::as_str) == Some("apikey")
+                && auth.get("OPENAI_API_KEY").and_then(Value::as_str) == Some(access_key)
+        })
+}
+
+fn refresh_router_auth_backup(
+    auth_path: &std::path::Path,
+    backup_path: &std::path::Path,
+    current_router_token: Option<&str>,
+) -> Result<(), String> {
+    let current = fs::read_to_string(auth_path).unwrap_or_default();
+    let currently_routed =
+        current_router_token.is_some_and(|token| auth_selects_router(&current, token));
+    if currently_routed && backup_path.exists() {
+        return Ok(());
+    }
+    if auth_path.exists() {
+        fs::copy(auth_path, backup_path).map_err(display_err)?;
+    } else {
+        fs::write(backup_path, []).map_err(display_err)?;
+    }
+    Ok(())
+}
+
+fn router_auth_json(access_key: &str) -> Result<Vec<u8>, String> {
+    let mut auth = serde_json::to_vec_pretty(&serde_json::json!({
+        "auth_mode": "apikey",
+        "OPENAI_API_KEY": access_key,
+    }))
+    .map_err(display_err)?;
+    auth.push(b'\n');
+    Ok(auth)
+}
+
+fn restore_backup_file(
+    target_path: &std::path::Path,
+    backup_path: &std::path::Path,
+) -> Result<(), String> {
+    let backup = fs::read(backup_path).map_err(display_err)?;
+    if backup.is_empty() {
+        if target_path.exists() {
+            fs::remove_file(target_path).map_err(display_err)?;
+        }
+    } else {
+        replace_file_with_rollback(target_path, &backup, None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String> {
     let mut store = load_store(&app)?;
     ensure_access_key(&app, &mut store)?;
@@ -431,6 +563,8 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
     fs::create_dir_all(&codex_home).map_err(display_err)?;
     let config_path = codex_home.join("config.toml");
     let backup_path = codex_home.join(ROUTER_BACKUP_FILE);
+    let auth_path = codex_home.join("auth.json");
+    let auth_backup_path = codex_home.join(ROUTER_AUTH_BACKUP_FILE);
     let current = fs::read_to_string(&config_path).unwrap_or_default();
     let mut document = if current.trim().is_empty() {
         toml_edit::DocumentMut::new()
@@ -439,7 +573,13 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
             .parse::<toml_edit::DocumentMut>()
             .map_err(|error| format!("config.toml 解析失败: {error}"))?
     };
+    let current_router_token = router_token_from_config(&document).map(ToString::to_string);
     refresh_router_backup(&config_path, &backup_path, &document)?;
+    refresh_router_auth_backup(
+        &auth_path,
+        &auth_backup_path,
+        current_router_token.as_deref(),
+    )?;
     document["model_provider"] = toml_edit::value(ROUTER_PROVIDER_ID);
     if !document.as_table().contains_key("model_providers")
         || !document["model_providers"].is_table()
@@ -458,21 +598,39 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
         store.settings.routing.port
     ));
     provider["wire_api"] = toml_edit::value("responses");
-    provider["experimental_bearer_token"] = toml_edit::value(access_key);
+    provider["experimental_bearer_token"] = toml_edit::value(&access_key);
     provider["requires_openai_auth"] = toml_edit::value(false);
     provider["request_max_retries"] = toml_edit::value(0);
     provider["stream_max_retries"] = toml_edit::value(0);
     provider["supports_websockets"] = toml_edit::value(false);
-    replace_file_with_rollback(&config_path, document.to_string().as_bytes(), None)?;
+    let auth_json = router_auth_json(&access_key)?;
+    replace_file_with_rollback(&auth_path, &auth_json, Some(&auth_backup_path))?;
+    if let Err(error) = replace_file_with_rollback(
+        &config_path,
+        document.to_string().as_bytes(),
+        Some(&backup_path),
+    ) {
+        let _ = restore_backup_file(&auth_path, &auth_backup_path);
+        return Err(error);
+    }
 
     store.settings.routing.applied_to_codex = true;
     store.settings.codex_home = Some(codex_home.to_string_lossy().to_string());
-    push_event(&mut store, "info", "已将本机 Codex 配置接管到路由 API");
+    push_event(
+        &mut store,
+        "info",
+        "已将本机 Codex provider 和认证模式接管到路由 API",
+    );
     save_store(&app, &store)?;
     status(app)
 }
 
-fn codex_config_check(app: &AppHandle, store: &AppStore, running: bool) -> RoutingCodexCheck {
+fn codex_config_check(
+    app: &AppHandle,
+    store: &AppStore,
+    running: bool,
+    access_key: Option<&str>,
+) -> RoutingCodexCheck {
     let codex_home = resolve_codex_home(app, store.settings.codex_home.clone())
         .unwrap_or_else(|_| app_data_dir(app).unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let config_path = codex_home.join("config.toml");
@@ -481,12 +639,15 @@ fn codex_config_check(app: &AppHandle, store: &AppStore, running: bool) -> Routi
         display_host(&store.settings.routing.listen_host),
         store.settings.routing.port
     );
+    let auth_path = codex_home.join("auth.json");
     let mut check = RoutingCodexCheck {
         config_path: config_path.to_string_lossy().to_string(),
+        auth_path: auth_path.to_string_lossy().to_string(),
         selected_provider: None,
         provider_present: false,
         base_url_matches: false,
         token_present: false,
+        auth_mode_matches: false,
         service_running: running,
         health_ok: false,
         diagnostics: Vec::new(),
@@ -549,10 +710,22 @@ fn codex_config_check(app: &AppHandle, store: &AppStore, running: bool) -> Routi
             .push(format!("无法读取 config.toml: {error}")),
     }
 
+    check.auth_mode_matches = access_key.is_some_and(|access_key| {
+        fs::read_to_string(&auth_path)
+            .ok()
+            .is_some_and(|contents| auth_selects_router(&contents, access_key))
+    });
+    if !check.auth_mode_matches {
+        check
+            .diagnostics
+            .push("Codex auth.json 未切换到路由 API Key 模式".to_string());
+    }
+
     check.health_ok = probe_router_health(&expected_base_url);
     if check.provider_present
         && check.base_url_matches
         && check.token_present
+        && check.auth_mode_matches
         && check.service_running
         && check.health_ok
         && check.diagnostics.is_empty()
@@ -579,26 +752,38 @@ pub(crate) fn restore_codex_config(app: AppHandle) -> Result<RoutingStatus, Stri
     let codex_home = resolve_codex_home(&app, store.settings.codex_home.clone())?;
     let config_path = codex_home.join("config.toml");
     let backup_path = codex_home.join(ROUTER_BACKUP_FILE);
+    let auth_path = codex_home.join("auth.json");
+    let auth_backup_path = codex_home.join(ROUTER_AUTH_BACKUP_FILE);
+    let current = fs::read_to_string(&config_path).unwrap_or_default();
+    let current_document = current.parse::<toml_edit::DocumentMut>().ok();
+    let currently_routed = current_document.as_ref().is_some_and(config_selects_router);
+    let current_router_token = current_document
+        .as_ref()
+        .and_then(router_token_from_config)
+        .map(ToString::to_string);
+    let auth_currently_routed = current_router_token.is_some_and(|token| {
+        fs::read_to_string(&auth_path)
+            .ok()
+            .is_some_and(|contents| auth_selects_router(&contents, &token))
+    });
+    if auth_backup_path.exists() {
+        if auth_currently_routed {
+            restore_backup_file(&auth_path, &auth_backup_path)?;
+        }
+        fs::remove_file(&auth_backup_path).map_err(display_err)?;
+    }
     if backup_path.exists() {
-        let current = fs::read_to_string(&config_path).unwrap_or_default();
-        let currently_routed = current
-            .parse::<toml_edit::DocumentMut>()
-            .map(|document| config_selects_router(&document))
-            .unwrap_or(false);
         if currently_routed {
-            let backup = fs::read(&backup_path).map_err(display_err)?;
-            if backup.is_empty() {
-                if config_path.exists() {
-                    fs::remove_file(&config_path).map_err(display_err)?;
-                }
-            } else {
-                replace_file_with_rollback(&config_path, &backup, None)?;
-            }
+            restore_backup_file(&config_path, &backup_path)?;
         }
         fs::remove_file(&backup_path).map_err(display_err)?;
     }
     store.settings.routing.applied_to_codex = false;
-    push_event(&mut store, "info", "已恢复接管前的 Codex 配置");
+    push_event(
+        &mut store,
+        "info",
+        "已恢复接管前的 Codex provider 和认证配置",
+    );
     save_store(&app, &store)?;
     status(app)
 }
@@ -989,6 +1174,7 @@ fn build_stream_response(
     ) {
         headers.push(header);
     }
+    let inspect_response_stream = status < 400 && prepared.streaming;
     let reader = RouteResponseReader {
         inner: body_reader,
         app,
@@ -1004,6 +1190,7 @@ fn build_stream_response(
         started,
         status,
         upstream_error,
+        stream_inspector: inspect_response_stream.then(ResponseStreamInspector::default),
         finished: false,
     };
     Ok(Response::new(
@@ -1030,6 +1217,7 @@ struct RouteResponseReader {
     started: Instant,
     status: u16,
     upstream_error: Option<String>,
+    stream_inspector: Option<ResponseStreamInspector>,
     finished: bool,
 }
 
@@ -1042,7 +1230,15 @@ impl Read for RouteResponseReader {
                 return Err(error);
             }
         };
+        if read > 0 {
+            if let Some(inspector) = &mut self.stream_inspector {
+                inspector.observe(&buf[..read]);
+            }
+        }
         if read == 0 {
+            if let Some(inspector) = &mut self.stream_inspector {
+                inspector.finish();
+            }
             self.finish(None);
         }
         Ok(read)
@@ -1061,7 +1257,22 @@ impl RouteResponseReader {
             return;
         }
         self.finished = true;
-        let error = error.or_else(|| self.upstream_error.clone());
+        let error = error
+            .or_else(|| {
+                self.stream_inspector
+                    .as_ref()
+                    .and_then(|inspector| inspector.error.clone())
+            })
+            .or_else(|| self.upstream_error.clone());
+        let status = if self.status >= 400 {
+            "http_error"
+        } else if error.is_some() {
+            "stream_error"
+        } else if self.fallback.is_some() {
+            "fallback_ok"
+        } else {
+            "ok"
+        };
         mark_route_finished(&self.app, &self.profile_id, self.status, error.clone());
         append_log(
             &self.app,
@@ -1077,12 +1288,7 @@ impl RouteResponseReader {
                 alias: Some(self.alias.clone()),
                 requested_model: self.requested_model.clone(),
                 actual_model: self.actual_model.clone(),
-                status: if self.status < 400 {
-                    "ok"
-                } else {
-                    "http_error"
-                }
-                .to_string(),
+                status: status.to_string(),
                 http_status: Some(self.status),
                 latency_ms: self.started.elapsed().as_millis(),
                 fallback: self.fallback.clone(),
@@ -1106,6 +1312,96 @@ fn summarize_upstream_error(body: &[u8]) -> Option<String> {
                 .map(ToString::to_string)
         })?;
     Some(message.chars().take(MAX_ERROR_MESSAGE_CHARS).collect())
+}
+
+#[derive(Debug, Default)]
+struct ResponseStreamInspector {
+    pending: Vec<u8>,
+    event: Option<String>,
+    error: Option<String>,
+    completed: bool,
+}
+
+impl ResponseStreamInspector {
+    fn observe(&mut self, chunk: &[u8]) {
+        self.pending.extend_from_slice(chunk);
+        while let Some(index) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line = self.pending.drain(..=index).collect::<Vec<_>>();
+            self.observe_line(&line[..line.len().saturating_sub(1)]);
+        }
+        if self.pending.len() > MAX_SSE_LINE_BYTES {
+            self.pending.clear();
+            self.event = None;
+        }
+    }
+
+    fn finish(&mut self) {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            self.observe_line(&line);
+        }
+    }
+
+    fn observe_line(&mut self, line: &[u8]) {
+        let line = std::str::from_utf8(line)
+            .unwrap_or_default()
+            .trim_end_matches('\r');
+        if line.is_empty() {
+            self.event = None;
+            return;
+        }
+        if let Some(event) = line.strip_prefix("event:") {
+            let event = event.trim();
+            self.completed |= event == "response.completed";
+            self.event = Some(event.to_string());
+            return;
+        }
+        let data = if let Some(data) = line.strip_prefix("data:") {
+            data.trim()
+        } else if line.trim_start().starts_with('{') {
+            line.trim()
+        } else {
+            return;
+        };
+        if data == "[DONE]" {
+            self.completed = true;
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            if self.event.as_deref().is_some_and(is_error_stream_event) {
+                self.error = Some("上游响应流返回错误事件".to_string());
+            }
+            return;
+        };
+        let event_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .or(self.event.as_deref());
+        self.completed |= event_type == Some("response.completed");
+        let has_error = value.get("error").is_some_and(|error| !error.is_null())
+            || value
+                .pointer("/response/error")
+                .is_some_and(|error| !error.is_null())
+            || event_type.is_some_and(is_error_stream_event);
+        if has_error {
+            self.error = response_stream_error_message(&value)
+                .or_else(|| Some("上游响应流返回错误事件".to_string()));
+        }
+    }
+}
+
+fn is_error_stream_event(event: &str) -> bool {
+    matches!(event, "error" | "response.failed" | "response.incomplete")
+}
+
+fn response_stream_error_message(value: &Value) -> Option<String> {
+    value
+        .pointer("/error/message")
+        .or_else(|| value.pointer("/response/error/message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(|message| message.chars().take(MAX_ERROR_MESSAGE_CHARS).collect())
 }
 
 fn test_request_model(store: &AppStore) -> String {
@@ -1360,9 +1656,14 @@ fn mark_route_finished(app: &AppHandle, profile_id: &str, status: u16, error: Op
     ACTIVE_CONNECTIONS.fetch_sub(1, AtomicOrdering::Relaxed);
     update_profile_health(app, profile_id, |health, profile| {
         health.active_connections = health.active_connections.saturating_sub(1);
-        health.last_status = Some(status.to_string());
+        let succeeded = status < 400 && error.is_none();
+        health.last_status = Some(if status < 400 && !succeeded {
+            "stream_error".to_string()
+        } else {
+            status.to_string()
+        });
         health.last_error = error;
-        if status < 400 {
+        if succeeded {
             health.consecutive_failures = 0;
             health.cooldown_reason = None;
         } else {
@@ -1623,33 +1924,109 @@ fn append_log(app: &AppHandle, entry: RoutingLogEntry) {
     let Ok(path) = app_data_dir(app).map(|dir| dir.join(ROUTER_LOG_FILE)) else {
         return;
     };
+    let retention_days = load_store(app)
+        .map(|store| store.settings.routing.log_retention_days)
+        .unwrap_or_else(|_| default_routing_log_retention_days());
+    let log_lock = LOG_FILE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = log_lock.lock().unwrap_or_else(|error| error.into_inner());
+    maybe_prune_logs_locked(&path, retention_days);
     if let Ok(meta) = fs::metadata(&path) {
         if meta.len() > 1_048_576 {
-            let _ = fs::rename(&path, path.with_extension("jsonl.1"));
+            let rotated_path = path.with_extension("jsonl.1");
+            let _ = fs::remove_file(&rotated_path);
+            let _ = fs::rename(&path, rotated_path);
         }
     }
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         if let Ok(line) = serde_json::to_string(&entry) {
             let _ = writeln!(file, "{line}");
         }
     }
 }
 
-fn read_recent_logs(app: &AppHandle, limit: usize) -> Vec<RoutingLogEntry> {
+fn read_recent_logs(app: &AppHandle, limit: usize, retention_days: u32) -> Vec<RoutingLogEntry> {
     let Ok(path) = app_data_dir(app).map(|dir| dir.join(ROUTER_LOG_FILE)) else {
         return Vec::new();
     };
-    let Ok(text) = fs::read_to_string(path) else {
+    let log_lock = LOG_FILE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = log_lock.lock().unwrap_or_else(|error| error.into_inner());
+    let Ok(text) = fs::read_to_string(&path) else {
         return Vec::new();
     };
+    let cutoff = log_retention_cutoff(retention_days, Utc::now());
     let mut rows = text
         .lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<RoutingLogEntry>(line).ok())
+        .filter(|entry| log_entry_is_recent(entry, cutoff))
         .take(limit)
         .collect::<Vec<_>>();
     rows.reverse();
     rows
+}
+
+fn prune_logs(app: &AppHandle, retention_days: u32) -> Result<(), String> {
+    let path = app_data_dir(app)?.join(ROUTER_LOG_FILE);
+    let log_lock = LOG_FILE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = log_lock.lock().unwrap_or_else(|error| error.into_inner());
+    prune_log_path(&path, retention_days, Utc::now())?;
+    prune_log_path(&path.with_extension("jsonl.1"), retention_days, Utc::now())?;
+    LAST_LOG_PRUNE_AT.store(Utc::now().timestamp(), AtomicOrdering::Relaxed);
+    Ok(())
+}
+
+fn maybe_prune_logs_locked(path: &std::path::Path, retention_days: u32) {
+    let now = Utc::now();
+    let last_prune_at = LAST_LOG_PRUNE_AT.load(AtomicOrdering::Relaxed);
+    if now.timestamp().saturating_sub(last_prune_at) < 3_600 {
+        return;
+    }
+    if LAST_LOG_PRUNE_AT
+        .compare_exchange(
+            last_prune_at,
+            now.timestamp(),
+            AtomicOrdering::Relaxed,
+            AtomicOrdering::Relaxed,
+        )
+        .is_err()
+    {
+        return;
+    }
+    let _ = prune_log_path(path, retention_days, now);
+    let _ = prune_log_path(&path.with_extension("jsonl.1"), retention_days, now);
+}
+
+fn prune_log_path(
+    path: &std::path::Path,
+    retention_days: u32,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(path).map_err(display_err)?;
+    let cutoff = log_retention_cutoff(retention_days, now);
+    let retained = text
+        .lines()
+        .filter_map(|line| {
+            let entry = serde_json::from_str::<RoutingLogEntry>(line).ok()?;
+            log_entry_is_recent(&entry, cutoff).then_some(line)
+        })
+        .collect::<Vec<_>>();
+    let output = if retained.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", retained.join("\n"))
+    };
+    fs::write(path, output).map_err(display_err)
+}
+
+fn log_retention_cutoff(retention_days: u32, now: DateTime<Utc>) -> DateTime<Utc> {
+    now - chrono::Duration::days(retention_days.clamp(1, 365) as i64)
+}
+
+fn log_entry_is_recent(entry: &RoutingLogEntry, cutoff: DateTime<Utc>) -> bool {
+    parse_time(&entry.ts).is_some_and(|timestamp| timestamp >= cutoff)
 }
 
 fn hash_text(value: &str) -> String {
@@ -1745,6 +2122,44 @@ mod tests {
     }
 
     #[test]
+    fn takeover_auth_uses_api_key_mode() {
+        let access_key = uuid::Uuid::new_v4().to_string();
+        let auth_json = String::from_utf8(router_auth_json(&access_key).unwrap()).unwrap();
+
+        assert!(auth_selects_router(&auth_json, &access_key));
+        assert!(!auth_selects_router(&auth_json, "different-token"));
+    }
+
+    #[test]
+    fn preserves_original_auth_backup_while_takeover_is_active() {
+        let dir = tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+        let backup_path = dir.path().join(ROUTER_AUTH_BACKUP_FILE);
+        let access_key = uuid::Uuid::new_v4().to_string();
+        fs::write(&auth_path, router_auth_json(&access_key).unwrap()).unwrap();
+        fs::write(&backup_path, b"original-auth").unwrap();
+
+        refresh_router_auth_backup(&auth_path, &backup_path, Some(&access_key)).unwrap();
+
+        assert_eq!(fs::read(&backup_path).unwrap(), b"original-auth");
+    }
+
+    #[test]
+    fn refreshes_auth_backup_after_external_auth_change() {
+        let dir = tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+        let backup_path = dir.path().join(ROUTER_AUTH_BACKUP_FILE);
+        let access_key = uuid::Uuid::new_v4().to_string();
+        let external_auth = br#"{"auth_mode":"chatgpt","tokens":{}}"#;
+        fs::write(&auth_path, external_auth).unwrap();
+        fs::write(&backup_path, b"stale-auth").unwrap();
+
+        refresh_router_auth_backup(&auth_path, &backup_path, Some(&access_key)).unwrap();
+
+        assert_eq!(fs::read(&backup_path).unwrap(), external_auth);
+    }
+
+    #[test]
     fn expiring_subscription_sorts_before_open_ended_provider() {
         let mut profiles = vec![
             profile("api", 500, None, 0),
@@ -1791,6 +2206,19 @@ mod tests {
     }
 
     #[test]
+    fn fixed_mode_requires_an_existing_profile() {
+        let store = AppStore {
+            profiles: vec![profile("selected", 100, None, 0)],
+            ..Default::default()
+        };
+
+        assert!(validate_fixed_profile(&store, RoutingMode::Fixed, None).is_err());
+        assert!(validate_fixed_profile(&store, RoutingMode::Fixed, Some("missing")).is_err());
+        assert!(validate_fixed_profile(&store, RoutingMode::Fixed, Some("selected")).is_ok());
+        assert!(validate_fixed_profile(&store, RoutingMode::Auto, None).is_ok());
+    }
+
+    #[test]
     fn upstream_error_summary_uses_message_without_full_body() {
         let body = br#"{"error":{"message":"unsupported model","internal":"secret"}}"#;
         assert_eq!(
@@ -1815,5 +2243,89 @@ mod tests {
         assert!(body["input"].is_array());
         assert_eq!(body["input"][0]["type"], "message");
         assert_eq!(body["input"][0]["content"][0]["text"], "Reply with OK");
+    }
+
+    #[test]
+    fn response_stream_inspector_detects_failed_event_across_chunks() {
+        let mut inspector = ResponseStreamInspector::default();
+        inspector.observe(b"event: response.failed\ndata: {\"type\":\"response.");
+        inspector
+            .observe(b"failed\",\"response\":{\"error\":{\"message\":\"provider failed\"}}}\n\n");
+        inspector.finish();
+
+        assert_eq!(inspector.error.as_deref(), Some("provider failed"));
+        assert!(!inspector.completed);
+    }
+
+    #[test]
+    fn response_stream_inspector_detects_completion() {
+        let mut inspector = ResponseStreamInspector::default();
+        inspector
+            .observe(b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n");
+        inspector.finish();
+
+        assert!(inspector.completed);
+        assert_eq!(inspector.error, None);
+    }
+
+    #[test]
+    fn response_stream_inspector_detects_json_error_with_http_success() {
+        let mut inspector = ResponseStreamInspector::default();
+        inspector.observe(b"{\"error\":{\"message\":\"quota unavailable\"}}");
+        inspector.finish();
+
+        assert_eq!(inspector.error.as_deref(), Some("quota unavailable"));
+    }
+
+    #[test]
+    fn pruning_logs_removes_expired_and_invalid_rows() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(ROUTER_LOG_FILE);
+        let recent = RoutingLogEntry {
+            ts: "2026-07-27T12:00:00Z".to_string(),
+            request_id: Some("recent".to_string()),
+            method: None,
+            path: None,
+            wire_protocol: None,
+            upstream_url: None,
+            session_hash: None,
+            profile_id: None,
+            alias: None,
+            requested_model: None,
+            actual_model: None,
+            status: "ok".to_string(),
+            http_status: Some(200),
+            latency_ms: 1,
+            fallback: None,
+            error: None,
+        };
+        let expired = RoutingLogEntry {
+            ts: "2026-07-10T12:00:00Z".to_string(),
+            request_id: Some("expired".to_string()),
+            ..recent.clone()
+        };
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\nnot-json\n",
+                serde_json::to_string(&expired).unwrap(),
+                serde_json::to_string(&recent).unwrap()
+            ),
+        )
+        .unwrap();
+
+        prune_log_path(
+            &path,
+            7,
+            DateTime::parse_from_rfc3339("2026-07-28T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.contains("recent"));
+        assert!(!text.contains("expired"));
+        assert!(!text.contains("not-json"));
     }
 }

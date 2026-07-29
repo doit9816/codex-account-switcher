@@ -113,6 +113,7 @@ export type RoutingSettings = {
   mode: "auto" | "fixed";
   fixedProfileId?: string;
   stickyTtlSecs: number;
+  logRetentionDays: number;
 };
 
 export type RoutingLogEntry = {
@@ -158,10 +159,12 @@ export type RoutingStatus = {
 
 export type RoutingCodexCheck = {
   configPath: string;
+  authPath: string;
   selectedProvider?: string;
   providerPresent: boolean;
   baseUrlMatches: boolean;
   tokenPresent: boolean;
+  authModeMatches: boolean;
   serviceRunning: boolean;
   healthOk: boolean;
   diagnostics: string[];

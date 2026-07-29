@@ -113,11 +113,22 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
-            Download the installer or bundle for your platform from the assets below.
+            ## 0.1.29 更新内容
 
-            These builds are unsigned by default. On macOS, Gatekeeper may show "CodexSwitcher is damaged and can't be opened". This usually means the app is not Apple-notarized.
+            ### 新增
+            - 路由请求日志支持查看详情、复制记录和配置保留天数，默认保留最近 7 天。
+            - 路由接管同时配置 Codex Provider 与 API Key 认证，并可在确认后自动重启 Codex。
+            - 路由自检增加配置、认证、服务状态和健康检查诊断。
 
-            Workaround for unsigned macOS builds:
+            ### 优化与修复
+            - 重构路由页面布局，API Key 默认遮罩，账号规则统一移入编辑弹窗。
+            - 固定账号模式必须选择有效账号，避免空账号配置启动。
+            - 识别流式响应中的上游错误事件，并按设置自动清理路由日志。
+            - 恢复接管配置时同时恢复原有 Provider 和认证文件。
+
+            请从下方 Assets 下载对应平台的安装包。
+
+            macOS 构建默认未经过 Apple 公证。如系统提示应用已损坏，可执行：
             ```bash
             xattr -dr com.apple.quarantine ~/Downloads/CodexSwitcher_*.dmg
             open ~/Downloads/CodexSwitcher_*.dmg

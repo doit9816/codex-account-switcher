@@ -77,6 +77,16 @@ button:disabled {
   opacity: 0.55;
 }
 
+.button-spinner {
+  animation: button-spin 0.8s linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .app-shell {
   min-height: 100vh;
   padding: 24px;
@@ -472,6 +482,7 @@ button:disabled {
 .toolbar-band,
 .proxy-band,
 .auto-band,
+.routing-log-settings-band,
 .update-band,
 .migration-band {
   align-items: center;
@@ -675,6 +686,31 @@ input:focus {
   grid-template-columns: 1fr;
 }
 
+.routing-log-settings-band {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-top: -2px;
+}
+
+.routing-log-settings-copy {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-right: auto;
+  min-width: min(420px, 100%);
+}
+
+.routing-log-settings-copy h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.routing-log-settings-copy p {
+  color: #657283;
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
 .routing-page {
   display: grid;
   gap: 16px;
@@ -686,11 +722,18 @@ input:focus {
   justify-content: space-between;
 }
 
-.routing-grid {
+.routing-columns {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr);
   align-items: start;
+}
+
+.routing-column {
+  align-content: start;
+  display: grid;
+  gap: 16px;
+  min-width: 0;
 }
 
 .routing-settings-panel .form-grid {
@@ -844,6 +887,16 @@ input:focus {
   font-weight: 700;
 }
 
+.routing-secret-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.routing-secret-head span {
+  margin: 0;
+}
+
 .routing-secret strong {
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
@@ -953,6 +1006,11 @@ input:focus {
   color: #b91c1c;
 }
 
+.routing-log-status.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .routing-log-latency {
   color: #475569;
   font-size: 12px;
@@ -1026,6 +1084,20 @@ input:focus {
 .routing-log-empty small {
   margin: 0;
   max-width: 420px;
+}
+
+.routing-log-pagination {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.routing-log-pagination > div {
+  display: flex;
+  gap: 8px;
 }
 
 .routing-log-dialog {
@@ -1110,6 +1182,11 @@ input:focus {
 
 .compact-actions .alias-input:first-child {
   width: 210px;
+}
+
+.compact-checkline {
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .account-table {
@@ -1671,33 +1748,6 @@ input:focus {
   width: 30px;
 }
 
-.inline-detail {
-  border-top: 1px solid #e1e7ee;
-  margin-top: 16px;
-  padding-top: 16px;
-}
-
-.inline-detail-head {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.inline-detail-head h3 {
-  font-size: 16px;
-  margin: 0;
-}
-
-.inline-detail-head p {
-  color: #647181;
-  margin: 4px 0 0;
-}
-
-.compact-probe {
-  margin-bottom: 14px;
-}
-
 .status-pill {
   align-items: center;
   border-radius: 999px;
@@ -2018,7 +2068,7 @@ input:focus {
   .bottom-grid,
   .metric-grid,
   .form-grid,
-  .routing-grid,
+  .routing-columns,
   .routing-status-grid,
   .list-columns {
     grid-template-columns: 1fr;
