@@ -1,5 +1,23 @@
 # 更新日志
 
+## 0.1.30 - 2026-07-29
+
+### 新增
+
+- 路由 API 新增 Anthropic Messages 上游协议，可将 Codex Responses 请求、工具调用、图片、推理内容和流式响应双向转换。
+- Chat Completions 适配增加 `reasoning_details` 与历史推理内容兼容，改善 Kimi、MiMo 等推理模型的连续工具调用。
+- 路由页面为监听地址、端口、会话粘性、路由模式、固定账号、接管、恢复配置、Key 和自检等功能增加悬浮说明。
+
+### 优化
+
+- 账号编辑弹窗重新整理输入框、备注、额度和操作区样式，改善窄窗口下的可读性和操作体验。
+- API Provider 可选择 Responses、Chat Completions 或 Anthropic Messages，并明确非 Responses 协议需要通过本地路由接管。
+- 移除 OAuth 账号路由的风险确认复选框和后端启动限制。
+
+### 修复
+
+- 修复账号重新 OAuth 授权且额度探测成功后，仍显示需要登录的问题。
+
 ## 0.1.29 - 2026-07-29
 
 ### 新增

@@ -3,6 +3,7 @@
 mod oauth;
 mod proxy;
 mod routing;
+mod routing_anthropic;
 mod routing_protocol;
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -788,6 +789,9 @@ fn get_store(app: AppHandle) -> Result<StoreView, String> {
         let key = load_master_key(&app)?;
         let mut changed = false;
         for profile in &mut store.profiles {
+            if repair_successfully_reauthorized_profile(profile) {
+                changed = true;
+            }
             if profile.api_config.is_some() {
                 continue;
             }
@@ -955,6 +959,8 @@ fn upsert_auth_profile(
             && p.summary.account_id == summary.account_id
             && summary.account_id.is_some()
     });
+    let usage =
+        usage_after_auth_replacement(existing_index.map(|idx| store.profiles[idx].usage.clone()));
 
     let profile = AccountProfile {
         id: existing_index
@@ -975,9 +981,7 @@ fn upsert_auth_profile(
         summary,
         encrypted_auth_json: encrypt_secret(auth_json.as_bytes(), &key)?,
         api_config: None,
-        usage: existing_index
-            .map(|idx| store.profiles[idx].usage.clone())
-            .unwrap_or_default(),
+        usage,
         route_health: existing_index
             .map(|idx| store.profiles[idx].route_health.clone())
             .unwrap_or_default(),
@@ -995,6 +999,63 @@ fn upsert_auth_profile(
     push_event(&mut store, "info", event_message);
     save_store(app, &store)?;
     Ok(store_view(store))
+}
+
+fn usage_after_auth_replacement(existing: Option<UsageStats>) -> UsageStats {
+    let mut usage = existing.unwrap_or_default();
+    clear_stale_auth_failure(&mut usage);
+    usage
+}
+
+fn clear_stale_auth_failure(usage: &mut UsageStats) {
+    usage.last_token_refresh_at = None;
+    usage.last_token_refresh_status = None;
+    usage.last_token_refresh_error = None;
+    if usage
+        .last_error
+        .as_deref()
+        .is_some_and(refresh_error_requires_relogin)
+    {
+        usage.last_error = None;
+    }
+}
+
+fn repair_successfully_reauthorized_profile(profile: &mut AccountProfile) -> bool {
+    if profile.usage.last_token_refresh_status.as_deref() != Some("relogin_required") {
+        return false;
+    }
+    if !profile
+        .summary
+        .access_token_exp
+        .is_some_and(|expires_at| expires_at > Utc::now().timestamp())
+    {
+        return false;
+    }
+    let Some(updated_at) = parse_time(&profile.updated_at) else {
+        return false;
+    };
+    let Some(refresh_failed_at) = profile
+        .usage
+        .last_token_refresh_at
+        .as_deref()
+        .and_then(parse_time)
+    else {
+        return false;
+    };
+    let Some(probed_at) = profile.usage.last_probe_at.as_deref().and_then(parse_time) else {
+        return false;
+    };
+    let probe_succeeded = profile
+        .usage
+        .last_probe_status
+        .as_deref()
+        .and_then(|status| status.parse::<u16>().ok())
+        .is_some_and(|status| (200..300).contains(&status));
+    if updated_at <= refresh_failed_at || probed_at < updated_at || !probe_succeeded {
+        return false;
+    }
+    clear_stale_auth_failure(&mut profile.usage);
+    true
 }
 
 #[tauri::command]
@@ -1703,15 +1764,14 @@ async fn switch_profile(
                 .to_string(),
         );
     }
-    if profile.api_config.as_ref().is_some_and(|config| {
-        routing_protocol::WireProtocol::parse(&config.wire_api)
-            .map(|protocol| protocol == routing_protocol::WireProtocol::ChatCompletions)
-            .unwrap_or(true)
-    }) {
-        return Err(
-            "Chat Completions 账号不能直接写入 Codex 配置；请启动路由并在路由页固定该账号"
-                .to_string(),
-        );
+    if let Some(config) = profile.api_config.as_ref() {
+        let protocol = routing_protocol::WireProtocol::parse(&config.wire_api)?;
+        if protocol != routing_protocol::WireProtocol::Responses {
+            return Err(
+                "Chat Completions 与 Anthropic Messages 账号不能直接写入 Codex 配置；请启动路由并在路由页固定该账号"
+                    .to_string(),
+            );
+        }
     }
     if !profile.enabled && !force {
         return Err("账号已禁用，不能自动切换；可先启用账号后再切换".to_string());
@@ -5930,6 +5990,47 @@ command = "demo-server"
             Some("current"),
             true
         ));
+    }
+
+    #[test]
+    fn reauthorization_clears_stale_refresh_failure_without_losing_usage() {
+        let mut usage = UsageStats {
+            hourly_used: 3,
+            daily_used: 7,
+            last_probe_status: Some("200".to_string()),
+            last_error: Some("refresh_token_reused".to_string()),
+            last_token_refresh_at: Some("2026-07-29T07:13:45Z".to_string()),
+            last_token_refresh_status: Some("relogin_required".to_string()),
+            last_token_refresh_error: Some("refresh_token_reused".to_string()),
+            ..UsageStats::default()
+        };
+
+        clear_stale_auth_failure(&mut usage);
+
+        assert_eq!(usage.hourly_used, 3);
+        assert_eq!(usage.daily_used, 7);
+        assert_eq!(usage.last_probe_status.as_deref(), Some("200"));
+        assert!(usage.last_error.is_none());
+        assert!(usage.last_token_refresh_at.is_none());
+        assert!(usage.last_token_refresh_status.is_none());
+        assert!(usage.last_token_refresh_error.is_none());
+    }
+
+    #[test]
+    fn repairs_profile_reauthorized_before_successful_probe() {
+        let mut profile = test_profile("reauthorized", "acc-1", "one@example.com");
+        profile.updated_at = "2026-07-29T07:14:45Z".to_string();
+        profile.summary.access_token_exp = Some(4_102_444_800);
+        profile.usage.last_probe_at = Some("2026-07-29T07:20:01Z".to_string());
+        profile.usage.last_probe_status = Some("200".to_string());
+        profile.usage.last_token_refresh_at = Some("2026-07-29T07:13:45Z".to_string());
+        profile.usage.last_token_refresh_status = Some("relogin_required".to_string());
+        profile.usage.last_token_refresh_error = Some("refresh_token_reused".to_string());
+
+        assert!(repair_successfully_reauthorized_profile(&mut profile));
+        assert!(profile.usage.last_token_refresh_status.is_none());
+        assert!(profile.usage.last_token_refresh_error.is_none());
+        assert_eq!(profile.usage.last_probe_status.as_deref(), Some("200"));
     }
 
     #[test]

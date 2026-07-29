@@ -1,3 +1,4 @@
+use crate::routing_anthropic::transform_anthropic_response;
 use crate::routing_protocol::{prepare_api_request, transform_chat_response, WireProtocol};
 use crate::{
     app_data_dir, build_probe_client, decrypt_secret, default_routing_log_retention_days,
@@ -131,7 +132,6 @@ pub(crate) struct SaveRoutingSettingsInput {
     listen_host: String,
     port: u16,
     enabled: bool,
-    risk_confirmed: bool,
     mode: RoutingMode,
     fixed_profile_id: Option<String>,
     sticky_ttl_secs: u64,
@@ -222,7 +222,6 @@ pub(crate) fn save_settings(
     store.settings.routing.listen_host = input.listen_host.trim().to_string();
     store.settings.routing.port = input.port;
     store.settings.routing.enabled = input.enabled;
-    store.settings.routing.risk_confirmed = input.risk_confirmed;
     store.settings.routing.mode = input.mode;
     store.settings.routing.fixed_profile_id = fixed_profile_id;
     store.settings.routing.sticky_ttl_secs = input.sticky_ttl_secs.clamp(60, 86_400);
@@ -274,9 +273,6 @@ pub(crate) fn start(app: AppHandle) -> Result<RoutingStatus, String> {
             store.settings.routing.mode,
             store.settings.routing.fixed_profile_id.as_deref(),
         )?;
-        if !store.settings.routing.risk_confirmed && has_oauth_profiles(&store) {
-            return Err("启用 OAuth 账号路由前需要确认账号风险".to_string());
-        }
         validate_listen(
             &store.settings.routing.listen_host,
             store.settings.routing.port,
@@ -954,8 +950,14 @@ fn prepare_and_send(
     let mut builder = blocking_client()
         .post(&prepared.url)
         .header("accept", accept)
-        .header("content-type", "application/json")
-        .bearer_auth(&prepared.auth_token);
+        .header("content-type", "application/json");
+    builder = if prepared.request.protocol == WireProtocol::AnthropicMessages {
+        builder
+            .header("x-api-key", &prepared.auth_token)
+            .header("anthropic-version", "2023-06-01")
+    } else {
+        builder.bearer_auth(&prepared.auth_token)
+    };
     if let Some(account_id) = &prepared.account_id {
         builder = builder.header("ChatGPT-Account-Id", account_id);
     }
@@ -1125,7 +1127,10 @@ fn build_stream_response(
             }
         }
         Box::new(Cursor::new(body).chain(upstream))
-    } else if prepared.protocol == WireProtocol::ChatCompletions {
+    } else if matches!(
+        prepared.protocol,
+        WireProtocol::ChatCompletions | WireProtocol::AnthropicMessages
+    ) {
         let mut body = Vec::new();
         (&mut upstream)
             .take(MAX_TRANSFORM_RESPONSE_BYTES as u64 + 1)
@@ -1134,11 +1139,23 @@ fn build_stream_response(
         if body.len() > MAX_TRANSFORM_RESPONSE_BYTES {
             return Err(RouterError::new(502, "上游响应过大，无法转换协议"));
         }
-        let transformed =
-            transform_chat_response(&body, upstream_content_type.as_deref(), prepared.streaming)
-                .map_err(|error| {
-                    RouterError::new(502, format!("Chat Completions 响应转换失败: {error}"))
-                })?;
+        let transformed = match prepared.protocol {
+            WireProtocol::ChatCompletions => {
+                transform_chat_response(&body, upstream_content_type.as_deref(), prepared.streaming)
+                    .map_err(|error| {
+                        RouterError::new(502, format!("Chat Completions 响应转换失败: {error}"))
+                    })?
+            }
+            WireProtocol::AnthropicMessages => transform_anthropic_response(
+                &body,
+                upstream_content_type.as_deref(),
+                prepared.streaming,
+            )
+            .map_err(|error| {
+                RouterError::new(502, format!("Anthropic Messages 响应转换失败: {error}"))
+            })?,
+            WireProtocol::Responses => unreachable!("Responses responses are passed through"),
+        };
         if let Ok(header) = Header::from_bytes(
             b"content-type".as_slice(),
             transformed.content_type.as_bytes(),
@@ -1864,13 +1881,6 @@ fn display_host(host: &str) -> String {
     } else {
         host.to_string()
     }
-}
-
-fn has_oauth_profiles(store: &AppStore) -> bool {
-    store
-        .profiles
-        .iter()
-        .any(|profile| profile.api_config.is_none())
 }
 
 fn respond_json(

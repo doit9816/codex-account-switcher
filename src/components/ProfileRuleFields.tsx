@@ -22,13 +22,15 @@ export function ProfileRuleFields({
   onEnabledChange
 }: ProfileRuleFieldsProps) {
   return (
-    <>
-      <div className="form-grid profile-rule-grid form-span-all">
+    <fieldset className="profile-rule-section form-span-all">
+      <legend>{t.accountRules}</legend>
+      <div className="profile-rule-grid">
         <label>
           {t.hourlyLimit}
           <input
             type="number"
             min={0}
+            placeholder={t.unlimited}
             value={quota.hourlyLimit ?? ""}
             onChange={(event) => onQuotaChange({
               ...quota,
@@ -41,6 +43,7 @@ export function ProfileRuleFields({
           <input
             type="number"
             min={0}
+            placeholder={t.unlimited}
             value={quota.dailyLimit ?? ""}
             onChange={(event) => onQuotaChange({
               ...quota,
@@ -69,8 +72,8 @@ export function ProfileRuleFields({
           />
         </label>
       </div>
-      <div className="switches form-span-all">
-        <label className="checkline" title={t.enableAccount}>
+      <div className="profile-rule-footer">
+        <label className="checkline profile-enabled-check" title={t.enableAccount}>
           <input
             type="checkbox"
             checked={enabled}
@@ -79,6 +82,6 @@ export function ProfileRuleFields({
           {t.enableAccount}
         </label>
       </div>
-    </>
+    </fieldset>
   );
 }

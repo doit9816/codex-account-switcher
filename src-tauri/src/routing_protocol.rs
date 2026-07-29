@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub(crate) enum WireProtocol {
     Responses,
     ChatCompletions,
+    AnthropicMessages,
 }
 
 impl WireProtocol {
@@ -19,7 +20,12 @@ impl WireProtocol {
             | "openai_chat"
             | "openai-chat"
             | "openai_chat_completions" => Ok(Self::ChatCompletions),
-            _ => Err("API 协议仅支持 Responses API 或 Chat Completions".to_string()),
+            "anthropic" | "anthropic_messages" | "anthropic-messages" | "claude" | "messages" => {
+                Ok(Self::AnthropicMessages)
+            }
+            _ => Err(
+                "API 协议仅支持 Responses API、Chat Completions 或 Anthropic Messages".to_string(),
+            ),
         }
     }
 
@@ -27,6 +33,7 @@ impl WireProtocol {
         match self {
             Self::Responses => "responses",
             Self::ChatCompletions => "chat_completions",
+            Self::AnthropicMessages => "anthropic_messages",
         }
     }
 }
@@ -63,6 +70,9 @@ pub(crate) fn prepare_api_request(
     let body = match protocol {
         WireProtocol::Responses => body,
         WireProtocol::ChatCompletions => responses_request_to_chat(body)?,
+        WireProtocol::AnthropicMessages => {
+            crate::routing_anthropic::responses_request_to_anthropic(body)?
+        }
     };
     Ok(PreparedApiRequest {
         endpoint: endpoint_url(base_url, protocol)?,
@@ -107,6 +117,7 @@ fn endpoint_url(base_url: &str, protocol: WireProtocol) -> Result<String, String
     let endpoint = match protocol {
         WireProtocol::Responses => "responses",
         WireProtocol::ChatCompletions => "chat/completions",
+        WireProtocol::AnthropicMessages => "messages",
     };
     let lower = trimmed.to_ascii_lowercase();
     if lower.ends_with(&format!("/{endpoint}")) {
@@ -189,8 +200,31 @@ fn append_chat_input(messages: &mut Vec<Value>, input: Option<&Value>) -> Result
             messages.push(json!({"role": "user", "content": text}));
         }
         Some(Value::Array(items)) => {
+            let mut pending_reasoning = None;
             for item in items {
+                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                    if let Some(reasoning) = reasoning_item_text(item) {
+                        pending_reasoning = Some(reasoning);
+                    }
+                    continue;
+                }
+                let previous_len = messages.len();
                 append_chat_item(messages, item)?;
+                if messages.len() > previous_len {
+                    if let Some(reasoning) = pending_reasoning.as_ref() {
+                        if messages
+                            .last()
+                            .and_then(|message| message.get("role"))
+                            .and_then(Value::as_str)
+                            == Some("assistant")
+                        {
+                            if let Some(message) = messages.last_mut() {
+                                message["reasoning_content"] = Value::String(reasoning.to_string());
+                            }
+                            pending_reasoning = None;
+                        }
+                    }
+                }
             }
         }
         Some(Value::Object(_)) => append_chat_item(messages, input.unwrap())?,
@@ -418,10 +452,8 @@ fn aggregate_chat_sse(body: &[u8]) -> Result<Value, String> {
         if let Some(value) = delta.get("content").and_then(Value::as_str) {
             content.push_str(value);
         }
-        for key in ["reasoning_content", "reasoning"] {
-            if let Some(value) = delta.get(key).and_then(Value::as_str) {
-                reasoning.push_str(value);
-            }
+        if let Some(value) = reasoning_text(delta) {
+            reasoning.push_str(&value);
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
@@ -487,11 +519,7 @@ fn chat_completion_to_response(chat: Value) -> Result<Value, String> {
         .get("message")
         .ok_or_else(|| "Chat Completions 响应缺少 message".to_string())?;
     let mut output = Vec::new();
-    if let Some(reasoning) = ["reasoning_content", "reasoning"]
-        .iter()
-        .find_map(|key| message.get(*key).and_then(Value::as_str))
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(reasoning) = reasoning_text(message).filter(|value| !value.is_empty()) {
         output.push(json!({
             "id": format!("rs_{}", Uuid::new_v4().simple()),
             "type": "reasoning",
@@ -597,7 +625,46 @@ fn response_id(chat_id: Option<&str>) -> String {
         .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple()))
 }
 
-fn response_to_sse(response: &Value) -> Result<Vec<u8>, String> {
+fn reasoning_item_text(item: &Value) -> Option<String> {
+    item.get("summary")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .filter(|value| !value.is_empty())
+        .or_else(|| reasoning_text(item))
+}
+
+fn reasoning_text(container: &Value) -> Option<String> {
+    ["reasoning_content", "reasoning", "reasoning_details"]
+        .iter()
+        .find_map(|key| container.get(*key).and_then(reasoning_value_text))
+        .filter(|value| !value.is_empty())
+}
+
+fn reasoning_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(reasoning_value_text)
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(object) => ["text", "content", "reasoning"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(reasoning_value_text)),
+        _ => None,
+    }
+}
+
+pub(crate) fn response_to_sse(response: &Value) -> Result<Vec<u8>, String> {
     let mut events = Vec::new();
     let mut sequence = 0_u64;
     let mut created = response.clone();
@@ -837,7 +904,10 @@ mod tests {
             normalize_wire_api("openai_chat").unwrap(),
             "chat_completions"
         );
-        assert!(normalize_wire_api("anthropic").is_err());
+        assert_eq!(
+            normalize_wire_api("anthropic").unwrap(),
+            "anthropic_messages"
+        );
     }
 
     #[test]
@@ -861,6 +931,10 @@ mod tests {
             )
             .unwrap(),
             "https://api.example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            endpoint_url("https://api.anthropic.com", WireProtocol::AnthropicMessages).unwrap(),
+            "https://api.anthropic.com/v1/messages"
         );
     }
 
@@ -913,5 +987,46 @@ mod tests {
         assert!(text.contains("\"call_id\":\"call_1\""));
         assert!(text.contains("event: response.completed"));
         assert!(text.contains("\"input_tokens\":3"));
+    }
+
+    #[test]
+    fn keeps_reasoning_history_for_chat_tool_calls() {
+        let converted = responses_request_to_chat(json!({
+            "model": "kimi-k2.5",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Need to inspect files."}]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "read_file",
+                    "arguments": "{\"path\":\"a.txt\"}"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            converted["messages"][0]["reasoning_content"],
+            "Need to inspect files."
+        );
+    }
+
+    #[test]
+    fn reads_reasoning_details_from_chat_streams() {
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"mimo\",\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"think\"}]}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"mimo\",\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let transformed =
+            transform_chat_response(body.as_bytes(), Some("text/event-stream"), false).unwrap();
+        let response: Value = serde_json::from_slice(&transformed.body).unwrap();
+
+        assert_eq!(response["output"][0]["type"], "reasoning");
+        assert_eq!(response["output"][0]["summary"][0]["text"], "think");
+        assert_eq!(response["output"][1]["content"][0]["text"], "done");
     }
 }

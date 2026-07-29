@@ -113,18 +113,18 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
-            ## 0.1.29 更新内容
+            ## 0.1.30 更新内容
 
             ### 新增
-            - 路由请求日志支持查看详情、复制记录和配置保留天数，默认保留最近 7 天。
-            - 路由接管同时配置 Codex Provider 与 API Key 认证，并可在确认后自动重启 Codex。
-            - 路由自检增加配置、认证、服务状态和健康检查诊断。
+            - 路由 API 新增 Anthropic Messages 协议转换，覆盖工具调用、图片、推理和流式响应。
+            - Chat Completions 增加 `reasoning_details` 与历史推理兼容。
+            - 路由接管、恢复配置、固定账号、会话粘性和 Key 操作增加悬浮说明。
 
             ### 优化与修复
-            - 重构路由页面布局，API Key 默认遮罩，账号规则统一移入编辑弹窗。
-            - 固定账号模式必须选择有效账号，避免空账号配置启动。
-            - 识别流式响应中的上游错误事件，并按设置自动清理路由日志。
-            - 恢复接管配置时同时恢复原有 Provider 和认证文件。
+            - API Provider 可选择 Responses、Chat Completions 或 Anthropic Messages。
+            - 移除 OAuth 账号路由风险确认和后端启动限制。
+            - 优化账号编辑弹窗样式和窄窗口显示。
+            - 修复重新 OAuth 授权成功后仍显示需要登录的问题。
 
             请从下方 Assets 下载对应平台的安装包。
 

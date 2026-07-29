@@ -49,7 +49,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -320,11 +321,38 @@ button:disabled {
 }
 
 .edit-account-dialog {
-  max-width: 720px;
+  gap: 0;
+  max-width: 780px;
+  overflow: hidden;
+  padding: 0;
 }
 
 .add-account-dialog h2 {
   margin: 0;
+}
+
+.edit-account-dialog .update-dialog-head {
+  align-items: center;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-bottom: 1px solid #e2e8f0;
+  padding: 20px 24px 18px;
+}
+
+.edit-account-dialog .update-dialog-head h2 {
+  color: #142033;
+  font-size: 21px;
+  letter-spacing: -0.02em;
+}
+
+.edit-account-dialog .notice-close {
+  color: #526174;
+  height: 34px;
+  width: 34px;
+}
+
+.edit-account-dialog .notice-close:hover {
+  background: #e9eef5;
+  color: #172033;
 }
 
 .edit-account-type {
@@ -385,12 +413,32 @@ button:disabled {
 }
 
 .profile-note-input {
-  min-height: 92px;
+  background: #f8fafc;
+  border: 1px solid #d5dee9;
+  border-radius: 10px;
+  box-sizing: border-box;
+  color: #172033;
+  line-height: 1.55;
+  min-height: 108px;
+  outline: none;
+  padding: 11px 12px;
   resize: vertical;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+  width: 100%;
+}
+
+.profile-note-input:hover {
+  border-color: #b8c5d4;
+}
+
+.profile-note-input:focus {
+  background: #ffffff;
+  border-color: #4676df;
+  box-shadow: 0 0 0 3px rgba(70, 118, 223, 0.12);
 }
 
 .profile-note-input.compact {
-  min-height: 74px;
+  min-height: 92px;
 }
 
 .wide-button {
@@ -748,6 +796,58 @@ input:focus {
 
 .routing-mode-field select {
   min-width: 0;
+}
+
+.field-label-with-tip {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.info-tip {
+  align-items: center;
+  color: #718096;
+  cursor: help;
+  display: inline-flex;
+  flex: 0 0 auto;
+  outline: none;
+  position: relative;
+}
+
+.info-tip:hover,
+.info-tip:focus-visible {
+  color: #2357c6;
+}
+
+.info-tip-content {
+  background: #172033;
+  border-radius: 7px;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 8px 24px rgba(23, 32, 51, 0.2);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 400;
+  left: 50%;
+  line-height: 1.45;
+  max-width: min(280px, 70vw);
+  opacity: 0;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  text-align: left;
+  transform: translate(-50%, 4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+  white-space: normal;
+  width: max-content;
+  z-index: 50;
+}
+
+.info-tip:hover .info-tip-content,
+.info-tip:focus-visible .info-tip-content {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
 }
 
 .routing-key-panel {
@@ -1246,8 +1346,7 @@ input:focus {
 }
 
 .edit-api-provider-form {
-  align-items: end;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .api-advanced-settings {
@@ -1272,6 +1371,42 @@ input:focus {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.edit-account-dialog .add-account-content {
+  align-content: start;
+  gap: 16px;
+  max-height: calc(100vh - 132px);
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+}
+
+.edit-account-dialog .add-account-content > label,
+.edit-account-dialog .api-provider-form > label {
+  color: #465568;
+  display: grid;
+  font-size: 12px;
+  font-weight: 750;
+  gap: 7px;
+  min-width: 0;
+}
+
+.edit-account-dialog input:not([type="checkbox"]),
+.edit-account-dialog select {
+  background: #ffffff;
+  border-color: #d5dee9;
+  border-radius: 9px;
+  box-sizing: border-box;
+  min-width: 0;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  width: 100%;
+}
+
+.edit-account-dialog input:not([type="checkbox"]):hover,
+.edit-account-dialog select:hover {
+  border-color: #b8c5d4;
+}
+
 .form-span-all {
   grid-column: 1 / -1;
 }
@@ -1282,7 +1417,59 @@ input:focus {
   gap: 10px;
   grid-column: 1 / -1;
   justify-content: flex-end;
+  border-top: 1px solid #e5eaf0;
   margin-top: 2px;
+  padding-top: 18px;
+}
+
+.profile-rule-section {
+  background: #f8fafc;
+  border: 1px solid #dce4ed;
+  border-radius: 12px;
+  box-sizing: border-box;
+  margin: 0;
+  min-width: 0;
+  padding: 14px 16px 15px;
+}
+
+.profile-rule-section legend {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 7px;
+}
+
+.profile-rule-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.profile-rule-grid label {
+  color: #526174;
+  display: grid;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 7px;
+  min-width: 0;
+}
+
+.profile-rule-grid input {
+  background: #ffffff;
+}
+
+.profile-rule-footer {
+  border-top: 1px solid #e3e9f0;
+  margin-top: 14px;
+  padding-top: 13px;
+}
+
+.profile-enabled-check {
+  background: #ffffff;
+  border: 1px solid #dce4ed;
+  border-radius: 9px;
+  min-height: 38px;
+  padding: 0 12px;
 }
 
 .api-provider-summary {
@@ -2092,5 +2279,29 @@ input:focus {
   .account-row span:nth-child(5),
   .account-row span:nth-child(6) {
     display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .update-dialog-backdrop {
+    padding: 12px;
+  }
+
+  .edit-account-dialog {
+    max-height: calc(100vh - 24px);
+  }
+
+  .edit-account-dialog .update-dialog-head {
+    padding: 18px;
+  }
+
+  .edit-account-dialog .add-account-content {
+    max-height: calc(100vh - 106px);
+    padding: 18px;
+  }
+
+  .edit-api-provider-form,
+  .profile-rule-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

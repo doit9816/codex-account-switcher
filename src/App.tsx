@@ -85,6 +85,12 @@ function generatedApiProviderId(alias: string, model: string) {
   return `${source || "api"}-${Date.now().toString(36)}`;
 }
 
+function apiProtocolLabel(wireApi: string, t: I18n) {
+  if (wireApi === "chat_completions") return t.apiProtocolChat;
+  if (wireApi === "anthropic_messages") return t.apiProtocolAnthropic;
+  return t.apiProtocolResponses;
+}
+
 export default function App() {
   const [store, setStore] = useState<StoreView | null>(null);
   const [scan, setScan] = useState<CodexScan | null>(null);
@@ -127,7 +133,6 @@ export default function App() {
   const [routingStatus, setRoutingStatus] = useState<RoutingStatus | null>(null);
   const [routingHost, setRoutingHost] = useState("0.0.0.0");
   const [routingPort, setRoutingPort] = useState(15722);
-  const [routingRiskConfirmed, setRoutingRiskConfirmed] = useState(false);
   const [routingMode, setRoutingMode] = useState<"auto" | "fixed">("auto");
   const [routingFixedProfileId, setRoutingFixedProfileId] = useState("");
   const [routingStickyTtlSecs, setRoutingStickyTtlSecs] = useState(3600);
@@ -301,7 +306,6 @@ export default function App() {
     const routing = store.settings.routing;
     setRoutingHost(routing.listenHost || "0.0.0.0");
     setRoutingPort(routing.port || 15722);
-    setRoutingRiskConfirmed(!!routing.riskConfirmed);
     setRoutingMode(routing.mode || "auto");
     setRoutingFixedProfileId(routing.fixedProfileId || "");
     setRoutingStickyTtlSecs(routing.stickyTtlSecs || 3600);
@@ -702,7 +706,6 @@ export default function App() {
           listenHost: routingHost,
           port: routingPort,
           enabled,
-          riskConfirmed: routingRiskConfirmed,
           mode: routingMode,
           fixedProfileId: routingMode === "fixed" ? routingFixedProfileId || undefined : undefined,
           stickyTtlSecs: routingStickyTtlSecs
@@ -724,7 +727,6 @@ export default function App() {
           listenHost: routingHost,
           port: routingPort,
           enabled: !running,
-          riskConfirmed: routingRiskConfirmed,
           mode: routingMode,
           fixedProfileId: routingMode === "fixed" ? routingFixedProfileId || undefined : undefined,
           stickyTtlSecs: routingStickyTtlSecs
@@ -790,7 +792,6 @@ export default function App() {
           listenHost: routingHost,
           port: routingPort,
           enabled: routingStatus?.settings.enabled ?? false,
-          riskConfirmed: routingRiskConfirmed,
           mode: "fixed",
           fixedProfileId: profileId,
           stickyTtlSecs: routingStickyTtlSecs
@@ -1476,6 +1477,7 @@ export default function App() {
                       <select value={apiWireApi} onChange={(event) => setApiWireApi(event.target.value)}>
                         <option value="responses">{t.apiProtocolResponses}</option>
                         <option value="chat_completions">{t.apiProtocolChat}</option>
+                        <option value="anthropic_messages">{t.apiProtocolAnthropic}</option>
                       </select>
                     </label>
                   </div>
@@ -1541,6 +1543,7 @@ export default function App() {
                       <select value={editWireApiDraft} onChange={(event) => setEditWireApiDraft(event.target.value)}>
                         <option value="responses">{t.apiProtocolResponses}</option>
                         <option value="chat_completions">{t.apiProtocolChat}</option>
+                        <option value="anthropic_messages">{t.apiProtocolAnthropic}</option>
                       </select>
                     </label>
                   </div>
@@ -1623,14 +1626,12 @@ export default function App() {
           status={routingStatus}
           host={routingHost}
           port={routingPort}
-          riskConfirmed={routingRiskConfirmed}
           mode={routingMode}
           fixedProfileId={routingFixedProfileId}
           stickyTtlSecs={routingStickyTtlSecs}
           routingBusy={routingBusy}
           onHostChange={setRoutingHost}
           onPortChange={setRoutingPort}
-          onRiskConfirmedChange={setRoutingRiskConfirmed}
           onModeChange={setRoutingMode}
           onFixedProfileIdChange={setRoutingFixedProfileId}
           onStickyTtlSecsChange={setRoutingStickyTtlSecs}
@@ -1943,6 +1944,7 @@ export default function App() {
                     <select value={apiWireApi} onChange={(event) => setApiWireApi(event.target.value)}>
                       <option value="responses">{t.apiProtocolResponses}</option>
                       <option value="chat_completions">{t.apiProtocolChat}</option>
+                      <option value="anthropic_messages">{t.apiProtocolAnthropic}</option>
                     </select>
                   </label>
                 </div>
@@ -2019,7 +2021,7 @@ export default function App() {
                     <div className="api-provider-summary">
                       <strong>{profile.apiConfig.model}</strong>
                       <small>{profile.apiConfig.baseUrl}</small>
-                      <span>{profile.apiConfig.wireApi === "chat_completions" ? t.apiProtocolChat : t.apiProtocolResponses}</span>
+                      <span>{apiProtocolLabel(profile.apiConfig.wireApi, t)}</span>
                     </div>
                   )}
 

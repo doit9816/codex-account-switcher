@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { I18n } from "../../i18n";
 import { accountState, formatDate, formatSubscriptionValidity } from "../../profileUtils";
 import type { Profile, RoutingLogEntry, RoutingStatus } from "../../types";
+import { InfoTip } from "../InfoTip";
 import { StatusPill } from "../StatusPill";
 import { RoutingLogDialog } from "./RoutingLogDialog";
 import {
@@ -36,14 +37,12 @@ type RoutingPageProps = {
   status: RoutingStatus | null;
   host: string;
   port: number;
-  riskConfirmed: boolean;
   mode: "auto" | "fixed";
   fixedProfileId: string;
   stickyTtlSecs: number;
   routingBusy: boolean;
   onHostChange: (value: string) => void;
   onPortChange: (value: number) => void;
-  onRiskConfirmedChange: (value: boolean) => void;
   onModeChange: (value: "auto" | "fixed") => void;
   onFixedProfileIdChange: (value: string) => void;
   onStickyTtlSecsChange: (value: number) => void;
@@ -67,14 +66,12 @@ export function RoutingPage({
   status,
   host,
   port,
-  riskConfirmed,
   mode,
   fixedProfileId,
   stickyTtlSecs,
   routingBusy,
   onHostChange,
   onPortChange,
-  onRiskConfirmedChange,
   onModeChange,
   onFixedProfileIdChange,
   onStickyTtlSecsChange,
@@ -199,7 +196,12 @@ export function RoutingPage({
                 <h2>服务设置</h2>
                 <p>{status?.baseUrl || `http://${host}:${port}/v1`}</p>
               </div>
-              <button className="icon-button primary" onClick={() => void onToggleService()} disabled={busy || routingBusy || fixedModeIncomplete}>
+              <button
+                className="icon-button primary"
+                onClick={() => void onToggleService()}
+                disabled={busy || routingBusy || fixedModeIncomplete}
+                title={t.routingServiceToggleHint}
+              >
                 <Power size={17} />
                 {routingBusy ? "处理中..." : status?.running ? "停止" : "启动"}
               </button>
@@ -207,19 +209,31 @@ export function RoutingPage({
 
             <div className="form-grid">
               <label>
-                监听地址
+                <span className="field-label-with-tip">
+                  监听地址
+                  <InfoTip text={t.routingListenHostHint} />
+                </span>
                 <input value={host} onChange={(event) => onHostChange(event.target.value)} />
               </label>
               <label>
-                端口
+                <span className="field-label-with-tip">
+                  端口
+                  <InfoTip text={t.routingPortHint} />
+                </span>
                 <input type="number" min={1} max={65535} value={port} onChange={(event) => onPortChange(Number(event.target.value) || 15722)} />
               </label>
               <label>
-                粘性 TTL 秒
+                <span className="field-label-with-tip">
+                  粘性 TTL 秒
+                  <InfoTip text={t.routingStickyTtlHint} />
+                </span>
                 <input type="number" min={60} value={stickyTtlSecs} onChange={(event) => onStickyTtlSecsChange(Number(event.target.value) || 3600)} />
               </label>
               <label className="routing-mode-field">
-                路由模式
+                <span className="field-label-with-tip">
+                  路由模式
+                  <InfoTip text={t.routingModeHint} />
+                </span>
                 <select value={mode} onChange={(event) => onModeChange(event.target.value as "auto" | "fixed")}>
                   <option value="auto">自动会话粘性</option>
                   <option value="fixed">固定账号并兜底</option>
@@ -227,7 +241,10 @@ export function RoutingPage({
               </label>
               {mode === "fixed" && (
                 <label>
-                  固定账号
+                  <span className="field-label-with-tip">
+                    固定账号
+                    <InfoTip text={t.routingFixedAccountHint} />
+                  </span>
                   <select value={fixedProfileId} onChange={(event) => onFixedProfileIdChange(event.target.value)}>
                     <option value="">未指定</option>
                     {profiles.map((profile) => (
@@ -241,20 +258,21 @@ export function RoutingPage({
               <p className="routing-inline-warning">固定模式未选择账号时不会保存、启动、测试或接管；请选择账号，或在账号池里直接点“固定”。</p>
             )}
 
-            <label className="checkline routing-risk">
-              <input
-                type="checkbox"
-                checked={riskConfirmed}
-                onChange={(event) => onRiskConfirmedChange(event.target.checked)}
-              />
-              我确认 OAuth 订阅账号反代可能带来账号限制风险，仅在可信环境使用。
-            </label>
-
             <div className="action-row">
-              <button className="icon-button" onClick={() => void onSaveSettings()} disabled={busy || fixedModeIncomplete}>
+              <button
+                className="icon-button"
+                onClick={() => void onSaveSettings()}
+                disabled={busy || fixedModeIncomplete}
+                title={t.routingSaveSettingsHint}
+              >
                 <ShieldCheck size={17} /> 保存设置
               </button>
-              <button className="icon-button" onClick={() => void onReloadStatus()} disabled={busy}>
+              <button
+                className="icon-button"
+                onClick={() => void onReloadStatus()}
+                disabled={busy}
+                title={t.routingRefreshStatusHint}
+              >
                 <RefreshCcw size={17} /> 刷新状态
               </button>
             </div>
@@ -309,6 +327,7 @@ export function RoutingPage({
                       className="mini-button primary"
                       onClick={() => void onFixProfile(profile.id)}
                       disabled={busy}
+                      title={t.routingFixAccountHint}
                     >
                       固定
                     </button>
@@ -389,21 +408,46 @@ export function RoutingPage({
               <strong>{status?.accessKey ? (showAccessKey ? status.accessKey : "••••••••••••••••••••••••") : "未生成"}</strong>
             </div>
             <div className="action-row">
-              <button className="icon-button" onClick={() => void onCopyConfig()} disabled={!status?.accessKey}>
+              <button
+                className="icon-button"
+                onClick={() => void onCopyConfig()}
+                disabled={!status?.accessKey}
+                title={t.routingCopyConfigHint}
+              >
                 <Copy size={17} /> 复制配置
               </button>
-              <button className="icon-button" onClick={() => void onRegenerateKey()} disabled={busy}>
+              <button
+                className="icon-button"
+                onClick={() => void onRegenerateKey()}
+                disabled={busy}
+                title={t.routingRegenerateKeyHint}
+              >
                 <KeyRound size={17} /> 重生成 Key
               </button>
-              <button className="icon-button" onClick={() => void onReloadStatus()} disabled={busy}>
+              <button
+                className="icon-button"
+                onClick={() => void onReloadStatus()}
+                disabled={busy}
+                title={t.routingSelfCheckHint}
+              >
                 <RefreshCcw size={17} /> 自检接管
               </button>
             </div>
             <div className="action-row">
-              <button className="icon-button primary" onClick={() => void onApplyCodexConfig()} disabled={busy || !status?.accessKey || fixedModeIncomplete}>
+              <button
+                className="icon-button primary"
+                onClick={() => void onApplyCodexConfig()}
+                disabled={busy || !status?.accessKey || fixedModeIncomplete}
+                title={t.routingTakeoverHint}
+              >
                 <Zap size={17} /> {takeoverExpected && !takeoverConfigured ? "重新接管 Codex" : "一键接管 Codex"}
               </button>
-              <button className="icon-button" onClick={() => void onRestoreCodexConfig()} disabled={busy || (!takeoverExpected && !takeoverConfigured)}>
+              <button
+                className="icon-button"
+                onClick={() => void onRestoreCodexConfig()}
+                disabled={busy || (!takeoverExpected && !takeoverConfigured)}
+                title={t.routingRestoreConfigHint}
+              >
                 <RotateCcw size={17} /> 恢复配置
               </button>
             </div>
@@ -417,7 +461,12 @@ export function RoutingPage({
                 <p>仅记录路由元数据，不记录提示词或响应正文。</p>
               </div>
               <div className="panel-header-actions">
-                <button className="mini-button primary" onClick={() => void testRequest()} disabled={probeBusy || routingBusy || fixedModeIncomplete}>
+                <button
+                  className="mini-button primary"
+                  onClick={() => void testRequest()}
+                  disabled={probeBusy || routingBusy || fixedModeIncomplete}
+                  title={t.routingTestRequestHint}
+                >
                   {probeBusy ? <LoaderCircle className="button-spinner" size={15} /> : <Zap size={15} />}
                   {probeBusy ? "测试中..." : "测试请求"}
                 </button>
