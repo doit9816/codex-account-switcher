@@ -13,6 +13,7 @@ import {
   FileText,
   FolderOpen,
   Gauge,
+  Grid2X2,
   HardDriveUpload,
   KeyRound,
   LayoutDashboard,
@@ -20,6 +21,7 @@ import {
   Pencil,
   RefreshCcw,
   RotateCcw,
+  Rows3,
   Settings,
   ShieldCheck,
   Trash2,
@@ -74,6 +76,11 @@ import {
 } from "./profileUtils";
 
 const UI_BUSY_TIMEOUT_MS = 90_000;
+const ACCOUNT_PAGE_SIZE = 12;
+
+type AccountViewMode = "cards" | "rows";
+type AccountExpiryFilter = "all" | "valid" | "expired";
+type AccountStatusFilter = "all" | "available" | "relogin" | "disabled" | "cooling" | "expired" | "error";
 
 function generatedApiProviderId(alias: string, model: string) {
   const source = `${alias || model || "api"}`
@@ -89,6 +96,26 @@ function apiProtocolLabel(wireApi: string, t: I18n) {
   if (wireApi === "chat_completions") return t.apiProtocolChat;
   if (wireApi === "anthropic_messages") return t.apiProtocolAnthropic;
   return t.apiProtocolResponses;
+}
+
+function isAccountExpired(profile: Profile, t: I18n) {
+  return subscriptionExpiryState(profile).expired || tokenState(profile, t) === t.expired;
+}
+
+function isAccountUsable(profile: Profile, t: I18n) {
+  return accountState(profile, t) === t.available && !isAccountExpired(profile, t);
+}
+
+function matchesAccountStatus(profile: Profile, statusFilter: AccountStatusFilter, t: I18n) {
+  const state = accountState(profile, t);
+  const token = tokenState(profile, t);
+  if (statusFilter === "all") return true;
+  if (statusFilter === "available") return state === t.available && token !== t.expired;
+  if (statusFilter === "relogin") return profileNeedsReauthorization(profile) || token === t.reloginRequired || token === t.authInvalid;
+  if (statusFilter === "disabled") return !profile.enabled;
+  if (statusFilter === "cooling") return isCooling(profile);
+  if (statusFilter === "expired") return isAccountExpired(profile, t);
+  return !!profile.usage.lastError || token === t.keepaliveFailed || state === t.probeFailed;
 }
 
 export default function App() {
@@ -114,6 +141,13 @@ export default function App() {
   const [apiModel, setApiModel] = useState("");
   const [apiWireApi, setApiWireApi] = useState("responses");
   const [apiKey, setApiKey] = useState("");
+  const [accountViewMode, setAccountViewMode] = useState<AccountViewMode>(() => {
+    const saved = localStorage.getItem("codex-account-switcher-account-view");
+    return saved === "rows" ? "rows" : "cards";
+  });
+  const [accountExpiryFilter, setAccountExpiryFilter] = useState<AccountExpiryFilter>("all");
+  const [accountStatusFilter, setAccountStatusFilter] = useState<AccountStatusFilter>("all");
+  const [accountPage, setAccountPage] = useState(1);
   const [codexConfig, setCodexConfig] = useState<CodexConfigFiles | null>(null);
   const [authJsonDraft, setAuthJsonDraft] = useState("");
   const [configTomlDraft, setConfigTomlDraft] = useState("");
@@ -191,10 +225,23 @@ export default function App() {
     ? Math.min(100, Math.round((updateDownloaded / updateTotal) * 100))
     : undefined;
   const filteredProfiles = useMemo(() => {
-    const profiles = store?.profiles || [];
+    const profiles = (store?.profiles || [])
+      .map((profile, index) => ({ profile, index }))
+      .sort((left, right) => {
+        const usableDelta = Number(isAccountUsable(right.profile, t)) - Number(isAccountUsable(left.profile, t));
+        if (usableDelta !== 0) return usableDelta;
+        const expiryDelta = Number(isAccountExpired(left.profile, t)) - Number(isAccountExpired(right.profile, t));
+        if (expiryDelta !== 0) return expiryDelta;
+        return left.index - right.index;
+      })
+      .map((item) => item.profile);
     const query = accountFilter.trim().toLowerCase();
-    if (!query) return profiles;
     return profiles.filter((profile) => {
+      const expired = isAccountExpired(profile, t);
+      if (accountExpiryFilter === "valid" && expired) return false;
+      if (accountExpiryFilter === "expired" && !expired) return false;
+      if (!matchesAccountStatus(profile, accountStatusFilter, t)) return false;
+      if (!query) return true;
       const values = [
         profile.alias,
         profile.note,
@@ -203,13 +250,16 @@ export default function App() {
         profile.summary.plan,
         profile.summary.authMode,
         accountState(profile, t),
+        formatSubscriptionValidity(profile, t),
         quotaSummary(profile, t),
         tokenState(profile, t),
         currentGlobalProfileId === profile.id ? t.currentUsing : ""
       ];
       return values.some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [store?.profiles, accountFilter, currentGlobalProfileId, t]);
+  }, [store?.profiles, accountFilter, accountExpiryFilter, accountStatusFilter, currentGlobalProfileId, t]);
+  const totalAccountPages = Math.max(1, Math.ceil(filteredProfiles.length / ACCOUNT_PAGE_SIZE));
+  const pagedProfiles = filteredProfiles.slice((accountPage - 1) * ACCOUNT_PAGE_SIZE, accountPage * ACCOUNT_PAGE_SIZE);
   const selectedExportProfiles = useMemo(() => {
     const selected = new Set(exportProfileIds);
     return (store?.profiles || []).filter((profile) => selected.has(profile.id));
@@ -290,6 +340,18 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("codex-account-switcher-language", languageSetting);
   }, [languageSetting]);
+
+  useEffect(() => {
+    localStorage.setItem("codex-account-switcher-account-view", accountViewMode);
+  }, [accountViewMode]);
+
+  useEffect(() => {
+    setAccountPage(1);
+  }, [accountFilter, accountExpiryFilter, accountStatusFilter]);
+
+  useEffect(() => {
+    setAccountPage((page) => Math.min(page, totalAccountPages));
+  }, [totalAccountPages]);
 
   useEffect(() => {
     if (!store) return;
@@ -1251,6 +1313,103 @@ export default function App() {
     }, t.restoredBackup);
   }
 
+  function renderProfileActions(profile: Profile, needsReauthorization: boolean) {
+    return (
+      <>
+        <button
+          className="mini-button icon-only"
+          onClick={(event) => {
+            event.stopPropagation();
+            openEditProfile(profile);
+          }}
+          disabled={busy}
+          title={t.editAccount}
+          aria-label={t.editAccount}
+        >
+          <Pencil size={14} />
+        </button>
+        {(profile.usage.availableResetCount || 0) > 0 && (
+          <button
+            className="mini-button icon-only"
+            onClick={(event) => {
+              event.stopPropagation();
+              void consumeUsageReset(profile.id);
+            }}
+            disabled={busy}
+            title={t.useReset}
+            aria-label={t.useReset}
+          >
+            <RotateCcw size={14} />
+          </button>
+        )}
+        {needsReauthorization && (
+          <button
+            className="mini-button icon-only"
+            onClick={(event) => {
+              event.stopPropagation();
+              void reauthorizeProfile(profile);
+            }}
+            disabled={busy || oauthStatus === "starting" || oauthStatus === "exchanging"}
+            title={t.reauthorize}
+            aria-label={t.reauthorize}
+          >
+            <KeyRound size={14} />
+          </button>
+        )}
+        <button
+          className="mini-button icon-only"
+          onClick={(event) => {
+            event.stopPropagation();
+            void probeProfile(profile.id);
+          }}
+          disabled={busy}
+          title={t.probeQuota}
+          aria-label={t.probeQuota}
+        >
+          <RefreshCcw size={14} />
+        </button>
+        <button
+          className="mini-button primary icon-only"
+          onClick={(event) => {
+            event.stopPropagation();
+            void switchProfile(profile.id);
+          }}
+          disabled={busy}
+          title={t.switch}
+          aria-label={t.switch}
+        >
+          <Zap size={14} />
+        </button>
+        {store?.settings.routing.appliedToCodex && (
+          <button
+            className="mini-button icon-only"
+            onClick={(event) => {
+              event.stopPropagation();
+              void fixProfileToRouting(profile.id);
+            }}
+            disabled={busy}
+            title="固定到路由"
+            aria-label="固定到路由"
+          >
+            <Network size={14} />
+          </button>
+        )}
+        <button
+          className="mini-button danger icon-only"
+          onClick={(event) => {
+            event.stopPropagation();
+            void deleteProfile(profile.id);
+          }}
+          disabled={busy}
+          title={t.deleteAccount}
+          aria-label={t.deleteAccount}
+        >
+          <Trash2 size={15} />
+        </button>
+      </>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1831,6 +1990,48 @@ export default function App() {
                 <input type="checkbox" checked={forceSwitch} onChange={(event) => setForceSwitch(event.target.checked)} />
                 {t.forceSwitch}
               </label>
+              <select
+                value={accountExpiryFilter}
+                onChange={(event) => setAccountExpiryFilter(event.target.value as AccountExpiryFilter)}
+                title={t.expiryFilter}
+                aria-label={t.expiryFilter}
+              >
+                <option value="all">{t.allExpiry}</option>
+                <option value="valid">{t.validOnly}</option>
+                <option value="expired">{t.expiredOnly}</option>
+              </select>
+              <select
+                value={accountStatusFilter}
+                onChange={(event) => setAccountStatusFilter(event.target.value as AccountStatusFilter)}
+                title={t.loginStatusFilter}
+                aria-label={t.loginStatusFilter}
+              >
+                <option value="all">{t.allLoginStatuses}</option>
+                <option value="available">{t.available}</option>
+                <option value="relogin">{t.reloginRequired}</option>
+                <option value="disabled">{t.disabled}</option>
+                <option value="cooling">{t.cooling}</option>
+                <option value="expired">{t.expired}</option>
+                <option value="error">{t.probeFailed}</option>
+              </select>
+              <div className="view-toggle" role="group" aria-label={t.accountViewMode}>
+                <button
+                  className={accountViewMode === "cards" ? "active" : ""}
+                  onClick={() => setAccountViewMode("cards")}
+                  title={t.cardView}
+                  aria-label={t.cardView}
+                >
+                  <Grid2X2 size={16} />
+                </button>
+                <button
+                  className={accountViewMode === "rows" ? "active" : ""}
+                  onClick={() => setAccountViewMode("rows")}
+                  title={t.rowView}
+                  aria-label={t.rowView}
+                >
+                  <Rows3 size={16} />
+                </button>
+              </div>
               <input
                 className="alias-input"
                 placeholder={t.searchPlaceholder}
@@ -1904,63 +2105,9 @@ export default function App() {
             </div>
           </details>
 
-          <details className="api-provider-panel">
-            <summary>{t.apiProvider}</summary>
-            <p>{t.apiResponsesHint}</p>
-            <div className="api-provider-form">
-              <label>
-                {t.apiModel}
-                <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" />
-              </label>
-              <label>
-                {t.apiKey}
-                <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
-              </label>
-              <label>
-                {t.importAlias}
-                <input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="可空，默认使用模型名" />
-              </label>
-              <details className="api-advanced-settings">
-                <summary>高级设置（可选）</summary>
-                <div className="api-advanced-grid">
-                  <label>
-                    {t.providerId}
-                    <input
-                      value={apiProviderId}
-                      onChange={(event) => setApiProviderId(event.target.value)}
-                      placeholder="自动生成"
-                    />
-                  </label>
-                  <label>
-                    {t.apiBaseUrl}
-                    <input
-                      value={apiBaseUrl}
-                      onChange={(event) => setApiBaseUrl(event.target.value)}
-                      placeholder="默认 https://api.openai.com/v1"
-                    />
-                  </label>
-                  <label>
-                    {t.apiProtocol}
-                    <select value={apiWireApi} onChange={(event) => setApiWireApi(event.target.value)}>
-                      <option value="responses">{t.apiProtocolResponses}</option>
-                      <option value="chat_completions">{t.apiProtocolChat}</option>
-                      <option value="anthropic_messages">{t.apiProtocolAnthropic}</option>
-                    </select>
-                  </label>
-                </div>
-              </details>
-              <button
-                className="icon-button primary"
-                onClick={() => void addApiProvider()}
-                disabled={busy || !apiModel.trim() || !apiKey.trim()}
-              >
-                <KeyRound size={16} /> {t.addApiProvider}
-              </button>
-            </div>
-          </details>
-
+          {accountViewMode === "cards" ? (
           <div className="account-card-grid">
-            {filteredProfiles.map((profile) => {
+            {pagedProfiles.map((profile) => {
               const isCurrent = currentGlobalProfileId === profile.id;
               const limits = profile.usage.detectedLimits || [];
               const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
@@ -2053,96 +2200,7 @@ export default function App() {
                   <div className="account-card-foot">
                     <small>{profile.usage.lastProbeAt ? `${t.probe}: ${formatReset(profile.usage.lastProbeAt)}` : t.notProbed}</small>
                     <span className="row-actions">
-                      <button
-                        className="mini-button icon-only"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openEditProfile(profile);
-                        }}
-                        disabled={busy}
-                        title={t.editAccount}
-                        aria-label={t.editAccount}
-                      >
-                        <Pencil size={14} />
-                      </button>
-                      {(profile.usage.availableResetCount || 0) > 0 && (
-                        <button
-                          className="mini-button icon-only"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void consumeUsageReset(profile.id);
-                          }}
-                          disabled={busy}
-                          title={t.useReset}
-                          aria-label={t.useReset}
-                        >
-                          <RotateCcw size={14} />
-                        </button>
-                      )}
-                      {needsReauthorization && (
-                        <button
-                          className="mini-button icon-only"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void reauthorizeProfile(profile);
-                          }}
-                          disabled={busy || oauthStatus === "starting" || oauthStatus === "exchanging"}
-                          title={t.reauthorize}
-                          aria-label={t.reauthorize}
-                        >
-                          <KeyRound size={14} />
-                        </button>
-                      )}
-                  <button
-                    className="mini-button icon-only"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void probeProfile(profile.id);
-                    }}
-                    disabled={busy}
-                    title={t.probeQuota}
-                    aria-label={t.probeQuota}
-                  >
-                    <RefreshCcw size={14} />
-                  </button>
-                  <button
-                    className="mini-button primary icon-only"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void switchProfile(profile.id);
-                    }}
-                    disabled={busy}
-                    title={t.switch}
-                    aria-label={t.switch}
-                  >
-                    <Zap size={14} />
-                  </button>
-                  {store?.settings.routing.appliedToCodex && (
-                    <button
-                      className="mini-button icon-only"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void fixProfileToRouting(profile.id);
-                      }}
-                      disabled={busy}
-                      title="固定到路由"
-                      aria-label="固定到路由"
-                    >
-                      <Network size={14} />
-                    </button>
-                  )}
-                  <button
-                    className="mini-button danger icon-only"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void deleteProfile(profile.id);
-                    }}
-                    disabled={busy}
-                    title={t.deleteAccount}
-                    aria-label={t.deleteAccount}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                      {renderProfileActions(profile, needsReauthorization)}
                     </span>
                   </div>
                 </article>
@@ -2152,6 +2210,89 @@ export default function App() {
               <div className="account-empty">{t.noMatchedAccounts}</div>
             )}
           </div>
+          ) : (
+          <div className="account-table account-row-table">
+            <div className="account-row header">
+              <span>{t.account}</span>
+              <span>{t.loginValidity}</span>
+              <span>{t.state}</span>
+              <span>{t.token}</span>
+              <span>{t.quota}</span>
+              <span>{t.probe}</span>
+              <span>{t.actions}</span>
+            </div>
+            {pagedProfiles.map((profile) => {
+              const isCurrent = currentGlobalProfileId === profile.id;
+              const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
+              const needsReauthorization = profileNeedsReauthorization(profile);
+              return (
+                <article
+                  className={`account-row ${selectedId === profile.id ? "selected" : ""} ${isCurrent ? "current" : ""}`}
+                  key={profile.id}
+                  onClick={() => setSelectedId(profile.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedId(profile.id);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <span>
+                    <strong>
+                      {profile.alias}
+                      {isCurrent && <em className="current-badge">{t.currentUsing}</em>}
+                    </strong>
+                    <small>{accountText}</small>
+                  </span>
+                  <span className={isAccountExpired(profile, t) ? "expired-cell" : ""}>
+                    {profile.apiConfig ? profile.apiConfig.model : formatSubscriptionValidity(profile, t)}
+                  </span>
+                  <span><StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} /></span>
+                  <span>{tokenState(profile, t)}</span>
+                  <span className="quota-cell">{quotaSummary(profile, t)}</span>
+                  <span>{profile.usage.lastProbeAt ? formatReset(profile.usage.lastProbeAt) : t.notProbed}</span>
+                  <span className="row-actions">{renderProfileActions(profile, needsReauthorization)}</span>
+                </article>
+              );
+            })}
+            {filteredProfiles.length === 0 && (
+              <div className="account-empty">{t.noMatchedAccounts}</div>
+            )}
+          </div>
+          )}
+
+          {filteredProfiles.length > 0 && (
+            <div className="account-pagination">
+              <span>
+                {t.pageSummary
+                  .replace("{page}", String(accountPage))
+                  .replace("{pages}", String(totalAccountPages))
+                  .replace("{count}", String(filteredProfiles.length))}
+              </span>
+              <div className="row-actions">
+                <button
+                  className="mini-button"
+                  onClick={() => setAccountPage((page) => Math.max(1, page - 1))}
+                  disabled={accountPage <= 1}
+                  title={t.previousPage}
+                  aria-label={t.previousPage}
+                >
+                  {t.previousPage}
+                </button>
+                <button
+                  className="mini-button"
+                  onClick={() => setAccountPage((page) => Math.min(totalAccountPages, page + 1))}
+                  disabled={accountPage >= totalAccountPages}
+                  title={t.nextPage}
+                  aria-label={t.nextPage}
+                >
+                  {t.nextPage}
+                </button>
+              </div>
+            </div>
+          )}
 
         </div>
       </section>

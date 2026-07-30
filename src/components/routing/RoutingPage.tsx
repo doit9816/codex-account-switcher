@@ -113,7 +113,6 @@ export function RoutingPage({
   );
   const codexCheck = status?.codexCheck;
   const takeoverConfigured = !!codexCheck
-    && codexCheck.selectedProvider === "codex-switcher-router"
     && codexCheck.providerPresent
     && codexCheck.baseUrlMatches
     && codexCheck.tokenPresent
@@ -379,7 +378,7 @@ export function RoutingPage({
                   <p>{codexCheck.diagnostics[0] || "等待刷新状态"}</p>
                 </div>
                 <div className="routing-check-flags">
-                  <StatusPill ok={codexCheck.selectedProvider === "codex-switcher-router"} text="Provider" />
+                  <StatusPill ok={codexCheck.providerPresent} text="Provider" />
                   <StatusPill ok={codexCheck.baseUrlMatches} text="Base URL" />
                   <StatusPill ok={codexCheck.tokenPresent} text="Key" />
                   <StatusPill ok={codexCheck.authModeMatches} text="认证" />

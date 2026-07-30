@@ -1,7 +1,10 @@
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::io::Read;
 use url::Url;
 use uuid::Uuid;
+
+use crate::routing_sse::{encode_sse_event, SseEvent, SseTransformer, TransformingSseReader};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WireProtocol {
@@ -68,7 +71,7 @@ pub(crate) fn prepare_api_request(
     body["model"] = Value::String(model.to_string());
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let body = match protocol {
-        WireProtocol::Responses => body,
+        WireProtocol::Responses => sanitize_responses_request(body),
         WireProtocol::ChatCompletions => responses_request_to_chat(body)?,
         WireProtocol::AnthropicMessages => {
             crate::routing_anthropic::responses_request_to_anthropic(body)?
@@ -111,6 +114,693 @@ pub(crate) fn transform_chat_response(
     }
 }
 
+pub(crate) fn chat_sse_reader(reader: Box<dyn Read + Send>) -> Box<dyn Read + Send> {
+    Box::new(TransformingSseReader::new(
+        reader,
+        ChatStreamingTransformer::default(),
+    ))
+}
+
+#[derive(Debug)]
+struct ChatTextStreamItem {
+    output_index: usize,
+    id: String,
+    text: String,
+    started: bool,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct ChatReasoningStreamItem {
+    output_index: usize,
+    id: String,
+    text: String,
+    started: bool,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct ChatToolStreamItem {
+    output_index: usize,
+    id: String,
+    call_id: String,
+    name: String,
+    arguments: String,
+    started: bool,
+    closed: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct ChatStreamingTransformer {
+    response_id: String,
+    model: String,
+    created_at: i64,
+    sequence: u64,
+    next_output_index: usize,
+    created_sent: bool,
+    terminal_sent: bool,
+    message: Option<ChatTextStreamItem>,
+    reasoning: Option<ChatReasoningStreamItem>,
+    tools: BTreeMap<u64, ChatToolStreamItem>,
+    usage: Option<Value>,
+    finish_reason: Option<String>,
+}
+
+impl Default for ChatStreamingTransformer {
+    fn default() -> Self {
+        Self {
+            response_id: format!("resp_{}", Uuid::new_v4().simple()),
+            model: String::new(),
+            created_at: chrono::Utc::now().timestamp(),
+            sequence: 0,
+            next_output_index: 0,
+            created_sent: false,
+            terminal_sent: false,
+            message: None,
+            reasoning: None,
+            tools: BTreeMap::new(),
+            usage: None,
+            finish_reason: None,
+        }
+    }
+}
+
+impl ChatStreamingTransformer {
+    fn push_event(
+        &mut self,
+        output: &mut Vec<u8>,
+        event: &str,
+        mut value: Value,
+    ) -> Result<(), String> {
+        value["sequence_number"] = Value::from(self.sequence);
+        self.sequence = self.sequence.saturating_add(1);
+        output.extend_from_slice(&encode_sse_event(event, value)?);
+        Ok(())
+    }
+
+    fn response_value(
+        &self,
+        status: &str,
+        output: Vec<(usize, Value)>,
+        error: Value,
+        incomplete_details: Value,
+    ) -> Value {
+        let mut output = output;
+        output.sort_by_key(|(index, _)| *index);
+        json!({
+            "id": self.response_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": status,
+            "model": self.model,
+            "output": output.into_iter().map(|(_, item)| item).collect::<Vec<_>>(),
+            "usage": chat_usage_to_responses(self.usage.as_ref()),
+            "error": error,
+            "incomplete_details": incomplete_details
+        })
+    }
+
+    fn ensure_created(&mut self, output: &mut Vec<u8>) -> Result<(), String> {
+        if self.created_sent {
+            return Ok(());
+        }
+        self.created_sent = true;
+        let response = self.response_value("in_progress", Vec::new(), Value::Null, Value::Null);
+        self.push_event(
+            output,
+            "response.created",
+            json!({"type": "response.created", "response": response}),
+        )
+    }
+
+    fn append_text(&mut self, output: &mut Vec<u8>, delta: &str) -> Result<(), String> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+        self.ensure_created(output)?;
+        if self.message.is_none() {
+            let item = ChatTextStreamItem {
+                output_index: self.next_output_index,
+                id: format!("msg_{}", Uuid::new_v4().simple()),
+                text: String::new(),
+                started: false,
+                closed: false,
+            };
+            self.next_output_index += 1;
+            self.message = Some(item);
+        }
+        let (output_index, item_id, needs_start) = {
+            let item = self.message.as_mut().expect("message initialized");
+            item.text.push_str(delta);
+            let needs_start = !item.started;
+            item.started = true;
+            (item.output_index, item.id.clone(), needs_start)
+        };
+        if needs_start {
+            self.push_event(
+                output,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {
+                        "id": item_id,
+                        "type": "message",
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": []
+                    }
+                }),
+            )?;
+            self.push_event(
+                output,
+                "response.content_part.added",
+                json!({
+                    "type": "response.content_part.added",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "annotations": [], "text": ""}
+                }),
+            )?;
+        }
+        self.push_event(
+            output,
+            "response.output_text.delta",
+            json!({
+                "type": "response.output_text.delta",
+                "item_id": item_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "delta": delta
+            }),
+        )
+    }
+
+    fn append_reasoning(&mut self, output: &mut Vec<u8>, delta: &str) -> Result<(), String> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+        self.ensure_created(output)?;
+        if self.reasoning.is_none() {
+            let item = ChatReasoningStreamItem {
+                output_index: self.next_output_index,
+                id: format!("rs_{}", Uuid::new_v4().simple()),
+                text: String::new(),
+                started: false,
+                closed: false,
+            };
+            self.next_output_index += 1;
+            self.reasoning = Some(item);
+        }
+        let (output_index, item_id, needs_start) = {
+            let item = self.reasoning.as_mut().expect("reasoning initialized");
+            item.text.push_str(delta);
+            let needs_start = !item.started;
+            item.started = true;
+            (item.output_index, item.id.clone(), needs_start)
+        };
+        if needs_start {
+            self.push_event(
+                output,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {
+                        "id": item_id,
+                        "type": "reasoning",
+                        "summary": []
+                    }
+                }),
+            )?;
+            self.push_event(
+                output,
+                "response.reasoning_summary_part.added",
+                json!({
+                    "type": "response.reasoning_summary_part.added",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "summary_index": 0,
+                    "part": {"type": "summary_text", "text": ""}
+                }),
+            )?;
+        }
+        self.push_event(
+            output,
+            "response.reasoning_summary_text.delta",
+            json!({
+                "type": "response.reasoning_summary_text.delta",
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "delta": delta
+            }),
+        )
+    }
+
+    fn append_tool_delta(&mut self, output: &mut Vec<u8>, call: &Value) -> Result<(), String> {
+        let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+        if !self.tools.contains_key(&index) {
+            let output_index = self.next_output_index;
+            self.next_output_index += 1;
+            self.tools.insert(
+                index,
+                ChatToolStreamItem {
+                    output_index,
+                    id: format!("fc_{}", Uuid::new_v4().simple()),
+                    call_id: format!("call_{}", Uuid::new_v4().simple()),
+                    name: String::new(),
+                    arguments: String::new(),
+                    started: false,
+                    closed: false,
+                },
+            );
+        }
+        let id = call.get("id").and_then(Value::as_str);
+        let name = call.pointer("/function/name").and_then(Value::as_str);
+        let argument_delta = call
+            .pointer("/function/arguments")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let (output_index, item_id, call_id, tool_name, needs_start, emitted_delta) = {
+            let item = self.tools.get_mut(&index).expect("tool initialized");
+            if let Some(id) = id.filter(|value| !value.is_empty()) {
+                item.call_id = id.to_string();
+            }
+            if let Some(name) = name.filter(|value| !value.is_empty()) {
+                item.name = name.to_string();
+            }
+            item.arguments.push_str(argument_delta);
+            let needs_start = !item.started && !item.name.is_empty();
+            let emitted_delta = if item.started {
+                argument_delta.to_string()
+            } else if needs_start {
+                item.arguments.clone()
+            } else {
+                String::new()
+            };
+            if needs_start {
+                item.started = true;
+            }
+            (
+                item.output_index,
+                item.id.clone(),
+                item.call_id.clone(),
+                item.name.clone(),
+                needs_start,
+                emitted_delta,
+            )
+        };
+        if needs_start {
+            self.ensure_created(output)?;
+            self.push_event(
+                output,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {
+                        "id": item_id,
+                        "type": "function_call",
+                        "status": "in_progress",
+                        "call_id": call_id,
+                        "name": tool_name,
+                        "arguments": ""
+                    }
+                }),
+            )?;
+        }
+        if !emitted_delta.is_empty() {
+            self.push_event(
+                output,
+                "response.function_call_arguments.delta",
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "delta": emitted_delta
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn close_text(&mut self, output: &mut Vec<u8>) -> Result<(), String> {
+        let Some((output_index, item_id, text)) = self.message.as_mut().and_then(|item| {
+            if !item.started || item.closed {
+                return None;
+            }
+            item.closed = true;
+            Some((item.output_index, item.id.clone(), item.text.clone()))
+        }) else {
+            return Ok(());
+        };
+        let part = json!({"type": "output_text", "annotations": [], "text": text});
+        self.push_event(
+            output,
+            "response.output_text.done",
+            json!({
+                "type": "response.output_text.done",
+                "item_id": item_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "text": text
+            }),
+        )?;
+        self.push_event(
+            output,
+            "response.content_part.done",
+            json!({
+                "type": "response.content_part.done",
+                "item_id": item_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "part": part
+            }),
+        )?;
+        self.push_event(
+            output,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": self.message_value()
+            }),
+        )
+    }
+
+    fn close_reasoning(&mut self, output: &mut Vec<u8>) -> Result<(), String> {
+        let Some((output_index, item_id, text)) = self.reasoning.as_mut().and_then(|item| {
+            if !item.started || item.closed {
+                return None;
+            }
+            item.closed = true;
+            Some((item.output_index, item.id.clone(), item.text.clone()))
+        }) else {
+            return Ok(());
+        };
+        let part = json!({"type": "summary_text", "text": text});
+        self.push_event(
+            output,
+            "response.reasoning_summary_text.done",
+            json!({
+                "type": "response.reasoning_summary_text.done",
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "text": text
+            }),
+        )?;
+        self.push_event(
+            output,
+            "response.reasoning_summary_part.done",
+            json!({
+                "type": "response.reasoning_summary_part.done",
+                "item_id": item_id,
+                "output_index": output_index,
+                "summary_index": 0,
+                "part": part
+            }),
+        )?;
+        self.push_event(
+            output,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": self.reasoning_value()
+            }),
+        )
+    }
+
+    fn close_tools(&mut self, output: &mut Vec<u8>) -> Result<(), String> {
+        let indexes = self.tools.keys().copied().collect::<Vec<_>>();
+        for index in indexes {
+            let needs_start = self.tools.get(&index).is_some_and(|item| !item.started);
+            if needs_start {
+                let (output_index, item_id, call_id, name, arguments) = {
+                    let item = self.tools.get_mut(&index).expect("tool exists");
+                    item.started = true;
+                    if item.name.is_empty() {
+                        item.name = "unknown".to_string();
+                    }
+                    (
+                        item.output_index,
+                        item.id.clone(),
+                        item.call_id.clone(),
+                        item.name.clone(),
+                        item.arguments.clone(),
+                    )
+                };
+                self.ensure_created(output)?;
+                self.push_event(
+                    output,
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": {
+                            "id": item_id,
+                            "type": "function_call",
+                            "status": "in_progress",
+                            "call_id": call_id,
+                            "name": name,
+                            "arguments": ""
+                        }
+                    }),
+                )?;
+                if !arguments.is_empty() {
+                    self.push_event(
+                        output,
+                        "response.function_call_arguments.delta",
+                        json!({
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": item_id,
+                            "output_index": output_index,
+                            "delta": arguments
+                        }),
+                    )?;
+                }
+            }
+            let Some((output_index, item_id, arguments)) =
+                self.tools.get_mut(&index).and_then(|item| {
+                    if item.closed {
+                        return None;
+                    }
+                    item.closed = true;
+                    Some((item.output_index, item.id.clone(), item.arguments.clone()))
+                })
+            else {
+                continue;
+            };
+            self.push_event(
+                output,
+                "response.function_call_arguments.done",
+                json!({
+                    "type": "response.function_call_arguments.done",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "arguments": arguments
+                }),
+            )?;
+            let item = self.tool_value(index);
+            self.push_event(
+                output,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": item
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn message_value(&self) -> Value {
+        let item = self.message.as_ref().expect("message exists");
+        json!({
+            "id": item.id,
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "annotations": [],
+                "text": item.text
+            }]
+        })
+    }
+
+    fn reasoning_value(&self) -> Value {
+        let item = self.reasoning.as_ref().expect("reasoning exists");
+        json!({
+            "id": item.id,
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": item.text}]
+        })
+    }
+
+    fn tool_value(&self, index: u64) -> Value {
+        let item = self.tools.get(&index).expect("tool exists");
+        json!({
+            "id": item.id,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": item.call_id,
+            "name": item.name,
+            "arguments": item.arguments
+        })
+    }
+
+    fn collected_output(&self) -> Vec<(usize, Value)> {
+        let mut output = Vec::new();
+        if let Some(item) = self.reasoning.as_ref().filter(|item| item.started) {
+            output.push((item.output_index, self.reasoning_value()));
+        }
+        if let Some(item) = self.message.as_ref().filter(|item| item.started) {
+            output.push((item.output_index, self.message_value()));
+        }
+        output.extend(
+            self.tools
+                .iter()
+                .filter(|(_, item)| item.started)
+                .map(|(index, item)| (item.output_index, self.tool_value(*index))),
+        );
+        output
+    }
+
+    fn finish_response(&mut self) -> Result<Vec<u8>, String> {
+        if self.terminal_sent {
+            return Ok(Vec::new());
+        }
+        let mut output = Vec::new();
+        self.ensure_created(&mut output)?;
+        self.close_reasoning(&mut output)?;
+        self.close_text(&mut output)?;
+        self.close_tools(&mut output)?;
+        let incomplete_reason = match self.finish_reason.as_deref() {
+            Some("length") => Some("max_output_tokens"),
+            Some("content_filter") => Some("content_filter"),
+            _ => None,
+        };
+        let status = if incomplete_reason.is_some() {
+            "incomplete"
+        } else {
+            "completed"
+        };
+        let terminal = if status == "completed" {
+            "response.completed"
+        } else {
+            "response.incomplete"
+        };
+        let response = self.response_value(
+            status,
+            self.collected_output(),
+            Value::Null,
+            incomplete_reason
+                .map(|reason| json!({"reason": reason}))
+                .unwrap_or(Value::Null),
+        );
+        self.push_event(
+            &mut output,
+            terminal,
+            json!({"type": terminal, "response": response}),
+        )?;
+        self.terminal_sent = true;
+        Ok(output)
+    }
+
+    fn fail_response(&mut self, message: &str) -> Result<Vec<u8>, String> {
+        if self.terminal_sent {
+            return Ok(Vec::new());
+        }
+        let mut output = Vec::new();
+        self.ensure_created(&mut output)?;
+        let error = json!({"message": message, "type": "upstream_error"});
+        let response = self.response_value(
+            "failed",
+            self.collected_output(),
+            error.clone(),
+            Value::Null,
+        );
+        self.push_event(
+            &mut output,
+            "response.failed",
+            json!({"type": "response.failed", "response": response, "error": error}),
+        )?;
+        self.terminal_sent = true;
+        Ok(output)
+    }
+}
+
+impl SseTransformer for ChatStreamingTransformer {
+    fn transform(&mut self, event: SseEvent) -> Result<Vec<u8>, String> {
+        if self.terminal_sent || event.data.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        if event.data.trim() == "[DONE]" {
+            return self.finish_response();
+        }
+        let value: Value = serde_json::from_str(&event.data).map_err(crate::display_err)?;
+        if let Some(message) = value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                (event.event.as_deref() == Some("error"))
+                    .then(|| value.get("message").and_then(Value::as_str))
+                    .flatten()
+            })
+        {
+            return self.fail_response(message);
+        }
+        if let Some(model) = value
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            self.model = model.to_string();
+        }
+        if let Some(created) = value.get("created").and_then(Value::as_i64) {
+            self.created_at = created;
+        }
+        if value.get("usage").is_some() {
+            self.usage = value.get("usage").cloned();
+        }
+        let mut output = Vec::new();
+        let Some(choice) = value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            return Ok(output);
+        };
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            self.finish_reason = Some(finish_reason.to_string());
+        }
+        let Some(delta) = choice.get("delta") else {
+            return Ok(output);
+        };
+        if let Some(reasoning) = reasoning_text(delta) {
+            self.append_reasoning(&mut output, &reasoning)?;
+        }
+        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+            self.append_text(&mut output, content)?;
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                self.append_tool_delta(&mut output, call)?;
+            }
+        }
+        Ok(output)
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, String> {
+        self.finish_response()
+    }
+}
+
 fn endpoint_url(base_url: &str, protocol: WireProtocol) -> Result<String, String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     let parsed = Url::parse(trimmed).map_err(|_| "API Base URL 格式不正确".to_string())?;
@@ -129,6 +819,13 @@ fn endpoint_url(base_url: &str, protocol: WireProtocol) -> Result<String, String
     } else {
         Ok(format!("{trimmed}/{endpoint}"))
     }
+}
+
+fn sanitize_responses_request(mut body: Value) -> Value {
+    if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
+        reasoning.remove("context");
+    }
+    body
 }
 
 fn responses_request_to_chat(body: Value) -> Result<Value, String> {
@@ -896,6 +1593,31 @@ fn push_sse_event(output: &mut Vec<u8>, event: &str, value: Value) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::io::{Read, Result as IoResult};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct ChunkedReader {
+        chunks: VecDeque<Vec<u8>>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> IoResult<usize> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let Some(mut chunk) = self.chunks.pop_front() else {
+                return Ok(0);
+            };
+            let count = chunk.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&chunk[..count]);
+            if count < chunk.len() {
+                chunk.drain(..count);
+                self.chunks.push_front(chunk);
+            }
+            Ok(count)
+        }
+    }
 
     #[test]
     fn normalizes_supported_wire_protocols() {
@@ -936,6 +1658,28 @@ mod tests {
             endpoint_url("https://api.anthropic.com", WireProtocol::AnthropicMessages).unwrap(),
             "https://api.anthropic.com/v1/messages"
         );
+    }
+
+    #[test]
+    fn responses_provider_strips_reasoning_context() {
+        let prepared = prepare_api_request(
+            "https://api.example.com/v1",
+            "LongCat-2.0",
+            "responses",
+            json!({
+                "model": "gpt-5",
+                "input": "hello",
+                "reasoning": {
+                    "effort": "high",
+                    "context": "encrypted-local-context"
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body["reasoning"].get("context").is_none());
     }
 
     #[test]
@@ -1028,5 +1772,52 @@ mod tests {
         assert_eq!(response["output"][0]["type"], "reasoning");
         assert_eq!(response["output"][0]["summary"][0]["text"], "think");
         assert_eq!(response["output"][1]["content"][0]["text"], "done");
+    }
+
+    #[test]
+    fn streams_chat_events_before_upstream_eof() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let upstream = ChunkedReader {
+            chunks: VecDeque::from([
+                b"data: {\"id\":\"chatcmpl_1\",\"created\":123,\"model\":\"glm-5\",\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n".to_vec(),
+                b"data: {\"id\":\"chatcmpl_1\",\"model\":\"glm-5\",\"choices\":[{\"delta\":{\"content\":\"llo\"},\"finish_reason\":\"stop\"}]}\n\n".to_vec(),
+                b"data: [DONE]\n\n".to_vec(),
+            ]),
+            reads: reads.clone(),
+        };
+        let mut reader = chat_sse_reader(Box::new(upstream));
+        let mut first = vec![0_u8; 8192];
+        let first_read = reader.read(&mut first).unwrap();
+        let first = String::from_utf8(first[..first_read].to_vec()).unwrap();
+
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert!(first.contains("event: response.created"));
+        assert!(first.contains("\"delta\":\"he\""));
+
+        let mut remaining = String::new();
+        reader.read_to_string(&mut remaining).unwrap();
+        assert!(remaining.contains("\"delta\":\"llo\""));
+        assert!(remaining.contains("event: response.completed"));
+    }
+
+    #[test]
+    fn streams_chat_reasoning_tools_and_usage() {
+        let body = concat!(
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"kimi-k2.5\",\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"check\"}]}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"kimi-k2.5\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"clock\",\"arguments\":\"{\\\"zone\\\":\"}}]}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"kimi-k2.5\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"UTC\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut reader = chat_sse_reader(Box::new(std::io::Cursor::new(body.as_bytes().to_vec())));
+        let mut output = String::new();
+        reader.read_to_string(&mut output).unwrap();
+
+        assert!(output.contains("event: response.reasoning_summary_text.delta"));
+        assert!(output.contains("\"delta\":\"check\""));
+        assert!(output.contains("event: response.function_call_arguments.delta"));
+        assert!(output.contains("\"name\":\"clock\""));
+        assert!(output.contains(r#"\"zone\":\"UTC\""#));
+        assert!(output.contains("\"input_tokens\":3"));
+        assert!(output.contains("event: response.completed"));
     }
 }

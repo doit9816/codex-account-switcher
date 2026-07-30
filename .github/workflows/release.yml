@@ -113,18 +113,17 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
-            ## 0.1.30 更新内容
+            ## 0.1.31 更新内容
 
             ### 新增
-            - 路由 API 新增 Anthropic Messages 协议转换，覆盖工具调用、图片、推理和流式响应。
-            - Chat Completions 增加 `reasoning_details` 与历史推理兼容。
-            - 路由接管、恢复配置、固定账号、会话粘性和 Key 操作增加悬浮说明。
+            - 首页账号列表增加卡片/行视图切换、过期筛选、登录状态筛选和分页。
 
             ### 优化与修复
-            - API Provider 可选择 Responses、Chat Completions 或 Anthropic Messages。
-            - 移除 OAuth 账号路由风险确认和后端启动限制。
-            - 优化账号编辑弹窗样式和窄窗口显示。
-            - 修复重新 OAuth 授权成功后仍显示需要登录的问题。
+            - 首页账号默认排序改为有效可用账号优先，未过期账号靠前。
+            - 首页移除重复的 API Provider 面板，统一从“添加账号”入口添加 API Key 账号。
+            - 路由自动会话粘性不再使用每次请求变化的 `x-client-request-id`。
+            - 修复一键接管尝试覆盖内置 `openai` provider 导致 Codex 无法加载 `config.toml` 的问题。
+            - 修复 LongCat 等严格 Responses API 上游因不支持 `reasoning.context` 返回 HTTP 400 的问题。
 
             请从下方 Assets 下载对应平台的安装包。
 

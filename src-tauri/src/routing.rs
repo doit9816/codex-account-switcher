@@ -1,5 +1,7 @@
-use crate::routing_anthropic::transform_anthropic_response;
-use crate::routing_protocol::{prepare_api_request, transform_chat_response, WireProtocol};
+use crate::routing_anthropic::{anthropic_sse_reader, transform_anthropic_response};
+use crate::routing_protocol::{
+    chat_sse_reader, prepare_api_request, transform_chat_response, WireProtocol,
+};
 use crate::{
     app_data_dir, build_probe_client, decrypt_secret, default_routing_log_retention_days,
     display_err, encrypt_secret, load_master_key, load_store, mutate_store, now_string, parse_time,
@@ -38,6 +40,9 @@ const MAX_ERROR_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 500;
 const MAX_SSE_LINE_BYTES: usize = 64 * 1024;
 const TEMP_NETWORK_COOLDOWN_SECS: i64 = 60;
+const DEFAULT_ROUTING_KEY: &str = "codex-switcher-default-session";
+const ROUTER_PROVIDER_MARKER: &str = "codex_switcher_router";
+const RESERVED_PROVIDER_IDS: [&str; 3] = ["openai", "ollama", "lmstudio"];
 
 static ROUTER: OnceLock<Mutex<Option<RouterHandle>>> = OnceLock::new();
 static STICKY: OnceLock<Mutex<HashMap<String, StickyBinding>>> = OnceLock::new();
@@ -464,10 +469,30 @@ fn validate_fixed_profile(
 }
 
 fn config_selects_router(document: &toml_edit::DocumentMut) -> bool {
+    selected_provider_id(document).is_some_and(|provider_id| {
+        provider_id == ROUTER_PROVIDER_ID
+            || selected_provider(document).is_some_and(provider_marked_router)
+    })
+}
+
+fn selected_provider_id(document: &toml_edit::DocumentMut) -> Option<&str> {
     document
         .get("model_provider")
         .and_then(|item| item.as_str())
-        == Some(ROUTER_PROVIDER_ID)
+}
+
+fn selected_provider<'a>(document: &'a toml_edit::DocumentMut) -> Option<&'a toml_edit::Item> {
+    let provider_id = selected_provider_id(document)?;
+    document
+        .get("model_providers")
+        .and_then(|providers| providers.get(provider_id))
+}
+
+fn provider_marked_router(provider: &toml_edit::Item) -> bool {
+    provider
+        .get(ROUTER_PROVIDER_MARKER)
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false)
 }
 
 fn refresh_router_backup(
@@ -490,11 +515,34 @@ fn router_token_from_config(document: &toml_edit::DocumentMut) -> Option<&str> {
     if !config_selects_router(document) {
         return None;
     }
-    document
-        .get("model_providers")
-        .and_then(|providers| providers.get(ROUTER_PROVIDER_ID))
+    selected_provider(document)
         .and_then(|provider| provider.get("experimental_bearer_token"))
         .and_then(|token| token.as_str())
+}
+
+fn selected_provider_id_from_file(path: &std::path::Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()?
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|document| selected_provider_id(&document).map(ToString::to_string))
+}
+
+fn custom_takeover_provider_id(
+    current_provider_id: Option<&str>,
+    backup_provider_id: Option<&str>,
+) -> String {
+    let candidate = if current_provider_id == Some(ROUTER_PROVIDER_ID) {
+        backup_provider_id
+    } else {
+        current_provider_id
+    };
+    candidate
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| !RESERVED_PROVIDER_IDS.contains(id))
+        .unwrap_or(ROUTER_PROVIDER_ID)
+        .to_string()
 }
 
 fn auth_selects_router(contents: &str, access_key: &str) -> bool {
@@ -576,15 +624,24 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
         &auth_backup_path,
         current_router_token.as_deref(),
     )?;
-    document["model_provider"] = toml_edit::value(ROUTER_PROVIDER_ID);
+    let current_provider_id = selected_provider_id(&document)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string);
+    let backup_provider_id = (current_provider_id.as_deref() == Some(ROUTER_PROVIDER_ID))
+        .then(|| selected_provider_id_from_file(&backup_path))
+        .flatten();
+    let provider_id = custom_takeover_provider_id(
+        current_provider_id.as_deref(),
+        backup_provider_id.as_deref(),
+    );
+    document["model_provider"] = toml_edit::value(&provider_id);
     if !document.as_table().contains_key("model_providers")
         || !document["model_providers"].is_table()
     {
         document["model_providers"] = toml_edit::table();
     }
-    document["model_providers"][ROUTER_PROVIDER_ID] =
-        toml_edit::Item::Table(toml_edit::Table::new());
-    let provider = document["model_providers"][ROUTER_PROVIDER_ID]
+    document["model_providers"][&provider_id] = toml_edit::Item::Table(toml_edit::Table::new());
+    let provider = document["model_providers"][&provider_id]
         .as_table_mut()
         .ok_or_else(|| "无法写入 Codex 路由 provider 配置".to_string())?;
     provider["name"] = toml_edit::value("CodexSwitcher Router");
@@ -599,6 +656,7 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
     provider["request_max_retries"] = toml_edit::value(0);
     provider["stream_max_retries"] = toml_edit::value(0);
     provider["supports_websockets"] = toml_edit::value(false);
+    provider[ROUTER_PROVIDER_MARKER] = toml_edit::value(true);
     let auth_json = router_auth_json(&access_key)?;
     replace_file_with_rollback(&auth_path, &auth_json, Some(&auth_backup_path))?;
     if let Err(error) = replace_file_with_rollback(
@@ -659,32 +717,41 @@ fn codex_config_check(
                     .get("model_provider")
                     .and_then(|item| item.as_str())
                     .map(ToString::to_string);
+                let Some(provider_id) = check.selected_provider.clone() else {
+                    check
+                        .diagnostics
+                        .push("当前未设置 model_provider".to_string());
+                    check.health_ok = probe_router_health(&expected_base_url);
+                    return check;
+                };
                 let Some(provider) = document
                     .get("model_providers")
-                    .and_then(|providers| providers.get(ROUTER_PROVIDER_ID))
+                    .and_then(|providers| providers.get(&provider_id))
                 else {
                     check
                         .diagnostics
-                        .push("未找到 codex-switcher-router provider".to_string());
+                        .push(format!("未找到当前 provider {provider_id} 的路由配置"));
                     check.health_ok = probe_router_health(&expected_base_url);
                     return check;
                 };
 
-                check.provider_present = true;
                 let base_url = provider
                     .get("base_url")
                     .and_then(|item| item.as_str())
                     .unwrap_or_default();
                 check.base_url_matches = base_url == expected_base_url;
+                check.provider_present = provider_id == ROUTER_PROVIDER_ID
+                    || provider_marked_router(provider)
+                    || check.base_url_matches;
                 check.token_present = provider
                     .get("experimental_bearer_token")
                     .and_then(|item| item.as_str())
                     .is_some_and(|token| !token.trim().is_empty());
 
-                if check.selected_provider.as_deref() != Some(ROUTER_PROVIDER_ID) {
+                if !check.provider_present {
                     check
                         .diagnostics
-                        .push("当前 model_provider 未指向路由 provider".to_string());
+                        .push("当前 model_provider 未指向路由配置".to_string());
                 }
                 if !check.base_url_matches {
                     check
@@ -864,7 +931,7 @@ fn proxy_responses(
     }
     let body = read_body(request)?;
     let decoded = decode_body(&body, header_value(&headers, "content-encoding").as_deref())?;
-    let routing_key = routing_key(&headers);
+    let routing_key = routing_key(&headers, &decoded);
     let request_id = header_value(&headers, "x-client-request-id")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("route_{}", uuid::Uuid::new_v4().simple()));
@@ -1131,38 +1198,60 @@ fn build_stream_response(
         prepared.protocol,
         WireProtocol::ChatCompletions | WireProtocol::AnthropicMessages
     ) {
-        let mut body = Vec::new();
-        (&mut upstream)
-            .take(MAX_TRANSFORM_RESPONSE_BYTES as u64 + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| RouterError::new(502, format!("读取上游响应失败: {error}")))?;
-        if body.len() > MAX_TRANSFORM_RESPONSE_BYTES {
-            return Err(RouterError::new(502, "上游响应过大，无法转换协议"));
-        }
-        let transformed = match prepared.protocol {
-            WireProtocol::ChatCompletions => {
-                transform_chat_response(&body, upstream_content_type.as_deref(), prepared.streaming)
-                    .map_err(|error| {
-                        RouterError::new(502, format!("Chat Completions 响应转换失败: {error}"))
-                    })?
+        let upstream_is_sse = prepared.streaming
+            && upstream_content_type
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
+        if upstream_is_sse {
+            if let Ok(header) = Header::from_bytes(b"content-type".as_slice(), b"text/event-stream")
+            {
+                headers.push(header);
             }
-            WireProtocol::AnthropicMessages => transform_anthropic_response(
-                &body,
-                upstream_content_type.as_deref(),
-                prepared.streaming,
-            )
-            .map_err(|error| {
-                RouterError::new(502, format!("Anthropic Messages 响应转换失败: {error}"))
-            })?,
-            WireProtocol::Responses => unreachable!("Responses responses are passed through"),
-        };
-        if let Ok(header) = Header::from_bytes(
-            b"content-type".as_slice(),
-            transformed.content_type.as_bytes(),
-        ) {
-            headers.push(header);
+            match prepared.protocol {
+                WireProtocol::ChatCompletions => chat_sse_reader(Box::new(upstream)),
+                WireProtocol::AnthropicMessages => anthropic_sse_reader(Box::new(upstream)),
+                WireProtocol::Responses => {
+                    unreachable!("Responses responses are passed through")
+                }
+            }
+        } else {
+            let mut body = Vec::new();
+            (&mut upstream)
+                .take(MAX_TRANSFORM_RESPONSE_BYTES as u64 + 1)
+                .read_to_end(&mut body)
+                .map_err(|error| RouterError::new(502, format!("读取上游响应失败: {error}")))?;
+            if body.len() > MAX_TRANSFORM_RESPONSE_BYTES {
+                return Err(RouterError::new(502, "上游响应过大，无法转换协议"));
+            }
+            let transformed = match prepared.protocol {
+                WireProtocol::ChatCompletions => transform_chat_response(
+                    &body,
+                    upstream_content_type.as_deref(),
+                    prepared.streaming,
+                )
+                .map_err(|error| {
+                    RouterError::new(502, format!("Chat Completions 响应转换失败: {error}"))
+                })?,
+                WireProtocol::AnthropicMessages => transform_anthropic_response(
+                    &body,
+                    upstream_content_type.as_deref(),
+                    prepared.streaming,
+                )
+                .map_err(|error| {
+                    RouterError::new(502, format!("Anthropic Messages 响应转换失败: {error}"))
+                })?,
+                WireProtocol::Responses => {
+                    unreachable!("Responses responses are passed through")
+                }
+            };
+            if let Ok(header) = Header::from_bytes(
+                b"content-type".as_slice(),
+                transformed.content_type.as_bytes(),
+            ) {
+                headers.push(header);
+            }
+            Box::new(Cursor::new(transformed.body))
         }
-        Box::new(Cursor::new(transformed.body))
     } else {
         if let Some(content_type) = upstream_content_type {
             if let Ok(header) =
@@ -1752,11 +1841,45 @@ fn header_value(headers: &HashMap<String, String>, name: &str) -> Option<String>
     headers.get(&name.to_ascii_lowercase()).cloned()
 }
 
-fn routing_key(headers: &HashMap<String, String>) -> Option<String> {
-    ["thread-id", "session-id", "x-client-request-id"]
-        .iter()
-        .find_map(|name| header_value(headers, name))
-        .filter(|value| !value.trim().is_empty())
+fn routing_key(headers: &HashMap<String, String>, decoded_body: &[u8]) -> Option<String> {
+    [
+        "thread-id",
+        "x-thread-id",
+        "x-codex-thread-id",
+        "session-id",
+        "x-session-id",
+        "x-codex-session-id",
+        "conversation-id",
+        "x-conversation-id",
+    ]
+    .iter()
+    .find_map(|name| header_value(headers, name))
+    .filter(|value| !value.trim().is_empty())
+    .or_else(|| routing_key_from_body(decoded_body))
+    .or_else(|| Some(DEFAULT_ROUTING_KEY.to_string()))
+}
+
+fn routing_key_from_body(decoded_body: &[u8]) -> Option<String> {
+    let body = serde_json::from_slice::<Value>(decoded_body).ok()?;
+    [
+        "/thread_id",
+        "/threadId",
+        "/session_id",
+        "/sessionId",
+        "/conversation_id",
+        "/conversationId",
+        "/metadata/thread_id",
+        "/metadata/threadId",
+        "/metadata/session_id",
+        "/metadata/sessionId",
+        "/metadata/conversation_id",
+        "/metadata/conversationId",
+    ]
+    .iter()
+    .find_map(|path| body.pointer(path).and_then(Value::as_str))
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(ToString::to_string)
 }
 
 fn read_body(request: &mut Request) -> Result<Vec<u8>, RouterError> {
@@ -2132,6 +2255,74 @@ mod tests {
     }
 
     #[test]
+    fn marked_current_provider_counts_as_router_takeover() {
+        let document = r#"
+model_provider = "openai-custom"
+
+[model_providers.openai-custom]
+base_url = "http://127.0.0.1:15722/v1"
+experimental_bearer_token = "local-token"
+codex_switcher_router = true
+"#
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+
+        assert!(config_selects_router(&document));
+        assert_eq!(router_token_from_config(&document), Some("local-token"));
+    }
+
+    #[test]
+    fn refresh_router_backup_preserves_original_while_marked_takeover_is_active() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let backup_path = dir.path().join(ROUTER_BACKUP_FILE);
+        fs::write(&backup_path, "model_provider = \"original\"\n").unwrap();
+        let document = r#"
+model_provider = "openai"
+
+[model_providers.openai]
+codex_switcher_router = true
+"#
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+
+        refresh_router_backup(&config_path, &backup_path, &document).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&backup_path).unwrap(),
+            "model_provider = \"original\"\n"
+        );
+    }
+
+    #[test]
+    fn reads_original_provider_id_from_router_backup() {
+        let dir = tempdir().unwrap();
+        let backup_path = dir.path().join(ROUTER_BACKUP_FILE);
+        fs::write(&backup_path, "model_provider = \"openai\"\n").unwrap();
+
+        assert_eq!(
+            selected_provider_id_from_file(&backup_path).as_deref(),
+            Some("openai")
+        );
+    }
+
+    #[test]
+    fn takeover_provider_id_never_overrides_reserved_builtin() {
+        assert_eq!(
+            custom_takeover_provider_id(Some("openai"), None),
+            ROUTER_PROVIDER_ID
+        );
+        assert_eq!(
+            custom_takeover_provider_id(Some(ROUTER_PROVIDER_ID), Some("openai")),
+            ROUTER_PROVIDER_ID
+        );
+        assert_eq!(
+            custom_takeover_provider_id(Some("openai-custom"), None),
+            "openai-custom"
+        );
+    }
+
+    #[test]
     fn takeover_auth_uses_api_key_mode() {
         let access_key = uuid::Uuid::new_v4().to_string();
         let auth_json = String::from_utf8(router_auth_json(&access_key).unwrap()).unwrap();
@@ -2243,6 +2434,32 @@ mod tests {
         assert!(!preserve_client_header("content-type"));
         assert!(!preserve_client_header("accept"));
         assert!(preserve_client_header("x-client-request-id"));
+    }
+
+    #[test]
+    fn routing_key_ignores_per_request_id() {
+        let mut headers = HashMap::new();
+        headers.insert("x-client-request-id".to_string(), "request-one".to_string());
+        let first = routing_key(&headers, br#"{"input":"hello"}"#);
+        headers.insert("x-client-request-id".to_string(), "request-two".to_string());
+        let second = routing_key(&headers, br#"{"input":"hello"}"#);
+
+        assert_eq!(first.as_deref(), Some(DEFAULT_ROUTING_KEY));
+        assert_eq!(second.as_deref(), Some(DEFAULT_ROUTING_KEY));
+    }
+
+    #[test]
+    fn routing_key_prefers_explicit_session_sources() {
+        let mut headers = HashMap::new();
+        headers.insert("session-id".to_string(), "header-session".to_string());
+        let body = br#"{"metadata":{"thread_id":"body-thread"}}"#;
+        assert_eq!(
+            routing_key(&headers, body).as_deref(),
+            Some("header-session")
+        );
+
+        headers.clear();
+        assert_eq!(routing_key(&headers, body).as_deref(), Some("body-thread"));
     }
 
     #[test]

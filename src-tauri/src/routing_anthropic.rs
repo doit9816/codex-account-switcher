@@ -1,6 +1,8 @@
-use crate::routing_protocol::{response_to_sse, TransformedResponse};
+use crate::routing_protocol::{response_to_sse, ChatStreamingTransformer, TransformedResponse};
+use crate::routing_sse::{SseEvent, SseTransformer, TransformingSseReader};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::io::Read;
 use uuid::Uuid;
 
 const DEFAULT_MAX_TOKENS: u64 = 8192;
@@ -108,6 +110,259 @@ pub(crate) fn transform_anthropic_response(
             body: serde_json::to_vec(&response).map_err(crate::display_err)?,
             content_type: "application/json",
         })
+    }
+}
+
+pub(crate) fn anthropic_sse_reader(reader: Box<dyn Read + Send>) -> Box<dyn Read + Send> {
+    Box::new(TransformingSseReader::new(
+        reader,
+        AnthropicStreamingTransformer::default(),
+    ))
+}
+
+#[derive(Debug, Default)]
+struct AnthropicStreamingTransformer {
+    chat: ChatStreamingTransformer,
+    model: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+    reasoning_tokens: u64,
+    terminal_sent: bool,
+}
+
+impl AnthropicStreamingTransformer {
+    fn chat_event(&mut self, value: Value) -> Result<Vec<u8>, String> {
+        self.chat.transform(SseEvent {
+            event: None,
+            data: serde_json::to_string(&value).map_err(crate::display_err)?,
+        })
+    }
+
+    fn usage_value(&self) -> Value {
+        let input = self
+            .input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens);
+        json!({
+            "prompt_tokens": input,
+            "completion_tokens": self.output_tokens,
+            "total_tokens": input.saturating_add(self.output_tokens),
+            "prompt_tokens_details": {
+                "cached_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": self.reasoning_tokens
+            }
+        })
+    }
+
+    fn update_usage(&mut self, usage: Option<&Value>) {
+        let Some(usage) = usage else {
+            return;
+        };
+        if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
+            self.input_tokens = value;
+        }
+        if let Some(value) = usage.get("output_tokens").and_then(Value::as_u64) {
+            self.output_tokens = value;
+        }
+        if let Some(value) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+            self.cache_read_tokens = value;
+        }
+        if let Some(value) = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.cache_write_tokens = value;
+        }
+        if let Some(value) = usage
+            .pointer("/output_tokens_details/thinking_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.reasoning_tokens = value;
+        }
+    }
+
+    fn model_and_usage_event(&self) -> Value {
+        json!({
+            "model": self.model,
+            "choices": [],
+            "usage": self.usage_value()
+        })
+    }
+
+    fn finish_reason(stop_reason: Option<&str>) -> &'static str {
+        match stop_reason {
+            Some("max_tokens" | "model_context_window_exceeded") => "length",
+            Some("refusal") => "content_filter",
+            Some("tool_use") => "tool_calls",
+            _ => "stop",
+        }
+    }
+}
+
+impl SseTransformer for AnthropicStreamingTransformer {
+    fn transform(&mut self, event: SseEvent) -> Result<Vec<u8>, String> {
+        if self.terminal_sent || event.data.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let value: Value = serde_json::from_str(&event.data).map_err(crate::display_err)?;
+        match value.get("type").and_then(Value::as_str) {
+            Some("message_start") => {
+                if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
+                    self.model = model.to_string();
+                }
+                self.update_usage(value.pointer("/message/usage"));
+                self.chat_event(self.model_and_usage_event())
+            }
+            Some("content_block_start") => {
+                let index = value.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let Some(block) = value.get("content_block") else {
+                    return Ok(Vec::new());
+                };
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                        if text.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            self.chat_event(json!({
+                                "model": self.model,
+                                "choices": [{"delta": {"content": text}}]
+                            }))
+                        }
+                    }
+                    Some("thinking") => {
+                        let thinking = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                        if thinking.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            self.chat_event(json!({
+                                "model": self.model,
+                                "choices": [{"delta": {"reasoning_content": thinking}}]
+                            }))
+                        }
+                    }
+                    Some("tool_use") => {
+                        let id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool_unknown");
+                        let name = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        let arguments = block
+                            .get("input")
+                            .filter(|input| {
+                                input.as_object().is_none_or(|object| !object.is_empty())
+                            })
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(crate::display_err)?
+                            .unwrap_or_default();
+                        self.chat_event(json!({
+                            "model": self.model,
+                            "choices": [{
+                                "delta": {
+                                    "tool_calls": [{
+                                        "index": index,
+                                        "id": id,
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": arguments}
+                                    }]
+                                }
+                            }]
+                        }))
+                    }
+                    _ => Ok(Vec::new()),
+                }
+            }
+            Some("content_block_delta") => {
+                let index = value.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let delta = value.get("delta").cloned().unwrap_or_else(|| json!({}));
+                match delta.get("type").and_then(Value::as_str) {
+                    Some("text_delta") => self.chat_event(json!({
+                        "model": self.model,
+                        "choices": [{
+                            "delta": {
+                                "content": delta.get("text").and_then(Value::as_str).unwrap_or("")
+                            }
+                        }]
+                    })),
+                    Some("thinking_delta") => self.chat_event(json!({
+                        "model": self.model,
+                        "choices": [{
+                            "delta": {
+                                "reasoning_content": delta
+                                    .get("thinking")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                            }
+                        }]
+                    })),
+                    Some("input_json_delta") => self.chat_event(json!({
+                        "model": self.model,
+                        "choices": [{
+                            "delta": {
+                                "tool_calls": [{
+                                    "index": index,
+                                    "function": {
+                                        "arguments": delta
+                                            .get("partial_json")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("")
+                                    }
+                                }]
+                            }
+                        }]
+                    })),
+                    _ => Ok(Vec::new()),
+                }
+            }
+            Some("message_delta") => {
+                self.update_usage(value.get("usage"));
+                let finish_reason = Self::finish_reason(
+                    value.pointer("/delta/stop_reason").and_then(Value::as_str),
+                );
+                self.chat_event(json!({
+                    "model": self.model,
+                    "choices": [{"delta": {}, "finish_reason": finish_reason}],
+                    "usage": self.usage_value()
+                }))
+            }
+            Some("message_stop") => {
+                self.terminal_sent = true;
+                self.chat.transform(SseEvent {
+                    event: None,
+                    data: "[DONE]".to_string(),
+                })
+            }
+            Some("error") => {
+                self.terminal_sent = true;
+                self.chat_event(json!({
+                    "error": {
+                        "message": value
+                            .pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Anthropic 上游返回错误")
+                    }
+                }))
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, String> {
+        if self.terminal_sent {
+            Ok(Vec::new())
+        } else {
+            self.terminal_sent = true;
+            self.chat.finish()
+        }
     }
 }
 
@@ -637,6 +892,31 @@ fn response_id(message_id: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::io::{Read, Result as IoResult};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct ChunkedReader {
+        chunks: VecDeque<Vec<u8>>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> IoResult<usize> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let Some(mut chunk) = self.chunks.pop_front() else {
+                return Ok(0);
+            };
+            let count = chunk.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&chunk[..count]);
+            if count < chunk.len() {
+                chunk.drain(..count);
+                self.chunks.push_front(chunk);
+            }
+            Ok(count)
+        }
+    }
 
     #[test]
     fn converts_responses_request_to_anthropic_messages() {
@@ -687,5 +967,60 @@ mod tests {
         assert!(text.contains("event: response.output_text.delta"));
         assert!(text.contains("\"delta\":\"hello\""));
         assert!(text.contains("event: response.completed"));
+    }
+
+    #[test]
+    fn streams_anthropic_events_before_upstream_eof() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let upstream = ChunkedReader {
+            chunks: VecDeque::from([
+                b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4-5\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n".to_vec(),
+                b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n".to_vec(),
+                b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n".to_vec(),
+                b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n".to_vec(),
+                b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_vec(),
+            ]),
+            reads: reads.clone(),
+        };
+        let mut reader = anthropic_sse_reader(Box::new(upstream));
+        let mut first = vec![0_u8; 8192];
+        let first_read = reader.read(&mut first).unwrap();
+        let first = String::from_utf8(first[..first_read].to_vec()).unwrap();
+
+        assert_eq!(reads.load(Ordering::SeqCst), 3);
+        assert!(first.contains("event: response.created"));
+        assert!(first.contains("\"delta\":\"hello\""));
+
+        let mut remaining = String::new();
+        reader.read_to_string(&mut remaining).unwrap();
+        assert!(remaining.contains("event: response.completed"));
+        assert!(remaining.contains("\"output_tokens\":2"));
+    }
+
+    #[test]
+    fn streams_anthropic_thinking_and_tool_arguments() {
+        let body = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4-5\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"check\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"clock\",\"input\":{}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"zone\\\":\\\"UTC\\\"}\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        let mut reader =
+            anthropic_sse_reader(Box::new(std::io::Cursor::new(body.as_bytes().to_vec())));
+        let mut output = String::new();
+        reader.read_to_string(&mut output).unwrap();
+
+        assert!(output.contains("event: response.reasoning_summary_text.delta"));
+        assert!(output.contains("\"delta\":\"check\""));
+        assert!(output.contains("event: response.function_call_arguments.delta"));
+        assert!(output.contains("\"call_id\":\"tool_1\""));
+        assert!(output.contains(r#"\"zone\":\"UTC\""#));
+        assert!(output.contains("\"output_tokens\":4"));
+        assert!(output.contains("event: response.completed"));
     }
 }

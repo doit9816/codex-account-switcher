@@ -5,6 +5,7 @@ mod proxy;
 mod routing;
 mod routing_anthropic;
 mod routing_protocol;
+mod routing_sse;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
