@@ -1508,9 +1508,10 @@ fn mesh_save_device_sync(
     app: AppHandle,
     device_id: String,
     trusted: bool,
+    auto_account_sync: bool,
     sync_scope: easytier_mesh::MeshSyncScope,
 ) -> Result<easytier_mesh::MeshStatus, String> {
-    easytier_mesh::save_device_sync(app, device_id, trusted, sync_scope)
+    easytier_mesh::save_device_sync(app, device_id, trusted, auto_account_sync, sync_scope)
 }
 
 #[tauri::command]

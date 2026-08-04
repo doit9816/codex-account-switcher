@@ -503,6 +503,7 @@ pub(crate) fn save_device_sync(
     app: AppHandle,
     device_id: String,
     trusted: bool,
+    auto_account_sync: bool,
     sync_scope: MeshSyncScope,
 ) -> Result<MeshStatus, String> {
     let mut store = load_store(&app)?;
@@ -514,6 +515,7 @@ pub(crate) fn save_device_sync(
         .find(|device| device.id == device_id)
         .ok_or_else(|| "Mesh device not found".to_string())?;
     device.trusted = trusted;
+    device.auto_account_sync = auto_account_sync;
     device.sync_scope = sync_scope;
     push_event(&mut store, "info", "Mesh device sync settings saved");
     save_store(&app, &store)?;

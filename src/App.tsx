@@ -877,6 +877,7 @@ export default function App() {
       const mesh = await invoke<MeshStatus>("mesh_save_device_sync", {
         deviceId: device.id,
         trusted: device.trusted,
+        autoAccountSync: device.autoAccountSync === true,
         syncScope: device.syncScope
       });
       setMeshStatus(mesh);
