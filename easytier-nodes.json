@@ -1,0 +1,252 @@
+{
+  "format": "codex-switcher.easytier-nodes.v1",
+  "source": "https://info.qtet.cn/uptime/easytier",
+  "updatedAt": "2026-08-04T06:11:02.790Z",
+  "nodes": [
+    {
+      "id": "47",
+      "name": "tcp://183.230.36.171:11010",
+      "address": "tcp://183.230.36.171:11010",
+      "group": "社区公共节点",
+      "status": "up",
+      "uptime24": 98.4550175529709,
+      "pingMs": 16,
+      "tags": []
+    },
+    {
+      "id": "1",
+      "name": "tcp://225284.xyz:11010",
+      "address": "tcp://225284.xyz:11010",
+      "group": "社区公共节点",
+      "status": "up",
+      "uptime24": 97.66192408100368,
+      "pingMs": 199,
+      "tags": [
+        "我的"
+      ]
+    },
+    {
+      "id": "45",
+      "name": "tcp://console.easytier.net:11010",
+      "address": "tcp://console.easytier.net:11010",
+      "group": "EasyTier相关网站",
+      "status": "up",
+      "uptime24": 98.09792488483654,
+      "pingMs": 660,
+      "tags": []
+    },
+    {
+      "id": "37",
+      "name": "tcp://easytier.cn:11010",
+      "address": "tcp://easytier.cn:11010",
+      "group": "EasyTier相关网站",
+      "status": "up",
+      "uptime24": 98.5112444887222,
+      "pingMs": 729,
+      "tags": []
+    },
+    {
+      "id": "11",
+      "name": "tcp://easytier.weiai.org.cn:11010",
+      "address": "tcp://easytier.weiai.org.cn:11010",
+      "group": "社区公共节点",
+      "status": "up",
+      "uptime24": 97.51395708314703,
+      "pingMs": 32,
+      "tags": []
+    },
+    {
+      "id": "31",
+      "name": "tcp://et-dash.lctn.site:11010",
+      "address": "tcp://et-dash.lctn.site:11010",
+      "group": "社区公共web控制台",
+      "status": "up",
+      "uptime24": 99.38208705853819,
+      "pingMs": 92,
+      "tags": [
+        "web"
+      ]
+    },
+    {
+      "id": "44",
+      "name": "tcp://etgen.myqfeng.top:11010",
+      "address": "tcp://etgen.myqfeng.top:11010",
+      "group": "EasyTier相关网站",
+      "status": "up",
+      "uptime24": 98.32617081021266,
+      "pingMs": 424,
+      "tags": []
+    },
+    {
+      "id": "2",
+      "name": "tcp://ethd.ruixuan.online:22020",
+      "address": "tcp://ethd.ruixuan.online:22020",
+      "group": "社区公共web控制台",
+      "status": "up",
+      "uptime24": 97.24300620169836,
+      "pingMs": 194,
+      "tags": [
+        "后端",
+        "我的"
+      ]
+    },
+    {
+      "id": "35",
+      "name": "tcp://net.qicwken.top:11010",
+      "address": "tcp://net.qicwken.top:11010",
+      "group": "社区公共web控制台",
+      "status": "up",
+      "uptime24": 97.77391895673219,
+      "pingMs": 758,
+      "tags": [
+        "web"
+      ]
+    },
+    {
+      "id": "38",
+      "name": "tcp://qtet.cn:11010",
+      "address": "tcp://qtet.cn:11010",
+      "group": "EasyTier相关网站",
+      "status": "up",
+      "uptime24": 99.55788183195925,
+      "pingMs": 216,
+      "tags": []
+    },
+    {
+      "id": "25",
+      "name": "tcp://qwe.p8.ink:11010",
+      "address": "tcp://qwe.p8.ink:11010",
+      "group": "社区公共节点[海外]",
+      "status": "up",
+      "uptime24": 96.53386747750193,
+      "pingMs": 178,
+      "tags": [
+        "海外"
+      ]
+    },
+    {
+      "id": "41",
+      "name": "tcp://ruixuan.online:11010",
+      "address": "tcp://ruixuan.online:11010",
+      "group": "EasyTier相关网站",
+      "status": "up",
+      "uptime24": 97.3277994139051,
+      "pingMs": 1261,
+      "tags": [
+        "我的"
+      ]
+    },
+    {
+      "id": "3",
+      "name": "tcp://ruixuan.online:11010",
+      "address": "tcp://ruixuan.online:11010",
+      "group": "社区公共web控制台",
+      "status": "up",
+      "uptime24": 97.97645878724651,
+      "pingMs": 1416,
+      "tags": [
+        "web",
+        "我的"
+      ]
+    },
+    {
+      "id": "40",
+      "name": "tcp://uptime.lctn.site:11010",
+      "address": "tcp://uptime.lctn.site:11010",
+      "group": "EasyTier相关网站",
+      "status": "up",
+      "uptime24": 98.13611623955771,
+      "pingMs": 221,
+      "tags": []
+    },
+    {
+      "id": "52",
+      "name": "txt://net.qicwken.top",
+      "address": "txt://net.qicwken.top",
+      "group": "社区公共节点",
+      "status": "up",
+      "uptime24": 96.7026367184951,
+      "pingMs": 44,
+      "tags": []
+    },
+    {
+      "id": "46",
+      "name": "udp://us01.225284.xyz:11010",
+      "address": "udp://us01.225284.xyz:11010",
+      "group": "社区公共节点[海外]",
+      "status": "up",
+      "uptime24": 99.18360740252943,
+      "pingMs": 195,
+      "tags": [
+        "海外",
+        "我的"
+      ]
+    },
+    {
+      "id": "32",
+      "name": "wss://et-web.lctn.site:11010/",
+      "address": "wss://et-web.lctn.site:11010/",
+      "group": "社区公共web控制台",
+      "status": "up",
+      "uptime24": 99.49517838492878,
+      "pingMs": 288,
+      "tags": [
+        "后端"
+      ]
+    },
+    {
+      "id": "48",
+      "name": "wss://et.chinokou.cn:11010/",
+      "address": "wss://et.chinokou.cn:11010/",
+      "group": "社区公共节点",
+      "status": "up",
+      "uptime24": 98.59284017324642,
+      "pingMs": 205,
+      "tags": []
+    },
+    {
+      "id": "51",
+      "name": "wss://et.xn--6kr850c.com:11010/",
+      "address": "wss://et.xn--6kr850c.com:11010/",
+      "group": "社区公共节点[海外]",
+      "status": "up",
+      "uptime24": 97.15978212430093,
+      "pingMs": 285,
+      "tags": [
+        "海外"
+      ]
+    },
+    {
+      "id": "36",
+      "name": "wss://net.qicwken.top:11010/",
+      "address": "wss://net.qicwken.top:11010/",
+      "group": "社区公共web控制台",
+      "status": "up",
+      "uptime24": 97.83221173247338,
+      "pingMs": 1069,
+      "tags": [
+        "后端"
+      ]
+    },
+    {
+      "id": "56",
+      "name": "https://et-public.lctn.site",
+      "address": "https://et-public.lctn.site",
+      "group": "社区公共节点",
+      "status": "down",
+      "uptime24": 0,
+      "pingMs": null,
+      "tags": []
+    },
+    {
+      "id": "53",
+      "name": "udp://et.basd1.de:22020",
+      "address": "udp://et.basd1.de:22020",
+      "group": "社区公共节点",
+      "status": "down",
+      "uptime24": 0.13898693091538372,
+      "pingMs": null,
+      "tags": []
+    }
+  ]
+}
