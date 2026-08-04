@@ -699,14 +699,6 @@ fn sync_from_device_with_scope(
     result
 }
 
-fn sync_endpoint(base_url: &str) -> Result<String, String> {
-    let mut url = url::Url::parse(base_url).map_err(display_err)?;
-    let path = url.path().trim_end_matches('/');
-    let base_path = path.strip_suffix("/v1").unwrap_or(path);
-    url.set_path(&format!("{base_path}/mesh/sync"));
-    Ok(url.to_string())
-}
-
 fn pull_endpoint(base_url: &str) -> Result<String, String> {
     let mut url = url::Url::parse(base_url).map_err(display_err)?;
     let path = url.path().trim_end_matches('/');
@@ -1863,11 +1855,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_mesh_sync_endpoint_from_routing_url() {
-        assert_eq!(
-            sync_endpoint("http://10.126.126.2:15722/v1").unwrap(),
-            "http://10.126.126.2:15722/mesh/sync"
-        );
+    fn builds_mesh_pull_endpoint_from_routing_url() {
         assert_eq!(
             pull_endpoint("http://10.126.126.2:15722/v1").unwrap(),
             "http://10.126.126.2:15722/mesh/pull"
