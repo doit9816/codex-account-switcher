@@ -685,7 +685,9 @@ fn sync_from_device_with_scope(
         "codex-switcher-mesh-incoming-{}.zip.enc",
         uuid::Uuid::new_v4().simple()
     ));
-    fs::write(&temp_path, bytes).map_err(display_err)?;
+    fs::write(&temp_path, bytes).map_err(|error| {
+        format!("无法写入同步临时文件 {}：{}", temp_path.display(), error)
+    })?;
     let result = crate::import_accounts_bundle_with_scope(
         (*app).clone(),
         temp_path.to_string_lossy().to_string(),
@@ -760,7 +762,9 @@ pub(crate) fn handle_sync_request(app: AppHandle, mut request: Request) -> Resul
         "codex-switcher-mesh-incoming-{}.zip.enc",
         uuid::Uuid::new_v4().simple()
     ));
-    fs::write(&temp_path, bytes).map_err(display_err)?;
+    fs::write(&temp_path, bytes).map_err(|error| {
+        format!("无法写入同步临时文件 {}：{}", temp_path.display(), error)
+    })?;
     let password = migration_password_from_mesh(&app, String::new(), true)?;
     let result = crate::import_accounts_bundle_with_scope(
         app,

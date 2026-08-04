@@ -2780,7 +2780,13 @@ pub(crate) fn import_accounts_bundle_with_scope(
     let key = load_master_key(&app)?;
     let mut store = load_store(&app)?;
     let target_codex_home = resolve_codex_home(&app, codex_home)?;
-    fs::create_dir_all(&target_codex_home).map_err(display_err)?;
+    fs::create_dir_all(&target_codex_home).map_err(|error| {
+        format!(
+            "无法创建导入目录 {}：{}",
+            target_codex_home.display(),
+            error
+        )
+    })?;
 
     let mut imported = 0usize;
     for profile in payload.profiles {
@@ -2839,9 +2845,12 @@ pub(crate) fn import_accounts_bundle_with_scope(
         }
         let out = target_codex_home.join(safe_relative_path(&file.path)?);
         if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent).map_err(display_err)?;
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("无法创建导入目录 {}：{}", parent.display(), error)
+            })?;
         }
-        fs::write(out, bytes).map_err(display_err)?;
+        fs::write(&out, bytes)
+            .map_err(|error| format!("无法写入导入文件 {}：{}", out.display(), error))?;
         restored += 1;
     }
 
@@ -4533,6 +4542,12 @@ fn excluded_roots() -> Vec<&'static str> {
 }
 
 fn is_excluded_path(path: &str) -> bool {
+    if path
+        .split('/')
+        .any(|component| component.eq_ignore_ascii_case(".git"))
+    {
+        return true;
+    }
     let first = path.split('/').next().unwrap_or(path);
     excluded_roots().contains(&first)
 }
@@ -4562,7 +4577,7 @@ fn zip_payload(payload: &BundlePayload) -> Result<Vec<u8>, String> {
 }
 
 fn read_bundle(path: &str, password: &str) -> Result<BundlePayload, String> {
-    let bytes = fs::read(path).map_err(display_err)?;
+    let bytes = fs::read(path).map_err(|error| format!("无法读取迁移包 {}：{}", path, error))?;
     if let Ok(payload) = read_payload_zip(&bytes) {
         return Ok(payload);
     }
@@ -5327,6 +5342,7 @@ mod tests {
         assert!(is_excluded_path("installation_id"));
         assert!(is_excluded_path(".sandbox/setup_marker.json"));
         assert!(is_excluded_path("cap_sid"));
+        assert!(is_excluded_path("memories/.git/index"));
         assert!(!is_excluded_path("config.toml"));
         assert!(!is_excluded_path("rules/default.rules"));
     }
