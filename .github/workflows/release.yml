@@ -47,6 +47,11 @@ jobs:
           node-version: lts/*
           cache: npm
 
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.3"
+
       - name: Validate release version
         shell: bash
         env:
