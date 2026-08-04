@@ -823,7 +823,7 @@ export default function App() {
       setMeshNetworkSecret("");
       await refresh();
       return mesh;
-    }, "组网分享设置已保存");
+    }, "多设备共享设置已保存");
   }
 
   async function toggleMeshService() {
@@ -832,7 +832,7 @@ export default function App() {
       setMeshStatus(mesh);
       await refresh();
       return mesh;
-    }, meshStatus?.running ? "组网已停止" : "组网已启动");
+    }, meshStatus?.running ? "设备连接已断开" : "设备连接已建立");
   }
 
   async function refreshMeshNodes() {
@@ -892,7 +892,7 @@ export default function App() {
       });
       setMeshStatus(mesh);
       return mesh;
-    }, "已请求组网同步");
+    }, "已请求设备同步");
   }
 
   async function exportMeshMigrationShare() {
@@ -1656,7 +1656,7 @@ export default function App() {
               aria-selected={activePage === "mesh"}
             >
               <Share2 size={17} />
-              组网分享
+              多设备共享
             </button>
             <button
               className={`tab-button ${activePage === "routing" ? "active" : ""}`}
@@ -2553,13 +2553,13 @@ export default function App() {
 
       <section className="migration-band">
         <div className="migration-copy">
-          <h2>组网分享与迁移</h2>
-          <p>迁移包导出/导入、共享密钥、设备同步和路由 API 分享已经统一放到组网分享页。</p>
+          <h2>多设备共享与迁移</h2>
+          <p>迁移包导出/导入、连接分享码和设备同步已统一放到多设备共享页。</p>
         </div>
         <div className="migration-controls">
-          <button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title="打开组网分享">
+          <button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title="打开多设备共享">
             <Share2 size={17} />
-            打开组网分享
+            打开多设备共享
           </button>
           <button className="icon-button" onClick={() => void restoreBackup()} disabled={busy} title={t.restoreBackup}>
             <RotateCcw size={17} />

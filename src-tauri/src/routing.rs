@@ -322,6 +322,17 @@ pub(crate) fn start(app: AppHandle) -> Result<RoutingStatus, String> {
     status(app)
 }
 
+pub(crate) fn start_for_mesh_share(app: AppHandle) -> Result<RoutingStatus, String> {
+    {
+        let mut store = load_store(&app)?;
+        store.settings.routing.listen_host = "0.0.0.0".to_string();
+        store.settings.routing.enabled = true;
+        ensure_access_key(&app, &mut store)?;
+        save_store(&app, &store)?;
+    }
+    start(app)
+}
+
 pub(crate) fn stop(app: AppHandle) -> Result<RoutingStatus, String> {
     if let Some(slot) = ROUTER.get() {
         let mut guard = slot.lock().map_err(display_err)?;
@@ -914,6 +925,10 @@ fn handle_request(app: AppHandle, mut request: Request) {
         )
     } else if method == Method::Post && url == "/mesh/sync" {
         crate::easytier_mesh::handle_sync_request(app, request).map_err(|error| {
+            Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
+        })
+    } else if method == Method::Post && url == "/mesh/pull" {
+        crate::easytier_mesh::handle_pull_request(app, request).map_err(|error| {
             Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
         })
     } else if method == Method::Post && url == "/v1/responses" {

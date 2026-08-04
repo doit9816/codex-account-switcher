@@ -17,9 +17,9 @@ import { formatDate } from "../../profileUtils";
 import { StatusPill } from "../StatusPill";
 
 const shareModes: Array<{ id: MeshShareMode; title: string; text: string }> = [
-  { id: "joinOnly", title: "仅加入组网", text: "只共享 EasyTier 网络信息，不同步账号。" },
+  { id: "joinOnly", title: "多设备共享", text: "复制分享码到其他设备，建立设备连接。" },
   { id: "migrationBundle", title: "一次性迁移", text: "复用加密迁移包，适合换电脑。" },
-  { id: "continuousSync", title: "持续同步", text: "按设备勾选账号、规则、路由和会话。" },
+  { id: "continuousSync", title: "共享与同步", text: "连接后可按设备同步账号、规则和会话。" },
   { id: "routingApiShare", title: "路由 API 共享", text: "共享本机路由入口，仍需要 API Key。" },
 ];
 
@@ -121,9 +121,9 @@ export function MeshSharePage({
     <section className="mesh-page">
       <div className="mesh-hero panel">
         <div>
-          <span className="section-kicker">EasyTier Mesh</span>
-          <h2>组网分享与迁移</h2>
-          <p>统一管理共享密钥、设备同步、一次性迁移包和路由 API 入口。</p>
+          <span className="section-kicker">Multi-device sharing</span>
+          <h2>多设备共享与迁移</h2>
+          <p>复制一台设备生成的分享码，建立连接并同步指定设备信息。</p>
         </div>
         <div className="mesh-hero-status">
           <StatusPill ok={!!status?.running} text={status?.running ? "运行中" : "已停止"} />
@@ -159,7 +159,7 @@ export function MeshSharePage({
             <div className="panel-header">
               <div>
                 <h2>网络设置</h2>
-                <p>公共节点只负责连通，账号数据仍由应用层加密。</p>
+                <p>连接信息由应用自动管理，账号数据仍由应用层加密。</p>
               </div>
               <Network size={22} />
             </div>
@@ -193,7 +193,7 @@ export function MeshSharePage({
               </div>
               <label className="checkline mesh-checkline">
                 <input type="checkbox" checked={autoStart} onChange={(event) => onAutoStartChange(event.target.checked)} />
-                启动应用时自动组网
+                启动应用时自动建立连接
               </label>
             </div>
             <ScopeEditor value={syncScope} onChange={onSyncScopeChange} />
@@ -202,7 +202,7 @@ export function MeshSharePage({
                 <Save size={17} /> 保存设置
               </button>
               <button className="icon-button" onClick={() => void onToggleService()} disabled={busy}>
-                <PlugZap size={17} /> {status?.running ? "停止组网" : "启动组网"}
+                <PlugZap size={17} /> {status?.running ? "断开连接" : "建立连接"}
               </button>
               <button className="icon-button" onClick={() => void onRefreshNodes()} disabled={busy}>
                 <RefreshCcw size={17} /> 刷新节点
@@ -213,8 +213,8 @@ export function MeshSharePage({
           <section className="panel mesh-share-panel">
             <div className="panel-header">
               <div>
-                <h2>共享密钥</h2>
-                <p>复制给另一台设备，或粘贴其他设备发来的共享码。</p>
+                <h2>连接分享码</h2>
+                <p>复制给其他设备，导入后即可建立连接。</p>
               </div>
               <Share2 size={22} />
             </div>
@@ -258,7 +258,7 @@ export function MeshSharePage({
                 type="password"
                 value={migrationPassword}
                 onChange={(event) => onMigrationPasswordChange(event.target.value)}
-                placeholder={migrationUseMeshSecret ? "使用组网密钥派生密码" : "迁移包密码，可留空明文导出"}
+                placeholder={migrationUseMeshSecret ? "使用共享密钥派生密码" : "迁移包密码，可留空明文导出"}
                 disabled={migrationUseMeshSecret}
               />
               <label className="checkline">
@@ -267,7 +267,7 @@ export function MeshSharePage({
                   checked={migrationUseMeshSecret}
                   onChange={(event) => onMigrationUseMeshSecretChange(event.target.checked)}
                 />
-                使用组网密钥加密迁移包
+                使用共享密钥加密迁移包
               </label>
               <label className="checkline">
                 <input
@@ -352,8 +352,8 @@ export function MeshSharePage({
           <section className="panel mesh-device-panel">
             <div className="panel-header">
               <div>
-                <h2>授权设备</h2>
-                <p>每台设备可独立选择是否同步账号、规则、路由和会话。</p>
+                <h2>已连接设备</h2>
+                <p>点击设备即可同步对应设备的账号信息，也可开启自动同步。</p>
               </div>
               <Send size={22} />
             </div>
@@ -387,15 +387,15 @@ export function MeshSharePage({
                     compact
                     onChange={(scope) => void onSaveDevice({ ...device, syncScope: scope })}
                   />
-                  <button className="mini-button" title="仅手动同步规则、路由和会话；账号由组网后台自动同步" onClick={() => void onSyncNow(device.id)} disabled={busy || !device.trusted}>
-                    立即同步
+                  <button className="mini-button" title="同步该设备的账号及已选择的规则、路由和会话" onClick={() => void onSyncNow(device.id)} disabled={busy || !device.trusted}>
+                    同步此设备
                   </button>
                 </article>
               ))}
               {(!status || status.devices.length === 0) && <div className="account-empty">还没有授权设备。导入共享码后会出现在这里。</div>}
             </div>
             <button className="icon-button" onClick={() => void onSyncNow()} disabled={busy || !status?.devices.some((device) => device.trusted)}>
-              <RefreshCcw size={17} /> 同步全部信任设备
+              <RefreshCcw size={17} /> 同步全部已连接设备
             </button>
           </section>
         </div>

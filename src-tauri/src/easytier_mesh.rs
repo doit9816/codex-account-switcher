@@ -323,7 +323,7 @@ pub(crate) fn save_settings(
     let key = load_master_key(&app)?;
     let network_name = input.network_name.trim();
     if network_name.is_empty() {
-        return Err("EasyTier network name cannot be empty".to_string());
+        return Err("共享名称不能为空".to_string());
     }
     store.settings.mesh.enabled = input.enabled;
     store.settings.mesh.auto_start = input.auto_start;
@@ -345,7 +345,7 @@ pub(crate) fn save_settings(
     } else {
         ensure_network_secret(&mut store, &key)?;
     }
-    push_event(&mut store, "info", "Mesh sharing settings saved");
+    push_event(&mut store, "info", "多设备共享设置已保存");
     save_store(&app, &store)?;
     status(app)
 }
@@ -364,7 +364,7 @@ pub(crate) fn start(app: AppHandle) -> Result<MeshStatus, String> {
     store.settings.mesh.enabled = true;
     set_runtime(runtime)?;
     set_last_runtime_error(None);
-    push_event(&mut store, "info", "EasyTier mesh runtime started");
+    push_event(&mut store, "info", "设备连接已建立");
     save_store(&app, &store)?;
     status(app)
 }
@@ -373,7 +373,7 @@ pub(crate) fn stop(app: AppHandle) -> Result<MeshStatus, String> {
     let mut store = load_store(&app)?;
     store.settings.mesh.enabled = false;
     stop_runtime();
-    push_event(&mut store, "info", "EasyTier mesh runtime stopped");
+    push_event(&mut store, "info", "设备连接已断开");
     save_store(&app, &store)?;
     status(app)
 }
@@ -390,7 +390,7 @@ pub(crate) fn refresh_public_nodes(app: AppHandle) -> Result<MeshStatus, String>
             push_event(
                 &mut store,
                 "info",
-                &format!("Mesh public nodes refreshed: {}", nodes.len()),
+                &format!("连接节点配置已刷新：{}", nodes.len()),
             );
         }
         Err(error) => {
@@ -399,7 +399,7 @@ pub(crate) fn refresh_public_nodes(app: AppHandle) -> Result<MeshStatus, String>
             if store.settings.mesh.cached_nodes.is_empty() {
                 store.settings.mesh.cached_nodes = read_cached_nodes(&app).unwrap_or_default();
             }
-            push_event(&mut store, "warn", "Mesh public node refresh failed");
+            push_event(&mut store, "warn", "连接节点配置刷新失败");
         }
     }
     save_store(&app, &store)?;
@@ -407,15 +407,28 @@ pub(crate) fn refresh_public_nodes(app: AppHandle) -> Result<MeshStatus, String>
 }
 
 pub(crate) fn create_share_payload(app: AppHandle, mode: MeshShareMode) -> Result<String, String> {
+    let include_routing = !matches!(mode, MeshShareMode::MigrationBundle);
+    if include_routing {
+        let runtime = runtime_snapshot();
+        if !runtime.running || runtime.virtual_ipv4.is_none() {
+            start(app.clone())?;
+        }
+        for _ in 0..30 {
+            if runtime_snapshot().virtual_ipv4.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if runtime_snapshot().virtual_ipv4.is_none() {
+            return Err("设备连接尚未获得虚拟地址，请稍后重试".to_string());
+        }
+        crate::routing::start_for_mesh_share(app.clone())?;
+    }
     let mut store = load_store(&app)?;
     let key = load_master_key(&app)?;
     store.settings.mesh.node_source_url = default_node_source_url();
     ensure_network_secret(&mut store, &key)?;
     let network_secret = decrypt_network_secret(&store, &key)?;
-    let include_routing = matches!(
-        mode,
-        MeshShareMode::ContinuousSync | MeshShareMode::RoutingApiShare
-    );
     let routing = routing_share(&store, include_routing, &key);
     let payload = MeshSharePayload {
         format: MESH_SHARE_FORMAT.to_string(),
@@ -478,14 +491,14 @@ pub(crate) fn import_share_payload(
                 .transpose()?,
         },
     );
-    push_event(&mut store, "info", "Mesh share payload imported");
+    push_event(&mut store, "info", "设备分享码已导入");
     save_store(&app, &store)?;
     Ok(MeshImportResult {
         mode: payload.mode,
         device_id: payload.device_id,
         device_name: payload.device_name,
         imported_nodes: payload.peers.len(),
-        message: "Mesh share imported".to_string(),
+        message: "设备分享码已导入".to_string(),
     })
 }
 
@@ -513,11 +526,11 @@ pub(crate) fn save_device_sync(
         .authorized_devices
         .iter_mut()
         .find(|device| device.id == device_id)
-        .ok_or_else(|| "Mesh device not found".to_string())?;
+        .ok_or_else(|| "未找到已连接设备".to_string())?;
     device.trusted = trusted;
     device.auto_account_sync = auto_account_sync;
     device.sync_scope = sync_scope;
-    push_event(&mut store, "info", "Mesh device sync settings saved");
+    push_event(&mut store, "info", "设备同步设置已保存");
     save_store(&app, &store)?;
     status(app)
 }
@@ -532,7 +545,10 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
         .iter()
         .filter(|device| device.trusted)
         .filter(|device| {
-            device.sync_scope.rules || device.sync_scope.routing || device.sync_scope.conversations
+            device.sync_scope.accounts
+                || device.sync_scope.rules
+                || device.sync_scope.routing
+                || device.sync_scope.conversations
         })
         .filter(|device| device_id.as_deref().is_none_or(|id| id == device.id))
         .cloned()
@@ -544,19 +560,19 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
     let mut failed = 0usize;
     for device in targets {
         let scope = MeshSyncScope {
-            accounts: false,
+            accounts: true,
             rules: device.sync_scope.rules,
             routing: device.sync_scope.routing,
             conversations: device.sync_scope.conversations,
         };
-        match sync_to_device_with_scope(&app, &key, &device, scope, false) {
+        match sync_from_device_with_scope(&app, &key, &device, scope, false) {
             Ok(()) => succeeded += 1,
             Err(error) => {
                 failed += 1;
                 push_event(
                     &mut store,
                     "warn",
-                    &format!("Mesh sync failed for {}: {error}", device.name),
+                    &format!("设备同步失败（{}）：{error}", device.name),
                 );
             }
         }
@@ -564,7 +580,7 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
     push_event(
         &mut store,
         if failed == 0 { "info" } else { "warn" },
-        &format!("Mesh sync completed: {succeeded} succeeded, {failed} failed"),
+        &format!("设备同步完成：成功 {succeeded} 台，失败 {failed} 台"),
     );
     save_store(&app, &store)?;
     status(app)
@@ -598,17 +614,14 @@ fn run_auto_account_sync(app: &AppHandle) {
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     for device in targets {
-        match sync_to_device_with_scope(app, &key, &device, scope.clone(), true) {
+        match sync_from_device_with_scope(app, &key, &device, scope.clone(), true) {
             Ok(()) => succeeded += 1,
             Err(error) => {
                 failed += 1;
                 push_event(
                     &mut store,
                     "warn",
-                    &format!(
-                        "Mesh automatic account sync failed for {}: {error}",
-                        device.name
-                    ),
+                    &format!("账号自动同步失败（{}）：{error}", device.name),
                 );
             }
         }
@@ -617,15 +630,13 @@ fn run_auto_account_sync(app: &AppHandle) {
         push_event(
             &mut store,
             if failed == 0 { "info" } else { "warn" },
-            &format!(
-                "Mesh automatic account sync completed: {succeeded} succeeded, {failed} failed"
-            ),
+            &format!("账号自动同步完成：成功 {succeeded} 台，失败 {failed} 台"),
         );
         let _ = save_store(app, &store);
     }
 }
 
-fn sync_to_device_with_scope(
+fn sync_from_device_with_scope(
     app: &AppHandle,
     key: &[u8; 32],
     device: &MeshDevice,
@@ -636,51 +647,54 @@ fn sync_to_device_with_scope(
         .address
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "target routing API address is missing".to_string())?;
+        .ok_or_else(|| "该设备没有可用连接地址，请重新导入分享码".to_string())?;
     let encrypted_key = device
         .encrypted_routing_api_key
         .as_ref()
-        .ok_or_else(|| "target routing API key is missing".to_string())?;
+        .ok_or_else(|| "该设备没有同步权限，请重新导入分享码".to_string())?;
     let routing_api_key =
         String::from_utf8(decrypt_secret(encrypted_key, key)?).map_err(display_err)?;
     let password = migration_password_from_mesh(app, String::new(), true)?;
+    let scope_header = serde_json::to_string(&scope).map_err(display_err)?;
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(display_err)?;
+    let response = client
+        .post(pull_endpoint(base_url)?)
+        .bearer_auth(routing_api_key)
+        .header("X-Codex-Mesh-Scope", scope_header)
+        .header(
+            "X-Codex-Mesh-Valid-Accounts",
+            if only_valid_accounts { "true" } else { "false" },
+        )
+        .send()
+        .map_err(display_err)?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "target returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+    let bytes = response.bytes().map_err(display_err)?;
+    if bytes.len() > MAX_MESH_SYNC_BYTES {
+        return Err("target returned an oversized sync bundle".to_string());
+    }
     let temp_path = std::env::temp_dir().join(format!(
-        "codex-switcher-mesh-{}.zip.enc",
+        "codex-switcher-mesh-incoming-{}.zip.enc",
         uuid::Uuid::new_v4().simple()
     ));
-    let export_result = crate::export_mesh_sync_bundle_internal(
+    fs::write(&temp_path, bytes).map_err(display_err)?;
+    let result = crate::import_accounts_bundle_with_scope(
         (*app).clone(),
         temp_path.to_string_lossy().to_string(),
         password,
         scope.conversations,
-        scope.accounts,
-        only_valid_accounts,
-    );
-    let result = export_result.and_then(|_| {
-        let bytes = fs::read(&temp_path).map_err(display_err)?;
-        let endpoint = sync_endpoint(base_url)?;
-        let scope_header = serde_json::to_string(&scope).map_err(display_err)?;
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(180))
-            .build()
-            .map_err(display_err)?;
-        let response = client
-            .post(endpoint)
-            .bearer_auth(routing_api_key)
-            .header("X-Codex-Mesh-Scope", scope_header)
-            .body(bytes)
-            .send()
-            .map_err(display_err)?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "target returned HTTP {}",
-                response.status().as_u16()
-            ))
-        }
-    });
+        None,
+        Some(scope),
+    )
+    .map(|_| ());
     let _ = fs::remove_file(temp_path);
     result
 }
@@ -690,6 +704,14 @@ fn sync_endpoint(base_url: &str) -> Result<String, String> {
     let path = url.path().trim_end_matches('/');
     let base_path = path.strip_suffix("/v1").unwrap_or(path);
     url.set_path(&format!("{base_path}/mesh/sync"));
+    Ok(url.to_string())
+}
+
+fn pull_endpoint(base_url: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(base_url).map_err(display_err)?;
+    let path = url.path().trim_end_matches('/');
+    let base_path = path.strip_suffix("/v1").unwrap_or(path);
+    url.set_path(&format!("{base_path}/mesh/pull"));
     Ok(url.to_string())
 }
 
@@ -768,6 +790,88 @@ pub(crate) fn handle_sync_request(app: AppHandle, mut request: Request) -> Resul
         ),
         Err(error) => respond_sync_json(request, 422, serde_json::json!({ "error": error })),
     }
+}
+
+pub(crate) fn handle_pull_request(app: AppHandle, request: Request) -> Result<(), String> {
+    let key = load_master_key(&app)?;
+    let store = load_store(&app)?;
+    let expected = store
+        .settings
+        .routing
+        .encrypted_access_key
+        .as_ref()
+        .and_then(|envelope| decrypt_secret(envelope, &key).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    let provided = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Authorization"))
+        .map(|header| header.value.as_str())
+        .unwrap_or_default();
+    if expected
+        .as_deref()
+        .map(|value| provided == format!("Bearer {value}"))
+        != Some(true)
+    {
+        respond_sync_json(
+            request,
+            401,
+            serde_json::json!({ "error": "invalid credentials" }),
+        )?;
+        return Ok(());
+    }
+
+    let scope = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("X-Codex-Mesh-Scope"))
+        .and_then(|header| serde_json::from_str::<MeshSyncScope>(header.value.as_str()).ok())
+        .unwrap_or_default();
+    let only_valid_accounts = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("X-Codex-Mesh-Valid-Accounts"))
+        .is_some_and(|header| header.value.as_str().eq_ignore_ascii_case("true"));
+    let temp_path = std::env::temp_dir().join(format!(
+        "codex-switcher-mesh-outgoing-{}.zip.enc",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let password = migration_password_from_mesh(&app, String::new(), true)?;
+    let result = crate::export_mesh_sync_bundle_internal(
+        app,
+        temp_path.to_string_lossy().to_string(),
+        password,
+        scope.conversations,
+        scope.accounts,
+        only_valid_accounts,
+    )
+    .and_then(|_| fs::read(&temp_path).map_err(display_err));
+    let _ = fs::remove_file(&temp_path);
+    match result {
+        Ok(bytes) => {
+            if bytes.len() > MAX_MESH_SYNC_BYTES {
+                respond_sync_json(
+                    request,
+                    413,
+                    serde_json::json!({ "error": "bundle too large" }),
+                )?;
+            } else {
+                let content_type = Header::from_bytes("Content-Type", "application/octet-stream")
+                    .map_err(|_| "failed to build response header".to_string())?;
+                request
+                    .respond(
+                        Response::from_data(bytes)
+                            .with_status_code(StatusCode(200))
+                            .with_header(content_type),
+                    )
+                    .map_err(display_err)?;
+            }
+        }
+        Err(error) => {
+            respond_sync_json(request, 422, serde_json::json!({ "error": error }))?;
+        }
+    }
+    Ok(())
 }
 
 fn respond_sync_json(request: Request, status: u16, body: Value) -> Result<(), String> {
@@ -856,7 +960,7 @@ fn start_embedded_runtime(
     let instance_id = manager
         .run_network_instance(config, false, ConfigFileControl::STATIC_CONFIG)
         .map_err(|error| {
-            let message = format!("EasyTier runtime failed to start: {error}");
+            let message = format!("设备连接服务启动失败：{error}");
             set_last_runtime_error(Some(message.clone()));
             message
         })?;
@@ -1763,6 +1867,10 @@ mod tests {
         assert_eq!(
             sync_endpoint("http://10.126.126.2:15722/v1").unwrap(),
             "http://10.126.126.2:15722/mesh/sync"
+        );
+        assert_eq!(
+            pull_endpoint("http://10.126.126.2:15722/v1").unwrap(),
+            "http://10.126.126.2:15722/mesh/pull"
         );
     }
 
