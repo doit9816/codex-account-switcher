@@ -20,6 +20,7 @@ CodexSwitcher is a Tauri v2 desktop utility for managing multiple Codex / ChatGP
 - Keep the current account token under Codex control to avoid refresh-token conflicts.
 - One-click migration of all profiles, rules, app settings, and selected `.codex` files.
 - Optional conversation migration for `sessions/`, `session_index.jsonl`, `logs_2.sqlite*`, and `state_5.sqlite*`.
+- Session visibility repair after switching providers so official Codex history remains visible across OAuth, API provider, and routing modes.
 - System tray support with quick actions.
 - UI language can follow the system language or be set to Simplified Chinese, English, or Traditional Chinese.
 - Windows, macOS, and Linux builds via GitHub Actions.
@@ -68,7 +69,9 @@ Default migration includes:
 If conversation migration is enabled, it also includes:
 
 - `sessions/`
+- `archived_sessions/`
 - `session_index.jsonl`
+- `sqlite/`
 - `logs_2.sqlite*`
 - `state_5.sqlite*`
 

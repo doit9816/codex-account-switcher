@@ -1,7 +1,6 @@
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::io::Read;
-use url::Url;
 use uuid::Uuid;
 
 use crate::routing_sse::{encode_sse_event, SseEvent, SseTransformer, TransformingSseReader};
@@ -62,23 +61,25 @@ pub(crate) struct TransformedResponse {
 }
 
 pub(crate) fn prepare_api_request(
+    provider_id: &str,
     base_url: &str,
     model: &str,
     wire_api: &str,
     mut body: Value,
 ) -> Result<PreparedApiRequest, String> {
     let protocol = WireProtocol::parse(wire_api)?;
+    let adapter = crate::provider_compat::provider_adapter(provider_id, base_url, model);
     body["model"] = Value::String(model.to_string());
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let body = match protocol {
-        WireProtocol::Responses => sanitize_responses_request(body),
+        WireProtocol::Responses => adapter.prepare_responses_request(body),
         WireProtocol::ChatCompletions => responses_request_to_chat(body)?,
         WireProtocol::AnthropicMessages => {
             crate::routing_anthropic::responses_request_to_anthropic(body)?
         }
     };
     Ok(PreparedApiRequest {
-        endpoint: endpoint_url(base_url, protocol)?,
+        endpoint: endpoint_url(provider_id, base_url, model, protocol)?,
         body: serde_json::to_vec(&body).map_err(crate::display_err)?,
         protocol,
         streaming,
@@ -801,31 +802,19 @@ impl SseTransformer for ChatStreamingTransformer {
     }
 }
 
-fn endpoint_url(base_url: &str, protocol: WireProtocol) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    let parsed = Url::parse(trimmed).map_err(|_| "API Base URL 格式不正确".to_string())?;
+fn endpoint_url(
+    provider_id: &str,
+    base_url: &str,
+    model: &str,
+    protocol: WireProtocol,
+) -> Result<String, String> {
     let endpoint = match protocol {
         WireProtocol::Responses => "responses",
         WireProtocol::ChatCompletions => "chat/completions",
         WireProtocol::AnthropicMessages => "messages",
     };
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.ends_with(&format!("/{endpoint}")) {
-        return Ok(trimmed.to_string());
-    }
-    let path = parsed.path().trim_end_matches('/');
-    if path.is_empty() || path == "/" {
-        Ok(format!("{trimmed}/v1/{endpoint}"))
-    } else {
-        Ok(format!("{trimmed}/{endpoint}"))
-    }
-}
-
-fn sanitize_responses_request(mut body: Value) -> Value {
-    if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
-        reasoning.remove("context");
-    }
-    body
+    crate::provider_compat::provider_adapter(provider_id, base_url, model)
+        .build_url(base_url, endpoint)
 }
 
 fn responses_request_to_chat(body: Value) -> Result<Value, String> {
@@ -1635,12 +1624,20 @@ mod tests {
     #[test]
     fn builds_protocol_specific_endpoints() {
         assert_eq!(
-            endpoint_url("https://api.example.com", WireProtocol::Responses).unwrap(),
+            endpoint_url(
+                "generic",
+                "https://api.example.com",
+                "gpt-5",
+                WireProtocol::Responses
+            )
+            .unwrap(),
             "https://api.example.com/v1/responses"
         );
         assert_eq!(
             endpoint_url(
+                "generic",
                 "https://api.example.com/openai/v1",
+                "gpt-5",
                 WireProtocol::ChatCompletions
             )
             .unwrap(),
@@ -1648,23 +1645,42 @@ mod tests {
         );
         assert_eq!(
             endpoint_url(
+                "generic",
                 "https://api.example.com/v1/chat/completions",
+                "gpt-5",
                 WireProtocol::ChatCompletions
             )
             .unwrap(),
             "https://api.example.com/v1/chat/completions"
         );
         assert_eq!(
-            endpoint_url("https://api.anthropic.com", WireProtocol::AnthropicMessages).unwrap(),
+            endpoint_url(
+                "generic",
+                "https://api.anthropic.com",
+                "claude-3",
+                WireProtocol::AnthropicMessages,
+            )
+            .unwrap(),
             "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            endpoint_url(
+                "deepseek",
+                "https://api.deepseek.com",
+                "deepseek-v4-flash",
+                WireProtocol::Responses,
+            )
+            .unwrap(),
+            "https://api.deepseek.com/responses"
         );
     }
 
     #[test]
-    fn responses_provider_strips_reasoning_context() {
+    fn longcat_responses_provider_strips_reasoning_context() {
         let prepared = prepare_api_request(
-            "https://api.example.com/v1",
-            "LongCat-2.0",
+            "longcat",
+            "https://api.longcat.chat/openai/v1",
+            "gpt-5",
             "responses",
             json!({
                 "model": "gpt-5",
@@ -1683,8 +1699,31 @@ mod tests {
     }
 
     #[test]
+    fn non_longcat_responses_provider_keeps_reasoning_context() {
+        let prepared = prepare_api_request(
+            "generic",
+            "https://api.example.com/v1",
+            "gpt-5",
+            "responses",
+            json!({
+                "model": "gpt-5",
+                "input": "hello",
+                "reasoning": {
+                    "effort": "high",
+                    "context": "provider-supported-context"
+                }
+            }),
+        )
+        .unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+
+        assert_eq!(body["reasoning"]["context"], "provider-supported-context");
+    }
+
+    #[test]
     fn converts_responses_request_to_chat_completions() {
         let prepared = prepare_api_request(
+            "glm",
             "https://api.example.com/v1",
             "glm-5",
             "chat_completions",

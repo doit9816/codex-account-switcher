@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod codex_sessions;
 mod oauth;
+mod provider_compat;
 mod proxy;
 mod routing;
 mod routing_anthropic;
@@ -14,6 +16,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::{DateTime, TimeZone, Utc};
 use fs2::FileExt;
+use provider_compat::{is_longcat_base_url, is_longcat_model};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -1975,6 +1978,15 @@ async fn switch_profile(
     if let Some(warning) = config_cleanup_warning {
         push_event(&mut store, "warn", &warning);
     }
+    if !codex_running {
+        repair_codex_session_visibility_after_switch(
+            &app,
+            &mut store,
+            &switch_id,
+            &profile_id,
+            &path,
+        );
+    }
     append_switch_diagnostic(
         &app,
         &switch_id,
@@ -1998,6 +2010,13 @@ async fn switch_profile(
         match terminate_codex_processes(&codex_runtime) {
             Ok(()) => {
                 append_switch_diagnostic(&app, &switch_id, &profile_id, "codex_terminate_done", "");
+                repair_codex_session_visibility_after_switch(
+                    &app,
+                    &mut store,
+                    &switch_id,
+                    &profile_id,
+                    &path,
+                );
                 relaunch_guard.arm(
                     codex_runtime.clone(),
                     Some(store.settings.probe_proxy.clone()),
@@ -2097,6 +2116,58 @@ async fn switch_profile(
             "已切换当前 Codex 账号".to_string()
         },
     })
+}
+
+fn repair_codex_session_visibility_after_switch(
+    app: &AppHandle,
+    store: &mut AppStore,
+    switch_id: &str,
+    profile_id: &str,
+    codex_home: &Path,
+) {
+    append_switch_diagnostic(
+        app,
+        switch_id,
+        profile_id,
+        "session_visibility_repair_start",
+        codex_home.to_string_lossy(),
+    );
+    match codex_sessions::repair_session_visibility_for_current_provider(codex_home) {
+        Ok(report) => {
+            append_switch_diagnostic(
+                app,
+                switch_id,
+                profile_id,
+                "session_visibility_repair_done",
+                format!(
+                    "provider={}, checked={}, updated={}, skipped={}",
+                    report.target_provider,
+                    report.checked_databases,
+                    report.updated_rows,
+                    report.skipped_databases
+                ),
+            );
+            if report.changed() {
+                push_event(store, "info", &report.summary());
+            } else if report.skipped_databases > 0 {
+                push_event(store, "warn", &report.summary());
+            }
+        }
+        Err(error) => {
+            append_switch_diagnostic(
+                app,
+                switch_id,
+                profile_id,
+                "session_visibility_repair_failed",
+                &error,
+            );
+            push_event(
+                store,
+                "warn",
+                &format!("Codex 会话可见性修复失败，切换已继续: {error}"),
+            );
+        }
+    }
 }
 
 #[tauri::command]
@@ -3108,14 +3179,12 @@ fn write_api_provider_config(
     };
     document["model"] = toml_edit::value(&api_config.model);
     document["model_provider"] = toml_edit::value(&api_config.provider_id);
-    if is_longcat_api_config(api_config) {
-        document["disable_response_storage"] = toml_edit::value(true);
-        document["web_search"] = toml_edit::value("disabled");
-        document["model_reasoning_effort"] = toml_edit::value("high");
-        document["model_supports_reasoning_summaries"] = toml_edit::value(true);
-    } else {
-        remove_longcat_codex_options(&mut document);
-    }
+    provider_compat::provider_adapter(
+        &api_config.provider_id,
+        &api_config.base_url,
+        &api_config.model,
+    )
+    .apply_codex_options(&mut document);
     if !document.as_table().contains_key("model_providers")
         || !document["model_providers"].is_table()
     {
@@ -3142,18 +3211,6 @@ fn write_api_provider_config(
     provider["requires_openai_auth"] = toml_edit::value(true);
     provider.remove("experimental_bearer_token");
     replace_file_with_rollback(config_path, document.to_string().as_bytes(), None)
-}
-
-fn is_longcat_api_config(api_config: &ApiProviderConfig) -> bool {
-    is_longcat_base_url(&api_config.base_url) || is_longcat_model(&api_config.model)
-}
-
-fn is_longcat_base_url(value: &str) -> bool {
-    value.to_ascii_lowercase().contains("api.longcat.chat")
-}
-
-fn is_longcat_model(value: &str) -> bool {
-    value.to_ascii_lowercase().starts_with("longcat-")
 }
 
 fn document_uses_longcat_api(document: &toml_edit::DocumentMut) -> bool {
@@ -3194,7 +3251,7 @@ fn remove_longcat_config_for_non_api_account(config_path: &Path) -> Result<(), S
             }
         }
     }
-    remove_longcat_codex_options(&mut document);
+    provider_compat::provider_adapter("generic", "", "").apply_codex_options(&mut document);
     replace_file_with_rollback(config_path, document.to_string().as_bytes(), None)
 }
 
@@ -3279,25 +3336,6 @@ fn cleanup_non_api_config_with_timeout(
             );
             Some("config.toml 清理线程异常退出，auth.json 已写入".to_string())
         }
-    }
-}
-
-fn remove_longcat_codex_options(document: &mut toml_edit::DocumentMut) {
-    remove_bool_root_if_matches(document, "disable_response_storage", true);
-    remove_str_root_if_matches(document, "web_search", "disabled");
-    remove_str_root_if_matches(document, "model_reasoning_effort", "high");
-    remove_bool_root_if_matches(document, "model_supports_reasoning_summaries", true);
-}
-
-fn remove_bool_root_if_matches(document: &mut toml_edit::DocumentMut, key: &str, expected: bool) {
-    if document.as_table().get(key).and_then(|item| item.as_bool()) == Some(expected) {
-        document.as_table_mut().remove(key);
-    }
-}
-
-fn remove_str_root_if_matches(document: &mut toml_edit::DocumentMut, key: &str, expected: &str) {
-    if document.as_table().get(key).and_then(|item| item.as_str()) == Some(expected) {
-        document.as_table_mut().remove(key);
     }
 }
 
@@ -4231,7 +4269,9 @@ fn migratable_roots(include_conversations: bool) -> Vec<&'static str> {
     if include_conversations {
         roots.extend([
             "sessions",
+            "archived_sessions",
             "session_index.jsonl",
+            "sqlite",
             "logs_2.sqlite",
             "logs_2.sqlite-shm",
             "logs_2.sqlite-wal",
@@ -4263,18 +4303,7 @@ fn is_excluded_path(path: &str) -> bool {
 }
 
 fn is_conversation_path(path: &str) -> bool {
-    let first = path.split('/').next().unwrap_or(path);
-    matches!(
-        first,
-        "sessions"
-            | "session_index.jsonl"
-            | "logs_2.sqlite"
-            | "logs_2.sqlite-shm"
-            | "logs_2.sqlite-wal"
-            | "state_5.sqlite"
-            | "state_5.sqlite-shm"
-            | "state_5.sqlite-wal"
-    )
+    codex_sessions::is_conversation_metadata_path(path)
 }
 
 fn safe_relative_path(path: &str) -> Result<PathBuf, String> {

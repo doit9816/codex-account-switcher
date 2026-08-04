@@ -670,6 +670,22 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
 
     store.settings.routing.applied_to_codex = true;
     store.settings.codex_home = Some(codex_home.to_string_lossy().to_string());
+    match crate::codex_sessions::repair_session_visibility(&codex_home, &provider_id) {
+        Ok(report) => {
+            if report.changed() {
+                push_event(&mut store, "info", &report.summary());
+            } else if report.skipped_databases > 0 {
+                push_event(&mut store, "warn", &report.summary());
+            }
+        }
+        Err(error) => {
+            push_event(
+                &mut store,
+                "warn",
+                &format!("Codex 会话可见性修复失败，路由接管已继续: {error}"),
+            );
+        }
+    }
     push_event(
         &mut store,
         "info",
@@ -1097,6 +1113,7 @@ fn prepare_upstream(
             .ok_or_else(|| "API Provider missing OPENAI_API_KEY".to_string())?
             .to_string();
         let prepared = prepare_api_request(
+            &api_config.provider_id,
             &api_config.base_url,
             &api_config.model,
             &api_config.wire_api,

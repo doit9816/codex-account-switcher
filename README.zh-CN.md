@@ -4,6 +4,8 @@ CodexSwitcher 是一个 Tauri v2 桌面工具，用来管理多个 Codex / ChatG
 
 [English README](README.md)
 
+Provider 适配与路由调度说明见 [`docs/provider-routing.md`](docs/provider-routing.md)。
+
 > 本工具只管理你自己有权使用的账号文件。不做自动登录、不绕过验证码、不绕过平台限制。
 
 ## 功能截图
@@ -19,7 +21,8 @@ CodexSwitcher 是一个 Tauri v2 桌面工具，用来管理多个 Codex / ChatG
 - 检测 Codex 是否正在运行，避免切换账号时影响当前会话。
 - 当前正在使用的账号 token 交给 Codex 自己刷新，避免 refresh token 冲突。
 - 一键迁移所有账号、规则、应用设置和指定 `.codex` 配置文件。
-- 可选迁移对话记录：`sessions/`、`session_index.jsonl`、`logs_2.sqlite*`、`state_5.sqlite*`。
+- 可选迁移对话记录：`sessions/`、`archived_sessions/`、`session_index.jsonl`、`sqlite/`、`logs_2.sqlite*`、`state_5.sqlite*`。
+- 切换 OAuth、API Provider 或路由接管后自动修复 Codex 会话可见性，让官方与第三方 provider 的历史记录继续出现在同一侧栏列表。
 - 支持系统托盘和右键快捷操作。
 - 界面语言可跟随系统，也可手动选择简体中文、English、繁體中文。
 - GitHub Actions 自动构建 Windows、macOS、Linux 版本。
@@ -68,7 +71,9 @@ C:\Users\<你>\AppData\Roaming\local.codex.account-switcher\
 勾选“导出对话记录”后额外迁移：
 
 - `sessions/`
+- `archived_sessions/`
 - `session_index.jsonl`
+- `sqlite/`
 - `logs_2.sqlite*`
 - `state_5.sqlite*`
 
