@@ -13,7 +13,7 @@ pub(crate) trait ProviderAdapter: Sync {
     fn build_url(&self, base_url: &str, endpoint: &str) -> Result<String, String>;
 
     fn prepare_responses_request(&self, body: Value) -> Value {
-        body
+        sanitize_responses_request(body)
     }
 
     fn apply_codex_options(&self, document: &mut DocumentMut);
@@ -84,6 +84,7 @@ impl ProviderAdapter for DeepSeekAdapter {
     }
 
     fn prepare_responses_request(&self, mut body: Value) -> Value {
+        body = sanitize_responses_request(body);
         remove_reasoning_context(&mut body);
         if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
             for item in input {
@@ -112,6 +113,7 @@ impl ProviderAdapter for LongCatAdapter {
     }
 
     fn prepare_responses_request(&self, mut body: Value) -> Value {
+        body = sanitize_responses_request(body);
         remove_reasoning_context(&mut body);
         body
     }
@@ -145,6 +147,23 @@ fn remove_reasoning_context(body: &mut Value) {
     if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
         reasoning.remove("context");
     }
+}
+
+pub(crate) fn sanitize_responses_request(mut body: Value) -> Value {
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+                continue;
+            }
+            let Some(object) = item.as_object_mut() else {
+                continue;
+            };
+            if object.get("content").is_some_and(Value::is_array) {
+                object.insert("content".to_string(), Value::Null);
+            }
+        }
+    }
+    body
 }
 
 fn remove_longcat_codex_options(document: &mut DocumentMut) {
@@ -223,6 +242,26 @@ mod tests {
         assert!(body["reasoning"].get("context").is_none());
         assert!(body["input"][0].get("summary").is_none());
         assert!(body["input"][0].get("encrypted_content").is_none());
+    }
+
+    #[test]
+    fn sanitizes_reasoning_content_arrays_without_touching_messages() {
+        let body = sanitize_responses_request(json!({
+            "input": [
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "reasoning_text", "text": "private"}]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}]
+                }
+            ]
+        }));
+
+        assert_eq!(body["input"][0]["content"], Value::Null);
+        assert_eq!(body["input"][1]["content"][0]["text"], "hello");
     }
 
     #[test]

@@ -1142,6 +1142,7 @@ fn prepare_upstream(
         .ok_or_else(|| "auth.json missing access_token".to_string())?
         .to_string();
     normalize_oauth_input(&mut json);
+    json = crate::provider_compat::sanitize_responses_request(json);
     let streaming = json.get("stream").and_then(Value::as_bool).unwrap_or(false);
     Ok(PreparedUpstream {
         url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
