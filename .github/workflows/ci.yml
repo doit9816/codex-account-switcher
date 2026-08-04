@@ -38,6 +38,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           version: "25.3"
+          repo-token: ${{ github.token }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
