@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod codex_sessions;
+mod easytier_mesh;
 mod oauth;
 mod provider_compat;
 mod proxy;
@@ -368,6 +369,8 @@ pub(crate) struct AppSettings {
     pub(crate) auto_probe_interval_secs: u64,
     #[serde(default)]
     pub(crate) routing: RoutingSettings,
+    #[serde(default)]
+    pub(crate) mesh: easytier_mesh::MeshSettings,
 }
 
 impl Default for AppSettings {
@@ -386,6 +389,7 @@ impl Default for AppSettings {
             auto_probe_enabled: true,
             auto_probe_interval_secs: default_auto_probe_interval_secs(),
             routing: RoutingSettings::default(),
+            mesh: easytier_mesh::MeshSettings::default(),
         }
     }
 }
@@ -731,7 +735,7 @@ struct BundlePayload {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BundleManifest {
+pub(crate) struct BundleManifest {
     format: String,
     version: u32,
     exported_at: String,
@@ -779,7 +783,7 @@ struct ExportProfile {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ImportResult {
+pub(crate) struct ImportResult {
     imported_profiles: usize,
     restored_files: usize,
     skipped_conversation_files: usize,
@@ -1448,6 +1452,111 @@ fn routing_apply_codex_config(
 #[tauri::command]
 fn routing_restore_codex_config(app: AppHandle) -> Result<routing::RoutingStatus, String> {
     routing::restore_codex_config(app)
+}
+
+#[tauri::command]
+fn mesh_status(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::status(app)
+}
+
+#[tauri::command]
+fn mesh_save_settings(
+    app: AppHandle,
+    input: easytier_mesh::MeshSaveSettingsInput,
+) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::save_settings(app, input)
+}
+
+#[tauri::command]
+fn mesh_start(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::start(app)
+}
+
+#[tauri::command]
+fn mesh_stop(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::stop(app)
+}
+
+#[tauri::command]
+fn mesh_refresh_public_nodes(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::refresh_public_nodes(app)
+}
+
+#[tauri::command]
+fn mesh_create_share_payload(
+    app: AppHandle,
+    mode: easytier_mesh::MeshShareMode,
+) -> Result<String, String> {
+    easytier_mesh::create_share_payload(app, mode)
+}
+
+#[tauri::command]
+fn mesh_import_share_payload(
+    app: AppHandle,
+    payload_text: String,
+) -> Result<easytier_mesh::MeshImportResult, String> {
+    easytier_mesh::import_share_payload(app, payload_text)
+}
+
+#[tauri::command]
+fn mesh_list_devices(app: AppHandle) -> Result<Vec<easytier_mesh::MeshDeviceView>, String> {
+    easytier_mesh::list_devices(app)
+}
+
+#[tauri::command]
+fn mesh_save_device_sync(
+    app: AppHandle,
+    device_id: String,
+    trusted: bool,
+    sync_scope: easytier_mesh::MeshSyncScope,
+) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::save_device_sync(app, device_id, trusted, sync_scope)
+}
+
+#[tauri::command]
+fn mesh_sync_now(
+    app: AppHandle,
+    device_id: Option<String>,
+) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::sync_now(app, device_id)
+}
+
+#[tauri::command]
+fn mesh_export_migration_share(
+    app: AppHandle,
+    output_path: String,
+    password: String,
+    use_mesh_secret: bool,
+    include_conversations: bool,
+    profile_ids: Option<Vec<String>>,
+) -> Result<BundleManifest, String> {
+    let password = easytier_mesh::migration_password_from_mesh(&app, password, use_mesh_secret)?;
+    export_all_accounts_bundle(
+        app,
+        output_path,
+        password,
+        include_conversations,
+        profile_ids,
+    )
+}
+
+#[tauri::command]
+fn mesh_import_migration_share(
+    app: AppHandle,
+    bundle_path: String,
+    password: String,
+    use_mesh_secret: bool,
+    restore_conversations: bool,
+    codex_home: Option<String>,
+) -> Result<ImportResult, String> {
+    let password = easytier_mesh::migration_password_from_mesh(&app, password, use_mesh_secret)?;
+    import_accounts_bundle(
+        app,
+        bundle_path,
+        password,
+        restore_conversations,
+        codex_home,
+    )
 }
 
 #[tauri::command]
@@ -2443,13 +2552,88 @@ fn export_all_accounts_bundle(
     include_conversations: bool,
     profile_ids: Option<Vec<String>>,
 ) -> Result<BundleManifest, String> {
+    export_all_accounts_bundle_internal(
+        app,
+        output_path,
+        password,
+        include_conversations,
+        profile_ids,
+    )
+}
+
+pub(crate) fn export_all_accounts_bundle_internal(
+    app: AppHandle,
+    output_path: String,
+    password: String,
+    include_conversations: bool,
+    profile_ids: Option<Vec<String>>,
+) -> Result<BundleManifest, String> {
+    export_bundle_internal(
+        app,
+        output_path,
+        password,
+        include_conversations,
+        profile_ids,
+        false,
+        false,
+    )
+}
+
+pub(crate) fn export_mesh_sync_bundle_internal(
+    app: AppHandle,
+    output_path: String,
+    password: String,
+    include_conversations: bool,
+    include_accounts: bool,
+    only_valid_accounts: bool,
+) -> Result<BundleManifest, String> {
+    export_bundle_internal(
+        app,
+        output_path,
+        password,
+        include_conversations,
+        if include_accounts {
+            None
+        } else {
+            Some(Vec::new())
+        },
+        true,
+        only_valid_accounts,
+    )
+}
+
+fn export_bundle_internal(
+    app: AppHandle,
+    output_path: String,
+    password: String,
+    include_conversations: bool,
+    profile_ids: Option<Vec<String>>,
+    allow_empty_profiles: bool,
+    only_valid_accounts: bool,
+) -> Result<BundleManifest, String> {
     if !password.is_empty() && password.len() < 8 {
         return Err("导出口令至少需要 8 位；如需明文导出请留空".to_string());
     }
     let store = load_store(&app)?;
     let key = load_master_key(&app)?;
     let codex_home = resolve_codex_home(&app, store.settings.codex_home.clone())?;
-    let profiles = select_profiles_for_export(&store.profiles, profile_ids.as_deref())?;
+    let selected_ids = if only_valid_accounts {
+        Some(
+            store
+                .profiles
+                .iter()
+                .filter(|profile| is_valid_mesh_account(profile))
+                .map(|profile| profile.id.clone())
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        profile_ids
+    };
+    let profiles = select_profiles_for_export(
+        &store.profiles,
+        selected_ids.as_deref(),
+        allow_empty_profiles,
+    )?;
     let export_profiles = profiles
         .into_iter()
         .map(|p| {
@@ -2522,9 +2706,10 @@ fn export_all_accounts_bundle(
 fn select_profiles_for_export<'a>(
     profiles: &'a [AccountProfile],
     profile_ids: Option<&[String]>,
+    allow_empty: bool,
 ) -> Result<Vec<&'a AccountProfile>, String> {
     let Some(profile_ids) = profile_ids else {
-        if profiles.is_empty() {
+        if profiles.is_empty() && !allow_empty {
             return Err("请选择至少一个账号导出".to_string());
         }
         return Ok(profiles.iter().collect());
@@ -2534,7 +2719,7 @@ fn select_profiles_for_export<'a>(
         .map(|id| id.trim())
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
-    if requested.is_empty() {
+    if requested.is_empty() && !allow_empty {
         return Err("请选择至少一个账号导出".to_string());
     }
     if let Some(missing_id) = requested
@@ -2547,6 +2732,15 @@ fn select_profiles_for_export<'a>(
         .iter()
         .filter(|profile| requested.iter().any(|id| profile.id.as_str() == *id))
         .collect())
+}
+
+fn is_valid_mesh_account(profile: &AccountProfile) -> bool {
+    profile.enabled
+        && profile.usage.last_token_refresh_status.as_deref() != Some("relogin_required")
+        && profile
+            .summary
+            .access_token_exp
+            .is_none_or(|expires_at| expires_at > Utc::now().timestamp())
 }
 
 #[tauri::command]
@@ -2563,6 +2757,24 @@ fn import_accounts_bundle(
     restore_conversations: bool,
     codex_home: Option<String>,
 ) -> Result<ImportResult, String> {
+    import_accounts_bundle_with_scope(
+        app,
+        bundle_path,
+        password,
+        restore_conversations,
+        codex_home,
+        None,
+    )
+}
+
+pub(crate) fn import_accounts_bundle_with_scope(
+    app: AppHandle,
+    bundle_path: String,
+    password: String,
+    restore_conversations: bool,
+    codex_home: Option<String>,
+    mesh_scope: Option<easytier_mesh::MeshSyncScope>,
+) -> Result<ImportResult, String> {
     let payload = read_bundle(&bundle_path, &password)?;
     let key = load_master_key(&app)?;
     let mut store = load_store(&app)?;
@@ -2571,6 +2783,9 @@ fn import_accounts_bundle(
 
     let mut imported = 0usize;
     for profile in payload.profiles {
+        if mesh_scope.as_ref().is_some_and(|scope| !scope.accounts) {
+            break;
+        }
         let encrypted_auth_json = encrypt_secret(profile.auth_json.as_bytes(), &key)?;
         let local_profile = AccountProfile {
             id: profile.id,
@@ -2603,6 +2818,12 @@ fn import_accounts_bundle(
     let mut restored = 0usize;
     let mut skipped_conversations = 0usize;
     for file in payload.files {
+        if mesh_scope
+            .as_ref()
+            .is_some_and(|scope| !mesh_file_in_scope(&file.path, scope))
+        {
+            continue;
+        }
         if is_conversation_path(&file.path) && !restore_conversations {
             skipped_conversations += 1;
             continue;
@@ -2640,6 +2861,19 @@ fn import_accounts_bundle(
         skipped_conversation_files: skipped_conversations,
         message: "迁移包已导入；选择账号后可写入当前机器的 auth.json".to_string(),
     })
+}
+
+fn mesh_file_in_scope(path: &str, scope: &easytier_mesh::MeshSyncScope) -> bool {
+    if path == "config.toml" {
+        return scope.routing;
+    }
+    if path == "rules" || path.starts_with("rules/") {
+        return scope.rules;
+    }
+    if is_conversation_path(path) {
+        return scope.conversations;
+    }
+    true
 }
 
 #[tauri::command]
@@ -4814,6 +5048,7 @@ fn main() {
                 oauth::restore_listener(app.handle().clone(), data_dir);
             }
             routing::restore_enabled(app.handle().clone());
+            easytier_mesh::restore_enabled(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -4855,6 +5090,18 @@ fn main() {
             routing_test_request,
             routing_apply_codex_config,
             routing_restore_codex_config,
+            mesh_status,
+            mesh_save_settings,
+            mesh_start,
+            mesh_stop,
+            mesh_refresh_public_nodes,
+            mesh_create_share_payload,
+            mesh_import_share_payload,
+            mesh_list_devices,
+            mesh_save_device_sync,
+            mesh_sync_now,
+            mesh_export_migration_share,
+            mesh_import_migration_share,
             refresh_profile_tokens_from_codex_home,
             refresh_all_profile_tokens,
             export_all_accounts_bundle,
@@ -5053,6 +5300,7 @@ mod tests {
                 auto_probe_enabled: true,
                 auto_probe_interval_secs: 60,
                 routing: RoutingSettings::default(),
+                mesh: easytier_mesh::MeshSettings::default(),
             },
             profiles: vec![ExportProfile {
                 id: "profile-1".to_string(),
@@ -5291,7 +5539,7 @@ mod tests {
         ];
         let requested = vec!["profile-3".to_string(), "profile-1".to_string()];
 
-        let selected = select_profiles_for_export(&profiles, Some(&requested)).unwrap();
+        let selected = select_profiles_for_export(&profiles, Some(&requested), false).unwrap();
 
         assert_eq!(
             selected
@@ -5301,11 +5549,16 @@ mod tests {
             vec!["profile-1", "profile-3"]
         );
         assert_eq!(
-            select_profiles_for_export(&profiles, None).unwrap().len(),
+            select_profiles_for_export(&profiles, None, false)
+                .unwrap()
+                .len(),
             3
         );
-        assert!(select_profiles_for_export(&profiles, Some(&Vec::new())).is_err());
-        assert!(select_profiles_for_export(&profiles, Some(&vec!["missing".to_string()])).is_err());
+        assert!(select_profiles_for_export(&profiles, Some(&Vec::new()), false).is_err());
+        assert!(
+            select_profiles_for_export(&profiles, Some(&vec!["missing".to_string()]), false)
+                .is_err()
+        );
     }
 
     #[test]

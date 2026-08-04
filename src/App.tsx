@@ -22,6 +22,7 @@ import {
   RefreshCcw,
   RotateCcw,
   Rows3,
+  Share2,
   Settings,
   ShieldCheck,
   Trash2,
@@ -33,6 +34,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RoutingPage } from "./components/routing/RoutingPage";
 import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
+import { MeshSharePage } from "./components/mesh/MeshSharePage";
 import { ProfileRuleFields } from "./components/ProfileRuleFields";
 import { StatusPill } from "./components/StatusPill";
 import type {
@@ -42,6 +44,11 @@ import type {
   CodexScan,
   DetectedLimit,
   LanguageSetting,
+  MeshDevice,
+  MeshImportResult,
+  MeshShareMode,
+  MeshStatus,
+  MeshSyncScope,
   Notice,
   OAuthEvent,
   OAuthLoginSession,
@@ -178,6 +185,22 @@ export default function App() {
   const [routingStickyTtlSecs, setRoutingStickyTtlSecs] = useState(3600);
   const [routingLogRetentionDays, setRoutingLogRetentionDays] = useState(7);
   const [routingBusy, setRoutingBusy] = useState(false);
+  const [meshStatus, setMeshStatus] = useState<MeshStatus | null>(null);
+  const [meshShareMode, setMeshShareMode] = useState<MeshShareMode>("joinOnly");
+  const [meshSharePayload, setMeshSharePayload] = useState("");
+  const [meshImportPayload, setMeshImportPayload] = useState("");
+  const [meshNetworkName, setMeshNetworkName] = useState("codex-switcher");
+  const [meshNetworkSecret, setMeshNetworkSecret] = useState("");
+  const [meshNodeSourceUrl, setMeshNodeSourceUrl] = useState("https://info.qtet.cn/uptime/easytier");
+  const [meshNodeRefreshSecs, setMeshNodeRefreshSecs] = useState(120);
+  const [meshAutoStart, setMeshAutoStart] = useState(false);
+  const [meshSyncScope, setMeshSyncScope] = useState<MeshSyncScope>({
+    accounts: true,
+    rules: true,
+    routing: false,
+    conversations: false
+  });
+  const [meshMigrationUseSecret, setMeshMigrationUseSecret] = useState(true);
   const [editAliasDraft, setEditAliasDraft] = useState("");
   const [editNoteDraft, setEditNoteDraft] = useState("");
   const [editQuotaDraft, setEditQuotaDraft] = useState<QuotaRule>(emptyQuota);
@@ -190,7 +213,7 @@ export default function App() {
   const [editApiKeyDraft, setEditApiKeyDraft] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activePage, setActivePage] = useState<"dashboard" | "routing" | "settings">("dashboard");
+  const [activePage, setActivePage] = useState<"dashboard" | "mesh" | "routing" | "settings">("dashboard");
   const [appVersion, setAppVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
@@ -378,6 +401,14 @@ export default function App() {
     setRoutingFixedProfileId(routing.fixedProfileId || "");
     setRoutingStickyTtlSecs(routing.stickyTtlSecs || 3600);
     setRoutingLogRetentionDays(routing.logRetentionDays || 7);
+    const mesh = store.settings.mesh;
+    if (mesh) {
+      setMeshNetworkName(mesh.networkName || "codex-switcher");
+      setMeshNodeSourceUrl(mesh.nodeSourceUrl || "https://info.qtet.cn/uptime/easytier");
+      setMeshNodeRefreshSecs(mesh.nodeRefreshSecs || 120);
+      setMeshAutoStart(!!mesh.autoStart);
+      setMeshSyncScope(mesh.syncScope || { accounts: true, rules: true, routing: false, conversations: false });
+    }
   }, [store]);
 
   useEffect(() => {
@@ -475,6 +506,8 @@ export default function App() {
       setStore(view);
       const routing = await invoke<RoutingStatus>("routing_status");
       setRoutingStatus(routing);
+      const mesh = await invoke<MeshStatus>("mesh_status");
+      setMeshStatus(mesh);
       if (view.settings.codexHome) {
         const currentScan = await invoke<CodexScan>("scan_codex_home", {
           codexHome: view.settings.codexHome
@@ -765,6 +798,161 @@ export default function App() {
     const routing = await invoke<RoutingStatus>("routing_status");
     setRoutingStatus(routing);
     return routing;
+  }
+
+  async function reloadMeshStatus() {
+    const mesh = await invoke<MeshStatus>("mesh_status");
+    setMeshStatus(mesh);
+    return mesh;
+  }
+
+  async function saveMeshSettings() {
+    await run(async () => {
+      const mesh = await invoke<MeshStatus>("mesh_save_settings", {
+        input: {
+          enabled: meshStatus?.settings.enabled ?? false,
+          autoStart: meshAutoStart,
+          networkName: meshNetworkName,
+          networkSecret: meshNetworkSecret || undefined,
+          nodeSourceUrl: meshNodeSourceUrl,
+          nodeRefreshSecs: meshNodeRefreshSecs,
+          syncScope: meshSyncScope
+        }
+      });
+      setMeshStatus(mesh);
+      setMeshNetworkSecret("");
+      await refresh();
+      return mesh;
+    }, "组网分享设置已保存");
+  }
+
+  async function toggleMeshService() {
+    await run(async () => {
+      const mesh = await invoke<MeshStatus>(meshStatus?.running ? "mesh_stop" : "mesh_start");
+      setMeshStatus(mesh);
+      await refresh();
+      return mesh;
+    }, meshStatus?.running ? "组网已停止" : "组网已启动");
+  }
+
+  async function refreshMeshNodes() {
+    await run(async () => {
+      const mesh = await invoke<MeshStatus>("mesh_refresh_public_nodes");
+      setMeshStatus(mesh);
+      return mesh;
+    }, "公共节点已刷新");
+  }
+
+  async function createMeshSharePayload() {
+    await run(async () => {
+      const payload = await invoke<string>("mesh_create_share_payload", {
+        mode: meshShareMode
+      });
+      setMeshSharePayload(payload);
+      await reloadMeshStatus();
+      return payload;
+    }, "共享码已生成");
+  }
+
+  async function copyMeshSharePayload() {
+    if (!meshSharePayload.trim()) return;
+    await navigator.clipboard.writeText(meshSharePayload);
+    setNotice({ kind: "ok", text: "共享码已复制" });
+  }
+
+  async function importMeshSharePayload() {
+    if (!meshImportPayload.trim()) return;
+    await run(async () => {
+      const result = await invoke<MeshImportResult>("mesh_import_share_payload", {
+        payloadText: meshImportPayload
+      });
+      setMeshImportPayload("");
+      await refresh();
+      return result;
+    }, "共享码已导入");
+  }
+
+  async function saveMeshDevice(device: MeshDevice) {
+    await run(async () => {
+      const mesh = await invoke<MeshStatus>("mesh_save_device_sync", {
+        deviceId: device.id,
+        trusted: device.trusted,
+        syncScope: device.syncScope
+      });
+      setMeshStatus(mesh);
+      return mesh;
+    }, "设备同步设置已保存");
+  }
+
+  async function syncMeshNow(deviceId?: string) {
+    await run(async () => {
+      const mesh = await invoke<MeshStatus>("mesh_sync_now", {
+        deviceId
+      });
+      setMeshStatus(mesh);
+      return mesh;
+    }, "已请求组网同步");
+  }
+
+  async function exportMeshMigrationShare() {
+    if (!meshMigrationUseSecret && passwordTooShort) {
+      setNotice({ kind: "warn", text: t.passwordTooShortExport });
+      return;
+    }
+    const selectableProfileIds = (store?.profiles || []).map((profile) => profile.id);
+    const profileIds = exportProfileIds.filter((id) => selectableProfileIds.includes(id));
+    if (profileIds.length === 0) {
+      setNotice({ kind: "warn", text: t.exportNoAccount });
+      return;
+    }
+    const path = await save({
+      title: "导出迁移分享包",
+      defaultPath: meshMigrationUseSecret || password ? "codex-switcher.mesh.zip.enc" : "codex-switcher.mesh.zip",
+      filters: [{ name: "Codex Switcher Mesh Bundle", extensions: ["zip", "enc"] }]
+    });
+    if (!path) return;
+    await run(async () => {
+      const manifest = await invoke<BundleManifest>("mesh_export_migration_share", {
+        outputPath: path,
+        password,
+        useMeshSecret: meshMigrationUseSecret,
+        includeConversations,
+        profileIds
+      });
+      setNotice({
+        kind: meshMigrationUseSecret || password ? "ok" : "warn",
+        text: `迁移分享包已导出: ${manifest.profileCount} ${t.accountCount}, ${manifest.files.length} ${t.configFiles}`
+      });
+      return manifest;
+    });
+  }
+
+  async function importMeshMigrationShare() {
+    if (!meshMigrationUseSecret && passwordTooShort) {
+      setNotice({ kind: "warn", text: t.passwordTooShortImport });
+      return;
+    }
+    const path = await open({
+      title: "导入迁移分享包",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Codex Switcher Mesh Bundle", extensions: ["zip", "enc"] }]
+    });
+    if (!path || Array.isArray(path)) return;
+    await run(async () => {
+      const result = await invoke<{ importedProfiles: number; restoredFiles: number; message: string }>(
+        "mesh_import_migration_share",
+        {
+          bundlePath: path,
+          password,
+          useMeshSecret: meshMigrationUseSecret,
+          restoreConversations,
+          codexHome: codexHome || undefined
+        }
+      );
+      await refresh();
+      return result;
+    }, "迁移分享包已导入");
   }
 
   async function saveRoutingSettings(enabled = routingStatus?.settings.enabled ?? false) {
@@ -1461,6 +1649,15 @@ export default function App() {
               {t.settings}
             </button>
             <button
+              className={`tab-button ${activePage === "mesh" ? "active" : ""}`}
+              onClick={() => setActivePage("mesh")}
+              role="tab"
+              aria-selected={activePage === "mesh"}
+            >
+              <Share2 size={17} />
+              组网分享
+            </button>
+            <button
               className={`tab-button ${activePage === "routing" ? "active" : ""}`}
               onClick={() => setActivePage("routing")}
               role="tab"
@@ -1814,6 +2011,52 @@ export default function App() {
           onFixProfile={fixProfileToRouting}
           onSaveProfilePriority={saveRoutingProfilePriority}
           onTestRequest={testRoutingRequest}
+        />
+      ) : activePage === "mesh" ? (
+        <MeshSharePage
+          status={meshStatus}
+          profiles={store?.profiles || []}
+          busy={busy}
+          shareMode={meshShareMode}
+          sharePayload={meshSharePayload}
+          importPayload={meshImportPayload}
+          networkName={meshNetworkName}
+          networkSecret={meshNetworkSecret}
+          nodeSourceUrl={meshNodeSourceUrl}
+          nodeRefreshSecs={meshNodeRefreshSecs}
+          autoStart={meshAutoStart}
+          syncScope={meshSyncScope}
+          migrationPassword={password}
+          migrationUseMeshSecret={meshMigrationUseSecret}
+          includeConversations={includeConversations}
+          restoreConversations={restoreConversations}
+          exportProfileIds={exportProfileIds}
+          onShareModeChange={setMeshShareMode}
+          onSharePayloadChange={setMeshSharePayload}
+          onImportPayloadChange={setMeshImportPayload}
+          onNetworkNameChange={setMeshNetworkName}
+          onNetworkSecretChange={setMeshNetworkSecret}
+          onNodeSourceUrlChange={setMeshNodeSourceUrl}
+          onNodeRefreshSecsChange={setMeshNodeRefreshSecs}
+          onAutoStartChange={setMeshAutoStart}
+          onSyncScopeChange={setMeshSyncScope}
+          onMigrationPasswordChange={setPassword}
+          onMigrationUseMeshSecretChange={setMeshMigrationUseSecret}
+          onIncludeConversationsChange={setIncludeConversations}
+          onRestoreConversationsChange={setRestoreConversations}
+          onToggleExportProfile={toggleExportProfile}
+          onSelectAllProfiles={() => setExportProfileIds((store?.profiles || []).map((profile) => profile.id))}
+          onClearProfiles={() => setExportProfileIds([])}
+          onSaveSettings={saveMeshSettings}
+          onToggleService={toggleMeshService}
+          onRefreshNodes={refreshMeshNodes}
+          onCreateShare={createMeshSharePayload}
+          onCopyShare={copyMeshSharePayload}
+          onImportShare={importMeshSharePayload}
+          onSaveDevice={saveMeshDevice}
+          onSyncNow={syncMeshNow}
+          onExportMigration={exportMeshMigrationShare}
+          onImportMigration={importMeshMigrationShare}
         />
       ) : activePage === "settings" ? (
         <>
@@ -2309,83 +2552,13 @@ export default function App() {
 
       <section className="migration-band">
         <div className="migration-copy">
-          <h2>{t.oneClickMigration}</h2>
-          <p>{t.migrationIntro}</p>
+          <h2>组网分享与迁移</h2>
+          <p>迁移包导出/导入、共享密钥、设备同步和路由 API 分享已经统一放到组网分享页。</p>
         </div>
         <div className="migration-controls">
-          <input
-            type="password"
-            placeholder={t.bundlePassword}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            title={t.bundlePassword}
-          />
-          {passwordTooShort && (
-            <span className="field-warning">{t.passwordWarning}</span>
-          )}
-          <label className="checkline" title={t.exportConversations}>
-            <input
-              type="checkbox"
-              checked={includeConversations}
-              onChange={(event) => setIncludeConversations(event.target.checked)}
-            />
-            {t.exportConversations}
-          </label>
-          <label className="checkline" title={t.restoreConversations}>
-            <input
-              type="checkbox"
-              checked={restoreConversations}
-              onChange={(event) => setRestoreConversations(event.target.checked)}
-            />
-            {t.restoreConversations}
-          </label>
-          <details className="export-selector">
-            <summary>
-              <span>{t.exportAccountSelection}</span>
-              <strong>{selectedExportProfiles.length}/{store?.profiles.length || 0}</strong>
-            </summary>
-            <div className="export-selector-actions">
-              <button type="button" className="mini-button" onClick={() => setExportProfileIds((store?.profiles || []).map((profile) => profile.id))}>
-                {t.selectAll}
-              </button>
-              <button
-                type="button"
-                className="mini-button"
-                onClick={() => selectedProfile && setExportProfileIds([selectedProfile.id])}
-                disabled={!selectedProfile}
-              >
-                {t.selectCurrent}
-              </button>
-              <button type="button" className="mini-button" onClick={() => setExportProfileIds([])}>
-                {t.clearSelection}
-              </button>
-            </div>
-            <div className="export-account-list">
-              {(store?.profiles || []).map((profile) => {
-                const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
-                return (
-                  <label className="export-account-row" key={profile.id} title={`${profile.alias}\n${accountText}`}>
-                    <input
-                      type="checkbox"
-                      checked={exportProfileIds.includes(profile.id)}
-                      onChange={() => toggleExportProfile(profile.id)}
-                    />
-                    <span>
-                      <strong>{profile.alias}</strong>
-                      <small>{accountText}</small>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </details>
-          <button className="icon-button primary" onClick={() => void exportBundle()} disabled={busy || passwordTooShort || selectedExportProfiles.length === 0} title={t.exportSelected}>
-            <Download size={17} />
-            {t.exportSelected}
-          </button>
-          <button className="icon-button" onClick={() => void importBundle()} disabled={busy || passwordTooShort} title={t.importBundle}>
-            <Upload size={17} />
-            {t.importBundle}
+          <button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title="打开组网分享">
+            <Share2 size={17} />
+            打开组网分享
           </button>
           <button className="icon-button" onClick={() => void restoreBackup()} disabled={busy} title={t.restoreBackup}>
             <RotateCcw size={17} />

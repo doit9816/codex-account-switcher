@@ -99,6 +99,7 @@ export type StoreView = {
     autoProbeEnabled: boolean;
     autoProbeIntervalSecs: number;
     routing: RoutingSettings;
+    mesh: MeshSettings;
   };
   profiles: Profile[];
   events: AppEvent[];
@@ -168,6 +169,73 @@ export type RoutingCodexCheck = {
   serviceRunning: boolean;
   healthOk: boolean;
   diagnostics: string[];
+};
+
+export type MeshSyncScope = {
+  accounts: boolean;
+  rules: boolean;
+  routing: boolean;
+  conversations: boolean;
+};
+
+export type MeshSettings = {
+  enabled: boolean;
+  autoStart: boolean;
+  networkName: string;
+  nodeSourceUrl: string;
+  nodeRefreshSecs: number;
+  syncScope: MeshSyncScope;
+  lastNodeRefreshAt?: string;
+  lastNodeRefreshError?: string;
+};
+
+export type MeshPublicNode = {
+  id: string;
+  name: string;
+  address: string;
+  group?: string;
+  status: string;
+  uptime24?: number;
+  pingMs?: number;
+  tags: string[];
+};
+
+export type MeshDevice = {
+  id: string;
+  name: string;
+  address?: string;
+  lastSeenAt?: string;
+  trusted: boolean;
+  syncScope: MeshSyncScope;
+  autoAccountSync?: boolean;
+};
+
+export type MeshShareMode = "joinOnly" | "migrationBundle" | "continuousSync" | "routingApiShare";
+
+export type MeshStatus = {
+  running: boolean;
+  settings: MeshSettings;
+  publicNodes: MeshPublicNode[];
+  devices: MeshDevice[];
+  shareReady: boolean;
+  localDeviceId: string;
+  localDeviceName: string;
+  routingBaseUrl?: string;
+  runtimeKind?: string;
+  processId?: number;
+  runtimeBinaryPath?: string;
+  peerCount?: number;
+  virtualIpv4?: string;
+  startedAt?: string;
+  lastError?: string;
+};
+
+export type MeshImportResult = {
+  mode: MeshShareMode;
+  deviceId: string;
+  deviceName: string;
+  importedNodes: number;
+  message: string;
 };
 
 export type CodexScan = {

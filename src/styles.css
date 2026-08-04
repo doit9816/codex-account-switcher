@@ -2384,3 +2384,257 @@ input:focus {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.mesh-page {
+  display: grid;
+  gap: 16px;
+}
+
+.mesh-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.mesh-hero h2 {
+  margin: 4px 0;
+}
+
+.section-kicker {
+  color: #4d6b8a;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mesh-hero-status {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  text-align: right;
+}
+
+.mesh-hero-status small {
+  display: none;
+}
+
+.mesh-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mesh-mode-card {
+  border: 1px solid #d7dee8;
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.mesh-mode-card.active {
+  border-color: #2f6fed;
+  box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.12);
+}
+
+.mesh-mode-card span {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mesh-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(360px, 0.88fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.mesh-column {
+  display: grid;
+  gap: 16px;
+}
+
+.mesh-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mesh-form-grid label,
+.mesh-migration-options label {
+  display: grid;
+  gap: 6px;
+  color: #4b5563;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.mesh-form-grid input,
+.mesh-migration-options input,
+.mesh-payload-box {
+  width: 100%;
+  min-width: 0;
+}
+
+.mesh-checkline {
+  align-self: end;
+}
+
+.mesh-settings-panel .action-row > .icon-button:nth-child(3) {
+  display: none;
+}
+
+.mesh-scope-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 14px 0;
+}
+
+.mesh-scope-editor.compact {
+  margin: 0;
+  gap: 8px;
+}
+
+.mesh-payload-box {
+  min-height: 92px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mesh-migration-options {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, max-content);
+  gap: 12px;
+  align-items: center;
+}
+
+.mesh-export-selector {
+  margin: 12px 0;
+}
+
+.mesh-node-list,
+.mesh-device-list {
+  display: grid;
+  gap: 8px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.mesh-node-row,
+.mesh-device-row {
+  border: 1px solid #e3e8ef;
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  background: #fff;
+}
+
+.mesh-node-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.mesh-node-row span,
+.mesh-device-row div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mesh-node-row small,
+.mesh-device-row small {
+  color: #667085;
+  overflow-wrap: anywhere;
+}
+
+.mesh-node-row em {
+  color: #667085;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.mesh-device-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mesh-device-row > .mesh-scope-editor {
+  grid-column: 1 / -1;
+}
+
+.mesh-device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 14px;
+}
+
+.mesh-device-row > .mesh-device-actions {
+  display: flex;
+}
+
+.mesh-device-row > div:first-child > small {
+  display: none;
+}
+
+.mesh-device-row > .mini-button {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.mesh-scope-editor .checkline:first-child {
+  display: none;
+}
+
+.mesh-node-panel {
+  display: none;
+}
+
+.mesh-warning {
+  border: 1px solid #f6c343;
+  background: #fff7d6;
+  color: #7a4d00;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 980px) {
+  .mesh-hero,
+  .mesh-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .mesh-hero {
+    display: grid;
+  }
+
+  .mesh-hero-status {
+    text-align: left;
+  }
+
+  .mesh-mode-grid,
+  .mesh-form-grid,
+  .mesh-migration-options,
+  .mesh-device-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mesh-device-row > .mesh-scope-editor,
+  .mesh-device-row > .mini-button {
+    grid-column: auto;
+    justify-self: start;
+  }
+}
+.mesh-internal-settings {
+  display: none;
+}

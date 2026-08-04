@@ -912,6 +912,10 @@ fn handle_request(app: AppHandle, mut request: Request) {
                 "activeConnections": ACTIVE_CONNECTIONS.load(AtomicOrdering::Relaxed)
             }),
         )
+    } else if method == Method::Post && url == "/mesh/sync" {
+        crate::easytier_mesh::handle_sync_request(app, request).map_err(|error| {
+            Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
+        })
     } else if method == Method::Post && url == "/v1/responses" {
         match proxy_responses(app.clone(), &mut request, started) {
             Ok(response) => {
