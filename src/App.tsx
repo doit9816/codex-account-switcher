@@ -98,6 +98,12 @@ function apiProtocolLabel(wireApi: string, t: I18n) {
   return t.apiProtocolResponses;
 }
 
+function updaterProxyUrl(store: StoreView | null) {
+  const proxy = store?.settings.probeProxy;
+  const url = proxy?.url.trim();
+  return proxy?.enabled && url ? url : undefined;
+}
+
 function isAccountExpired(profile: Profile, t: I18n) {
   return subscriptionExpiryState(profile).expired || tokenState(profile, t) === t.expired;
 }
@@ -885,7 +891,11 @@ export default function App() {
   async function checkForUpdate(manual = true) {
     setUpdateChecking(true);
     try {
-      const update = await check({ timeout: 15000 });
+      const proxy = updaterProxyUrl(storeRef.current);
+      const update = await check({
+        timeout: 15000,
+        ...(proxy ? { proxy } : {})
+      });
       setUpdateChecked(true);
       setUpdateError("");
       setAvailableUpdate(update);
