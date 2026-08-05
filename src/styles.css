@@ -93,6 +93,45 @@ button:disabled {
   padding: 24px;
 }
 
+.startup-shell {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  background: #f5f8fc;
+}
+
+.startup-loading {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  min-width: 220px;
+  padding: 28px 34px;
+  color: #344054;
+  border: 1px solid #e3eaf3;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(28, 54, 86, 0.08);
+}
+
+.startup-loading-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: #2867c7;
+  border-radius: 12px;
+  background: #eaf2ff;
+}
+
+.startup-loading-mark svg {
+  animation: button-spin 1.1s linear infinite;
+}
+
+.startup-loading span {
+  color: #98a2b3;
+  font-size: 13px;
+}
+
 .topbar {
   align-items: center;
   display: flex;

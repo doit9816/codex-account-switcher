@@ -213,6 +213,7 @@ export default function App() {
   const [editApiKeyDraft, setEditApiKeyDraft] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  const [initializing, setInitializing] = useState(true);
   const [activePage, setActivePage] = useState<"dashboard" | "mesh" | "routing" | "settings">("dashboard");
   const [appVersion, setAppVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
@@ -303,7 +304,7 @@ export default function App() {
   const oauthReauthProfileIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    void refresh();
+    void refresh().finally(() => setInitializing(false));
     void getVersion().then(setAppVersion).catch(() => setAppVersion(""));
     const updateTimer = window.setTimeout(() => {
       void checkForUpdate(false);
@@ -1640,6 +1641,18 @@ export default function App() {
           <Trash2 size={15} />
         </button>
       </>
+    );
+  }
+
+  if (initializing && !store) {
+    return (
+      <main className="app-shell startup-shell">
+        <div className="startup-loading" role="status" aria-live="polite">
+          <div className="startup-loading-mark"><RefreshCcw size={20} /></div>
+          <strong>CodexSwitcher</strong>
+          <span>正在加载配置…</span>
+        </div>
+      </main>
     );
   }
 

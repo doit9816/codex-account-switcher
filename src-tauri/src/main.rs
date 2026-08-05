@@ -1462,32 +1462,42 @@ fn routing_restore_codex_config(app: AppHandle) -> Result<routing::RoutingStatus
     routing::restore_codex_config(app)
 }
 
-#[tauri::command]
-fn mesh_status(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
-    easytier_mesh::status(app)
+async fn run_mesh_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn mesh_save_settings(
+async fn mesh_status(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::status(app)).await
+}
+
+#[tauri::command]
+async fn mesh_save_settings(
     app: AppHandle,
     input: easytier_mesh::MeshSaveSettingsInput,
 ) -> Result<easytier_mesh::MeshStatus, String> {
-    easytier_mesh::save_settings(app, input)
+    run_mesh_blocking(move || easytier_mesh::save_settings(app, input)).await
 }
 
 #[tauri::command]
-fn mesh_start(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
-    easytier_mesh::start(app)
+async fn mesh_start(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::start(app)).await
 }
 
 #[tauri::command]
-fn mesh_stop(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
-    easytier_mesh::stop(app)
+async fn mesh_stop(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::stop(app)).await
 }
 
 #[tauri::command]
-fn mesh_refresh_public_nodes(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
-    easytier_mesh::refresh_public_nodes(app)
+async fn mesh_refresh_public_nodes(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::refresh_public_nodes(app)).await
 }
 
 #[tauri::command]

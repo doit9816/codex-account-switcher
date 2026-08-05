@@ -331,7 +331,15 @@ pub(crate) fn restore_enabled(app: AppHandle) {
         .map(|store| store.settings.mesh.enabled || store.settings.mesh.auto_start)
         .unwrap_or(false)
     {
-        let _ = start(app);
+        thread::spawn(move || {
+            if let Err(error) = start(app.clone()) {
+                append_app_log(
+                    &app,
+                    "error",
+                    &format!("automatic mesh startup failed: {error}"),
+                );
+            }
+        });
     }
 }
 
