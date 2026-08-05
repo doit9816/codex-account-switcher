@@ -2721,6 +2721,17 @@ input:focus {
   min-height: 340px;
 }
 
+.mesh-peer-discovered {
+  grid-template-columns: minmax(0, 1fr) auto;
+  background: #f8fbff;
+}
+
+.mesh-peer-note {
+  color: #667085;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .mesh-guide-list {
   display: grid;
   gap: 14px;

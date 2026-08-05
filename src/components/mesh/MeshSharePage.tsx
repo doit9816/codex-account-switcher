@@ -110,6 +110,12 @@ export function MeshSharePage({
   const onlineDevices = (status?.devices || []).filter(
     (device) => device.online === true && device.id !== status?.localDeviceId
   );
+  const discoveredPeers = (status?.peers || []).filter(
+    (peer) =>
+      peer.ip &&
+      peer.ip !== status?.virtualIpv4 &&
+      !onlineDevices.some((device) => device.ip === peer.ip)
+  );
 
   return (
     <section className="mesh-page">
@@ -407,7 +413,24 @@ export function MeshSharePage({
                   </button>
                 </article>
               ))}
-              {onlineDevices.length === 0 && <div className="account-empty">暂无在线设备，设备连接后会自动出现。</div>}
+              {discoveredPeers.map((peer) => (
+                <article className="mesh-device-row mesh-peer-discovered" key={`peer-${peer.peerId}`}>
+                  <div>
+                    <div className="mesh-device-title">
+                      <StatusPill ok text="在线" />
+                      <strong>{peer.name}</strong>
+                    </div>
+                    <small className="mesh-device-meta">
+                      {peer.ip}
+                      {peer.latencyMs != null ? ` · ${Math.round(peer.latencyMs)} ms` : ""}
+                    </small>
+                  </div>
+                  <span className="mesh-peer-note">已连接，未授权同步</span>
+                </article>
+              ))}
+              {onlineDevices.length === 0 && discoveredPeers.length === 0 && (
+                <div className="account-empty">暂无在线设备，设备连接后会自动出现。</div>
+              )}
             </div>
             <button className="icon-button" onClick={() => void onSyncNow()} disabled={busy || !onlineDevices.some((device) => device.trusted)}>
               <RefreshCcw size={17} /> 同步全部已连接设备
