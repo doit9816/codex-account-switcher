@@ -185,6 +185,7 @@ export type MeshSettings = {
   nodeSourceUrl: string;
   nodeRefreshSecs: number;
   syncScope: MeshSyncScope;
+  syncScopeInitialized?: boolean;
   lastNodeRefreshAt?: string;
   lastNodeRefreshError?: string;
 };
@@ -208,6 +209,16 @@ export type MeshDevice = {
   trusted: boolean;
   syncScope: MeshSyncScope;
   autoAccountSync?: boolean;
+  online?: boolean;
+  ip?: string;
+  latencyMs?: number;
+};
+
+export type MeshPeer = {
+  peerId: number;
+  name: string;
+  ip?: string;
+  latencyMs?: number;
 };
 
 export type MeshShareMode = "joinOnly" | "migrationBundle" | "continuousSync" | "routingApiShare";
@@ -217,6 +228,7 @@ export type MeshStatus = {
   settings: MeshSettings;
   publicNodes: MeshPublicNode[];
   devices: MeshDevice[];
+  peers: MeshPeer[];
   shareReady: boolean;
   localDeviceId: string;
   localDeviceName: string;

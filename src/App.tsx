@@ -196,7 +196,7 @@ export default function App() {
   const [meshAutoStart, setMeshAutoStart] = useState(false);
   const [meshSyncScope, setMeshSyncScope] = useState<MeshSyncScope>({
     accounts: true,
-    rules: true,
+    rules: false,
     routing: false,
     conversations: false
   });
@@ -407,7 +407,11 @@ export default function App() {
       setMeshNodeSourceUrl(mesh.nodeSourceUrl || "https://info.qtet.cn/uptime/easytier");
       setMeshNodeRefreshSecs(mesh.nodeRefreshSecs || 120);
       setMeshAutoStart(!!mesh.autoStart);
-      setMeshSyncScope(mesh.syncScope || { accounts: true, rules: true, routing: false, conversations: false });
+      setMeshSyncScope(
+        mesh.syncScopeInitialized === false
+          ? { accounts: true, rules: false, routing: false, conversations: false }
+          : mesh.syncScope || { accounts: true, rules: false, routing: false, conversations: false }
+      );
     }
   }, [store]);
 
@@ -441,6 +445,18 @@ export default function App() {
     store?.settings.backgroundTokenRefreshIntervalSecs,
     store?.settings.tokenRefreshThresholdSecs
   ]);
+
+  useEffect(() => {
+    if (activePage !== "mesh") return;
+    const timer = window.setInterval(() => {
+      void invoke<MeshStatus>("mesh_status")
+        .then(setMeshStatus)
+        .catch(() => {
+          // A stopped or restarting mesh runtime is reflected on the next tick.
+        });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [activePage]);
 
   useEffect(() => {
     if (!notice) return;
@@ -536,6 +552,12 @@ export default function App() {
         codexHome: codexHome || undefined
       });
     }, t.openedCodex);
+  }
+
+  async function openLogsDirectory() {
+    await run(async () => {
+      await invoke("open_logs_directory");
+    }, "已打开日志目录");
   }
 
   async function importCurrentAuth() {
@@ -845,6 +867,18 @@ export default function App() {
 
   async function createMeshSharePayload() {
     await run(async () => {
+      const saved = await invoke<MeshStatus>("mesh_save_settings", {
+        input: {
+          enabled: meshStatus?.settings.enabled ?? false,
+          autoStart: meshAutoStart,
+          networkName: meshNetworkName,
+          networkSecret: meshNetworkSecret || undefined,
+          nodeSourceUrl: meshNodeSourceUrl,
+          nodeRefreshSecs: meshNodeRefreshSecs,
+          syncScope: meshSyncScope
+        }
+      });
+      setMeshStatus(saved);
       const payload = await invoke<string>("mesh_create_share_payload", {
         mode: meshShareMode
       });
@@ -2018,7 +2052,6 @@ export default function App() {
           status={meshStatus}
           profiles={store?.profiles || []}
           busy={busy}
-          shareMode={meshShareMode}
           sharePayload={meshSharePayload}
           importPayload={meshImportPayload}
           networkName={meshNetworkName}
@@ -2032,8 +2065,6 @@ export default function App() {
           includeConversations={includeConversations}
           restoreConversations={restoreConversations}
           exportProfileIds={exportProfileIds}
-          onShareModeChange={setMeshShareMode}
-          onSharePayloadChange={setMeshSharePayload}
           onImportPayloadChange={setMeshImportPayload}
           onNetworkNameChange={setMeshNetworkName}
           onNetworkSecretChange={setMeshNetworkSecret}
@@ -2173,6 +2204,7 @@ export default function App() {
         busy={busy}
         onRetentionDaysChange={setRoutingLogRetentionDays}
         onSave={saveRoutingLogSettings}
+        onOpenLogs={openLogsDirectory}
       />
 
       <section className="update-band">

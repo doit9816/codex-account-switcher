@@ -1,33 +1,29 @@
 import {
+  BookOpen,
   Clipboard,
   Copy,
   Download,
   KeyRound,
+  Link2,
   Network,
   PlugZap,
   RefreshCcw,
   Save,
   Send,
+  ShieldCheck,
   Share2,
   Upload,
   Wifi,
 } from "lucide-react";
-import type { MeshDevice, MeshShareMode, MeshStatus, MeshSyncScope, Profile } from "../../types";
+import type { ReactNode } from "react";
+import type { MeshDevice, MeshStatus, MeshSyncScope, Profile } from "../../types";
 import { formatDate } from "../../profileUtils";
 import { StatusPill } from "../StatusPill";
-
-const shareModes: Array<{ id: MeshShareMode; title: string; text: string }> = [
-  { id: "joinOnly", title: "多设备共享", text: "复制分享码到其他设备，建立设备连接。" },
-  { id: "migrationBundle", title: "一次性迁移", text: "复用加密迁移包，适合换电脑。" },
-  { id: "continuousSync", title: "共享与同步", text: "连接后可按设备同步账号、规则和会话。" },
-  { id: "routingApiShare", title: "路由 API 共享", text: "共享本机路由入口，仍需要 API Key。" },
-];
 
 type MeshSharePageProps = {
   status: MeshStatus | null;
   profiles: Profile[];
   busy: boolean;
-  shareMode: MeshShareMode;
   sharePayload: string;
   importPayload: string;
   networkName: string;
@@ -41,8 +37,6 @@ type MeshSharePageProps = {
   includeConversations: boolean;
   restoreConversations: boolean;
   exportProfileIds: string[];
-  onShareModeChange: (mode: MeshShareMode) => void;
-  onSharePayloadChange: (value: string) => void;
   onImportPayloadChange: (value: string) => void;
   onNetworkNameChange: (value: string) => void;
   onNetworkSecretChange: (value: string) => void;
@@ -73,7 +67,6 @@ export function MeshSharePage({
   status,
   profiles,
   busy,
-  shareMode,
   sharePayload,
   importPayload,
   networkName,
@@ -87,8 +80,6 @@ export function MeshSharePage({
   includeConversations,
   restoreConversations,
   exportProfileIds,
-  onShareModeChange,
-  onSharePayloadChange,
   onImportPayloadChange,
   onNetworkNameChange,
   onNetworkSecretChange,
@@ -116,6 +107,9 @@ export function MeshSharePage({
 }: MeshSharePageProps) {
   const upNodes = status?.publicNodes.filter((node) => node.status === "up").length || 0;
   const selectedProfiles = profiles.filter((profile) => exportProfileIds.includes(profile.id));
+  const onlineDevices = (status?.devices || []).filter(
+    (device) => device.online === true && device.id !== status?.localDeviceId
+  );
 
   return (
     <section className="mesh-page">
@@ -130,7 +124,7 @@ export function MeshSharePage({
           <strong>{status?.localDeviceName || "-"}</strong>
           <small>{status?.localDeviceId || "等待初始化"}</small>
           {status?.runtimeKind && <small>{status.runtimeKind}</small>}
-          {status?.peerCount != null && <small>{status.peerCount} 个 EasyTier peer 已注入</small>}
+          {status?.peerCount != null && <small>{status.peerCount} 台在线设备</small>}
           {status?.virtualIpv4 && <small>{status.virtualIpv4}</small>}
           {status?.routingBaseUrl && <small>Routing API: {status.routingBaseUrl}</small>}
           {status?.startedAt && <small>{formatDate(status.startedAt)}</small>}
@@ -138,28 +132,14 @@ export function MeshSharePage({
       </div>
       {status?.lastError && <div className="mesh-warning">{status.lastError}</div>}
 
-      <div className="mesh-mode-grid">
-        {shareModes.filter((mode) => mode.id !== "routingApiShare").map((mode) => (
-          <button
-            key={mode.id}
-            className={`mesh-mode-card ${shareMode === mode.id ? "active" : ""}`}
-            onClick={() => onShareModeChange(mode.id)}
-            type="button"
-            disabled={busy}
-          >
-            <strong>{mode.title}</strong>
-            <span>{mode.text}</span>
-          </button>
-        ))}
-      </div>
-
       <div className="mesh-columns">
         <div className="mesh-column">
+          <div className="mesh-share-flow">
           <section className="panel mesh-settings-panel">
             <div className="panel-header">
               <div>
-                <h2>网络设置</h2>
-                <p>连接信息由应用自动管理，账号数据仍由应用层加密。</p>
+                <h2>多设备共享设置</h2>
+                <p>选择分享内容，生成分享码后在其他设备导入即可。</p>
               </div>
               <Network size={22} />
             </div>
@@ -196,6 +176,10 @@ export function MeshSharePage({
                 启动应用时自动建立连接
               </label>
             </div>
+            <div className="mesh-share-scope-hint">
+              <strong>分享内容</strong>
+              <span>由分享者决定，接收设备会按此设置建立连接。</span>
+            </div>
             <ScopeEditor value={syncScope} onChange={onSyncScopeChange} />
             <div className="action-row">
               <button className="icon-button primary" onClick={() => void onSaveSettings()} disabled={busy}>
@@ -204,9 +188,6 @@ export function MeshSharePage({
               <button className="icon-button" onClick={() => void onToggleService()} disabled={busy}>
                 <PlugZap size={17} /> {status?.running ? "断开连接" : "建立连接"}
               </button>
-              <button className="icon-button" onClick={() => void onRefreshNodes()} disabled={busy}>
-                <RefreshCcw size={17} /> 刷新节点
-              </button>
             </div>
           </section>
 
@@ -214,36 +195,63 @@ export function MeshSharePage({
             <div className="panel-header">
               <div>
                 <h2>连接分享码</h2>
-                <p>复制给其他设备，导入后即可建立连接。</p>
+                <p>在其他设备粘贴导入，自动建立多设备共享连接。</p>
               </div>
               <Share2 size={22} />
             </div>
-            <div className="action-row">
+            <div className="action-row mesh-share-actions">
               <button className="icon-button primary" onClick={() => void onCreateShare()} disabled={busy}>
-                <KeyRound size={17} /> 生成当前模式共享码
+                <KeyRound size={17} /> 生成分享码
               </button>
               <button className="icon-button" onClick={() => void onCopyShare()} disabled={busy || !sharePayload.trim()}>
                 <Copy size={17} /> 复制
               </button>
             </div>
-            <textarea
-              className="mesh-payload-box"
-              value={sharePayload}
-              onChange={(event) => onSharePayloadChange(event.target.value)}
-              placeholder="生成后的 codex-switcher-mesh:... 会显示在这里"
-              spellCheck={false}
-            />
-            <textarea
-              className="mesh-payload-box"
-              value={importPayload}
-              onChange={(event) => onImportPayloadChange(event.target.value)}
-              placeholder="粘贴另一台设备的共享码"
-              spellCheck={false}
-            />
-            <button className="icon-button" onClick={() => void onImportShare()} disabled={busy || !importPayload.trim()}>
-              <Clipboard size={17} /> 粘贴导入
-            </button>
+            <div className="mesh-payload-group">
+              <div className="mesh-payload-label">
+                <strong>已生成的分享码</strong>
+                <span>复制此分享码到其他设备导入</span>
+              </div>
+              <div className="mesh-payload-editor">
+                <textarea
+                  className="mesh-payload-box"
+                  value={sharePayload}
+                  readOnly
+                  placeholder="点击“生成分享码”后显示"
+                  spellCheck={false}
+                  aria-label="已生成的分享码"
+                />
+                <button
+                  className="mesh-payload-copy"
+                  onClick={() => void onCopyShare()}
+                  disabled={busy || !sharePayload.trim()}
+                  title="复制分享码"
+                  aria-label="复制分享码"
+                >
+                  <Copy size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="mesh-payload-group mesh-import-group">
+              <div className="mesh-payload-label">
+                <strong>导入其他设备的分享码</strong>
+                <span>粘贴后建立连接</span>
+              </div>
+              <textarea
+                className="mesh-payload-box"
+                value={importPayload}
+                onChange={(event) => onImportPayloadChange(event.target.value)}
+                placeholder="粘贴另一台设备的分享码"
+                spellCheck={false}
+                aria-label="导入其他设备的分享码"
+              />
+              <button className="icon-button mesh-import-button" onClick={() => void onImportShare()} disabled={busy || !importPayload.trim()}>
+                <Clipboard size={17} /> 粘贴导入
+              </button>
+            </div>
           </section>
+
+          </div>
 
           <section className="panel mesh-migration-panel">
             <div className="panel-header">
@@ -352,16 +360,23 @@ export function MeshSharePage({
           <section className="panel mesh-device-panel">
             <div className="panel-header">
               <div>
-                <h2>已连接设备</h2>
-                <p>点击设备即可同步对应设备的账号信息，也可开启自动同步。</p>
+                <h2>在线设备</h2>
+                <p>设备断开后会从这里隐藏，重新连接后自动出现。</p>
               </div>
               <Send size={22} />
             </div>
             <div className="mesh-device-list">
-              {(status?.devices || []).map((device) => (
+              {onlineDevices.map((device) => (
                 <article className="mesh-device-row" key={device.id}>
                   <div>
-                    <strong>{device.name}</strong>
+                    <div className="mesh-device-title">
+                      <StatusPill ok text="在线" />
+                      <strong>{device.name}</strong>
+                    </div>
+                    <small className="mesh-device-meta">
+                      {device.ip || "虚拟 IP 获取中"}
+                      {device.latencyMs != null ? ` · ${Math.round(device.latencyMs)} ms` : ""}
+                    </small>
                     {device.autoAccountSync && <small>账号自动同步</small>}
                   </div>
                   <div className="mesh-device-actions">
@@ -392,11 +407,27 @@ export function MeshSharePage({
                   </button>
                 </article>
               ))}
-              {(!status || status.devices.length === 0) && <div className="account-empty">还没有授权设备。导入共享码后会出现在这里。</div>}
+              {onlineDevices.length === 0 && <div className="account-empty">暂无在线设备，设备连接后会自动出现。</div>}
             </div>
-            <button className="icon-button" onClick={() => void onSyncNow()} disabled={busy || !status?.devices.some((device) => device.trusted)}>
+            <button className="icon-button" onClick={() => void onSyncNow()} disabled={busy || !onlineDevices.some((device) => device.trusted)}>
               <RefreshCcw size={17} /> 同步全部已连接设备
             </button>
+          </section>
+
+          <section className="panel mesh-guide-panel">
+            <div className="panel-header">
+              <div>
+                <h2>使用说明</h2>
+                <p>按需分享，连接后即可管理其他设备。</p>
+              </div>
+              <BookOpen size={22} />
+            </div>
+            <div className="mesh-guide-list">
+              <GuideItem icon={<Share2 size={18} />} title="多设备共享" text="在主设备生成分享码，其他设备导入即可建立连接。" />
+              <GuideItem icon={<Link2 size={18} />} title="在线设备" text="实时查看连接状态，点击设备即可同步。" />
+              <GuideItem icon={<Download size={18} />} title="一次性迁移" text="需要换电脑时，可单独导出并恢复迁移包。" />
+              <GuideItem icon={<ShieldCheck size={18} />} title="安全可靠" text="分享内容和账号数据会按选择加密传输。" />
+            </div>
           </section>
         </div>
       </div>
@@ -432,6 +463,26 @@ function ScopeEditor({
           {option.label}
         </label>
       ))}
+    </div>
+  );
+}
+
+function GuideItem({
+  icon,
+  title,
+  text,
+}: {
+  icon: ReactNode;
+  title: string;
+  text: string;
+}) {
+  return (
+    <div className="mesh-guide-item">
+      <span className="mesh-guide-icon">{icon}</span>
+      <span>
+        <strong>{title}</strong>
+        <small>{text}</small>
+      </span>
     </div>
   );
 }

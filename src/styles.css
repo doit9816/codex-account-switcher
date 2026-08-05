@@ -2409,9 +2409,13 @@ input:focus {
 }
 
 .mesh-hero-status {
+  background: #ffffff;
+  border: 1px solid #edf1f6;
+  border-radius: 12px;
   display: grid;
   gap: 6px;
   min-width: 220px;
+  padding: 14px 18px;
   text-align: right;
 }
 
@@ -2449,7 +2453,7 @@ input:focus {
 
 .mesh-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1.12fr) minmax(360px, 0.88fr);
+  grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
   gap: 16px;
   align-items: start;
 }
@@ -2457,6 +2461,55 @@ input:focus {
 .mesh-column {
   display: grid;
   gap: 16px;
+}
+
+.mesh-share-flow {
+  display: grid;
+  gap: 16px;
+}
+
+.mesh-share-flow > .panel {
+  background: #ffffff;
+  border: 1px solid #d8e0e8;
+  border-radius: 8px;
+  margin: 0;
+  padding: 16px;
+}
+
+.mesh-share-flow > .mesh-share-panel {
+  border: 1px solid #d8e0e8;
+  padding-top: 16px;
+}
+
+.mesh-share-scope-hint {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 14px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.mesh-share-scope-hint strong {
+  color: #1d2939;
+}
+
+.mesh-share-flow > .mesh-settings-panel > .mesh-scope-editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 16px;
+  padding: 8px;
+  border: 1px solid #e7edf4;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.mesh-share-flow > .mesh-settings-panel > .mesh-scope-editor .checkline {
+  padding: 9px 10px;
+  border: 1px solid #dce5ef;
+  border-radius: 7px;
+  background: #ffffff;
 }
 
 .mesh-form-grid {
@@ -2481,8 +2534,105 @@ input:focus {
   min-width: 0;
 }
 
+.mesh-share-panel .mesh-payload-box + .mesh-payload-box {
+  margin-top: 8px;
+}
+
+.mesh-share-actions {
+  margin-bottom: 14px;
+}
+
+.mesh-payload-group {
+  display: grid;
+  gap: 8px;
+}
+
+.mesh-payload-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #344054;
+  font-size: 13px;
+}
+
+.mesh-payload-label span {
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.mesh-payload-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 46px;
+  min-width: 0;
+}
+
+.mesh-payload-editor .mesh-payload-box {
+  min-height: 104px;
+  border-radius: 8px 0 0 8px;
+  border-right: 0;
+  margin: 0;
+}
+
+.mesh-payload-copy {
+  display: grid;
+  place-items: center;
+  border: 1px solid #cfd9e6;
+  border-left: 1px solid #e2e8f0;
+  border-radius: 0 8px 8px 0;
+  color: #2867c7;
+  background: #f7faff;
+  cursor: pointer;
+}
+
+.mesh-payload-copy:hover:not(:disabled) {
+  background: #eaf2ff;
+}
+
+.mesh-payload-copy:disabled {
+  color: #98a2b3;
+  background: #f8fafc;
+  cursor: not-allowed;
+}
+
+.mesh-import-group {
+  margin-top: 14px;
+}
+
+.mesh-import-group .mesh-payload-box {
+  min-height: 82px;
+  margin: 0;
+}
+
+.mesh-import-button {
+  justify-self: start;
+}
+
 .mesh-checkline {
   align-self: end;
+}
+
+.mesh-settings-panel .mesh-form-grid {
+  display: block;
+}
+
+.mesh-settings-panel .mesh-checkline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #e7edf4;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.mesh-settings-panel .mesh-checkline input {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
 }
 
 .mesh-settings-panel .action-row > .icon-button:nth-child(3) {
@@ -2526,6 +2676,42 @@ input:focus {
   gap: 8px;
   max-height: 520px;
   overflow: auto;
+}
+
+.mesh-device-panel {
+  min-height: 340px;
+}
+
+.mesh-guide-list {
+  display: grid;
+  gap: 14px;
+}
+
+.mesh-guide-item {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.mesh-guide-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #1769e0;
+  background: #edf5ff;
+}
+
+.mesh-guide-item > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.mesh-guide-item small {
+  color: #667085;
+  line-height: 1.45;
 }
 
 .mesh-node-row,
@@ -2585,12 +2771,27 @@ input:focus {
   display: none;
 }
 
+.mesh-device-row > div:first-child > .mesh-device-meta {
+  display: block;
+}
+
+.mesh-device-title {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 8px !important;
+}
+
+.mesh-device-title .status-pill {
+  flex: 0 0 auto;
+}
+
 .mesh-device-row > .mini-button {
   grid-column: 2;
   justify-self: end;
 }
 
-.mesh-scope-editor .checkline:first-child {
+.mesh-scope-editor.compact .checkline:first-child {
   display: none;
 }
 
@@ -2627,6 +2828,10 @@ input:focus {
   .mesh-migration-options,
   .mesh-device-row {
     grid-template-columns: 1fr;
+  }
+
+  .mesh-share-flow > .mesh-settings-panel > .mesh-scope-editor {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .mesh-device-row > .mesh-scope-editor,

@@ -1,6 +1,6 @@
 use crate::{
-    app_data_dir, decrypt_secret, display_err, encrypt_secret, load_master_key, load_store,
-    now_string, push_event, save_store, AppStore, SecretEnvelope,
+    app_data_dir, append_app_log, decrypt_secret, display_err, encrypt_secret, load_master_key,
+    load_store, now_string, push_event, save_store, AppStore, SecretEnvelope,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -16,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -36,6 +36,9 @@ const MAX_BOOTSTRAP_PEERS: usize = 8;
 const MAX_NODE_PROBES: usize = 32;
 const NODE_PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_MESH_SYNC_BYTES: usize = 256 * 1024 * 1024;
+// Internal-only loopback proxy used for outbound requests to mesh virtual IPs.
+// It is intentionally not persisted or exposed in the UI/share payload.
+const MESH_SOCKS5_PORT: u16 = 22333;
 
 static MESH_RUNTIME: OnceLock<Mutex<Option<MeshRuntime>>> = OnceLock::new();
 static MESH_LAST_RUNTIME_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -49,6 +52,7 @@ struct MeshRuntime {
     refresh_stop: Arc<AtomicBool>,
     refresh_thread: Option<JoinHandle<()>>,
     account_sync_thread: Option<JoinHandle<()>>,
+    routing_thread: Option<JoinHandle<()>>,
 }
 
 #[derive(Default)]
@@ -58,6 +62,7 @@ struct MeshRuntimeSnapshot {
     process_id: Option<u32>,
     executable_path: Option<String>,
     peer_count: Option<usize>,
+    peers: Vec<MeshPeerView>,
     virtual_ipv4: Option<String>,
     started_at: Option<String>,
     last_error: Option<String>,
@@ -81,6 +86,8 @@ pub(crate) struct MeshSettings {
     #[serde(default)]
     pub(crate) sync_scope: MeshSyncScope,
     #[serde(default)]
+    pub(crate) sync_scope_initialized: bool,
+    #[serde(default)]
     pub(crate) authorized_devices: Vec<MeshDevice>,
     #[serde(default)]
     pub(crate) cached_nodes: Vec<MeshPublicNode>,
@@ -100,6 +107,7 @@ impl Default for MeshSettings {
             node_source_url: default_node_source_url(),
             node_refresh_secs: default_node_refresh_secs(),
             sync_scope: MeshSyncScope::default(),
+            sync_scope_initialized: false,
             authorized_devices: Vec::new(),
             cached_nodes: Vec::new(),
             last_node_refresh_at: None,
@@ -113,7 +121,7 @@ impl Default for MeshSettings {
 pub(crate) struct MeshSyncScope {
     #[serde(default = "default_true")]
     pub(crate) accounts: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub(crate) rules: bool,
     #[serde(default)]
     pub(crate) routing: bool,
@@ -125,7 +133,7 @@ impl Default for MeshSyncScope {
     fn default() -> Self {
         Self {
             accounts: true,
-            rules: true,
+            rules: false,
             routing: false,
             conversations: false,
         }
@@ -163,6 +171,23 @@ pub(crate) struct MeshDeviceView {
     pub(crate) trusted: bool,
     pub(crate) sync_scope: MeshSyncScope,
     pub(crate) auto_account_sync: bool,
+    #[serde(default)]
+    pub(crate) online: bool,
+    #[serde(default)]
+    pub(crate) ip: Option<String>,
+    #[serde(default)]
+    pub(crate) latency_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeshPeerView {
+    pub(crate) peer_id: u32,
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) ip: Option<String>,
+    #[serde(default)]
+    pub(crate) latency_ms: Option<f64>,
 }
 
 impl From<&MeshDevice> for MeshDeviceView {
@@ -175,6 +200,9 @@ impl From<&MeshDevice> for MeshDeviceView {
             trusted: device.trusted,
             sync_scope: device.sync_scope.clone(),
             auto_account_sync: device.auto_account_sync,
+            online: false,
+            ip: None,
+            latency_ms: None,
         }
     }
 }
@@ -204,6 +232,8 @@ pub(crate) struct MeshStatus {
     pub(crate) settings: MeshSettingsView,
     pub(crate) public_nodes: Vec<MeshPublicNode>,
     pub(crate) devices: Vec<MeshDeviceView>,
+    #[serde(default)]
+    pub(crate) peers: Vec<MeshPeerView>,
     pub(crate) share_ready: bool,
     pub(crate) local_device_id: String,
     pub(crate) local_device_name: String,
@@ -334,6 +364,7 @@ pub(crate) fn save_settings(
     store.settings.mesh.node_source_url = default_node_source_url();
     store.settings.mesh.node_refresh_secs = input.node_refresh_secs.clamp(60, 86_400);
     store.settings.mesh.sync_scope = input.sync_scope;
+    store.settings.mesh.sync_scope_initialized = true;
     if let Some(secret) = input
         .network_secret
         .as_deref()
@@ -407,25 +438,28 @@ pub(crate) fn refresh_public_nodes(app: AppHandle) -> Result<MeshStatus, String>
 }
 
 pub(crate) fn create_share_payload(app: AppHandle, mode: MeshShareMode) -> Result<String, String> {
-    let include_routing = !matches!(mode, MeshShareMode::MigrationBundle);
-    if include_routing {
-        let runtime = runtime_snapshot();
-        if !runtime.running || runtime.virtual_ipv4.is_none() {
-            start(app.clone())?;
-        }
-        for _ in 0..30 {
-            if runtime_snapshot().virtual_ipv4.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if runtime_snapshot().virtual_ipv4.is_none() {
-            return Err("设备连接尚未获得虚拟地址，请稍后重试".to_string());
-        }
-        crate::routing::start_for_mesh_share(app.clone())?;
-    }
     let mut store = load_store(&app)?;
     let key = load_master_key(&app)?;
+    let sync_scope = if store.settings.mesh.sync_scope_initialized {
+        store.settings.mesh.sync_scope.clone()
+    } else {
+        MeshSyncScope::default()
+    };
+    let include_routing = !matches!(mode, MeshShareMode::MigrationBundle) && sync_scope.routing;
+    if include_routing {
+        let runtime = runtime_snapshot();
+        if !runtime.running {
+            start(app.clone())?;
+        }
+        // In no-TUN mode EasyTier allocates a virtual address only after a
+        // second device in the same network has established a route. Public
+        // nodes are bootstrap relays, so the first device must still be able
+        // to create a join share before that address exists. routing_share()
+        // omits the routing endpoint until the virtual address is available.
+        if runtime_snapshot().virtual_ipv4.is_some() {
+            crate::routing::start_for_mesh_share(app.clone())?;
+        }
+    }
     store.settings.mesh.node_source_url = default_node_source_url();
     ensure_network_secret(&mut store, &key)?;
     let network_secret = decrypt_network_secret(&store, &key)?;
@@ -449,7 +483,7 @@ pub(crate) fn create_share_payload(app: AppHandle, mode: MeshShareMode) -> Resul
             .filter_map(|node| normalize_peer_url(&node.address))
             .take(12)
             .collect(),
-        sync_scope: store.settings.mesh.sync_scope.clone(),
+        sync_scope,
         routing_base_url: routing.0,
         routing_api_key: routing.1,
     };
@@ -472,6 +506,7 @@ pub(crate) fn import_share_payload(
         Some(encrypt_secret(payload.network_secret.as_bytes(), &key)?);
     store.settings.mesh.node_source_url = default_node_source_url();
     store.settings.mesh.sync_scope = payload.sync_scope.clone();
+    store.settings.mesh.sync_scope_initialized = true;
     merge_shared_peers(&mut store, &payload);
     upsert_device(
         &mut store,
@@ -492,7 +527,10 @@ pub(crate) fn import_share_payload(
         },
     );
     push_event(&mut store, "info", "设备分享码已导入");
+    store.settings.mesh.enabled = true;
     save_store(&app, &store)?;
+    start(app.clone())
+        .map_err(|error| format!("分享码已导入，但自动启动多设备共享失败：{error}"))?;
     Ok(MeshImportResult {
         mode: payload.mode,
         device_id: payload.device_id,
@@ -544,6 +582,7 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
         .authorized_devices
         .iter()
         .filter(|device| device.trusted)
+        .filter(|device| device.id != local_device_id())
         .filter(|device| {
             device.sync_scope.accounts
                 || device.sync_scope.rules
@@ -560,7 +599,7 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
     let mut failed = 0usize;
     for device in targets {
         let scope = MeshSyncScope {
-            accounts: true,
+            accounts: device.sync_scope.accounts,
             rules: device.sync_scope.rules,
             routing: device.sync_scope.routing,
             conversations: device.sync_scope.conversations,
@@ -598,7 +637,8 @@ fn run_auto_account_sync(app: &AppHandle) {
         .mesh
         .authorized_devices
         .iter()
-        .filter(|device| device.trusted && device.auto_account_sync)
+        .filter(|device| device.trusted && device.auto_account_sync && device.sync_scope.accounts)
+        .filter(|device| device.id != local_device_id())
         .cloned()
         .collect::<Vec<_>>();
     if targets.is_empty() {
@@ -634,6 +674,13 @@ fn run_auto_account_sync(app: &AppHandle) {
         );
         let _ = save_store(app, &store);
     }
+    if failed > 0 {
+        append_app_log(
+            app,
+            "warn",
+            &format!("automatic mesh account sync failed for {failed} device(s)"),
+        );
+    }
 }
 
 fn sync_from_device_with_scope(
@@ -656,11 +703,14 @@ fn sync_from_device_with_scope(
         String::from_utf8(decrypt_secret(encrypted_key, key)?).map_err(display_err)?;
     let password = migration_password_from_mesh(app, String::new(), true)?;
     let scope_header = serde_json::to_string(&scope).map_err(display_err)?;
-    let client = Client::builder()
+    let mut client_builder = Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(180))
-        .build()
-        .map_err(display_err)?;
+        .timeout(Duration::from_secs(180));
+    if should_use_mesh_socks5(base_url) {
+        client_builder = client_builder
+            .proxy(reqwest::Proxy::all(mesh_socks5_proxy_url()).map_err(display_err)?);
+    }
+    let client = client_builder.build().map_err(display_err)?;
     let response = client
         .post(pull_endpoint(base_url)?)
         .bearer_auth(routing_api_key)
@@ -685,9 +735,8 @@ fn sync_from_device_with_scope(
         "codex-switcher-mesh-incoming-{}.zip.enc",
         uuid::Uuid::new_v4().simple()
     ));
-    fs::write(&temp_path, bytes).map_err(|error| {
-        format!("无法写入同步临时文件 {}：{}", temp_path.display(), error)
-    })?;
+    fs::write(&temp_path, bytes)
+        .map_err(|error| format!("无法写入同步临时文件 {}：{}", temp_path.display(), error))?;
     let result = crate::import_accounts_bundle_with_scope(
         (*app).clone(),
         temp_path.to_string_lossy().to_string(),
@@ -762,9 +811,8 @@ pub(crate) fn handle_sync_request(app: AppHandle, mut request: Request) -> Resul
         "codex-switcher-mesh-incoming-{}.zip.enc",
         uuid::Uuid::new_v4().simple()
     ));
-    fs::write(&temp_path, bytes).map_err(|error| {
-        format!("无法写入同步临时文件 {}：{}", temp_path.display(), error)
-    })?;
+    fs::write(&temp_path, bytes)
+        .map_err(|error| format!("无法写入同步临时文件 {}：{}", temp_path.display(), error))?;
     let password = migration_password_from_mesh(&app, String::new(), true)?;
     let result = crate::import_accounts_bundle_with_scope(
         app,
@@ -902,6 +950,7 @@ pub(crate) fn migration_password_from_mesh(
 
 fn build_status(_app: &AppHandle, store: &AppStore) -> MeshStatus {
     let runtime = runtime_snapshot();
+    let local_id = local_device_id();
     let routing_host = advertised_routing_host(
         &store.settings.routing.listen_host,
         runtime.virtual_ipv4.as_deref(),
@@ -914,7 +963,11 @@ fn build_status(_app: &AppHandle, store: &AppStore) -> MeshStatus {
             network_name: store.settings.mesh.network_name.clone(),
             node_source_url: default_node_source_url(),
             node_refresh_secs: store.settings.mesh.node_refresh_secs,
-            sync_scope: store.settings.mesh.sync_scope.clone(),
+            sync_scope: if store.settings.mesh.sync_scope_initialized {
+                store.settings.mesh.sync_scope.clone()
+            } else {
+                MeshSyncScope::default()
+            },
             last_node_refresh_at: store.settings.mesh.last_node_refresh_at.clone(),
             last_node_refresh_error: store.settings.mesh.last_node_refresh_error.clone(),
         },
@@ -924,15 +977,36 @@ fn build_status(_app: &AppHandle, store: &AppStore) -> MeshStatus {
             .mesh
             .authorized_devices
             .iter()
-            .map(MeshDeviceView::from)
+            .map(|device| {
+                let mut view = MeshDeviceView::from(device);
+                let device_ip = device
+                    .address
+                    .as_deref()
+                    .and_then(|address| url::Url::parse(address).ok())
+                    .and_then(|address| address.host_str().map(str::to_string));
+                if device.id == local_id {
+                    view.online = true;
+                    view.ip = runtime.virtual_ipv4.clone().or(device_ip);
+                } else if let Some(peer) = runtime
+                    .peers
+                    .iter()
+                    .find(|peer| peer.ip.is_some() && peer.ip == device_ip)
+                {
+                    view.online = true;
+                    view.ip = peer.ip.clone();
+                    view.latency_ms = peer.latency_ms;
+                } else {
+                    view.ip = device_ip;
+                }
+                view
+            })
             .collect(),
+        peers: runtime.peers.clone(),
         share_ready: store.settings.mesh.encrypted_network_secret.is_some(),
         local_device_id: local_device_id(),
         local_device_name: local_device_name(),
-        routing_base_url: Some(format!(
-            "http://{}:{}/v1",
-            routing_host, store.settings.routing.port
-        )),
+        routing_base_url: routing_host
+            .map(|host| format!("http://{}:{}/v1", host, store.settings.routing.port)),
         runtime_kind: runtime.runtime_kind,
         process_id: runtime.process_id,
         runtime_binary_path: runtime.executable_path,
@@ -971,6 +1045,12 @@ fn start_embedded_runtime(
         refresh_stop.clone(),
         store.settings.mesh.node_refresh_secs,
     ));
+    let routing_thread = Some(spawn_mesh_routing_loop(
+        app.clone(),
+        manager.clone(),
+        instance_id,
+        refresh_stop.clone(),
+    ));
 
     Ok(MeshRuntime {
         manager,
@@ -981,7 +1061,54 @@ fn start_embedded_runtime(
         refresh_stop,
         refresh_thread,
         account_sync_thread,
+        routing_thread,
     })
+}
+
+fn spawn_mesh_routing_loop(
+    app: AppHandle,
+    manager: Arc<NetworkInstanceManager>,
+    instance_id: uuid::Uuid,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut last_error: Option<String> = None;
+        while !stop.load(AtomicOrdering::Relaxed) {
+            let has_virtual_ipv4 = manager
+                .collect_network_infos_sync()
+                .ok()
+                .and_then(|infos| infos.get(&instance_id).cloned())
+                .and_then(|info| info.my_node_info)
+                .and_then(|node| node.virtual_ipv4)
+                .is_some();
+
+            if has_virtual_ipv4 {
+                if crate::routing::is_running() {
+                    last_error = None;
+                } else if let Err(error) = crate::routing::start_for_mesh_share(app.clone()) {
+                    if last_error.as_deref() != Some(error.as_str()) {
+                        record_mesh_routing_error(&app, &error);
+                        last_error = Some(error);
+                    }
+                } else {
+                    last_error = None;
+                }
+            }
+
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    })
+}
+
+fn record_mesh_routing_error(app: &AppHandle, error: &str) {
+    if let Ok(mut store) = load_store(app) {
+        push_event(
+            &mut store,
+            "warn",
+            &format!("多设备共享路由 API 自动启动失败：{error}"),
+        );
+        let _ = save_store(app, &store);
+    }
 }
 
 fn spawn_node_refresh_loop(
@@ -1052,14 +1179,26 @@ fn build_easytier_config(
         .filter_map(|peer| url::Url::parse(peer).ok().map(|uri| PeerConfig { uri }))
         .collect::<Vec<_>>();
     config.set_peers(peer_configs);
+    // EasyTier's SDK default is DHCP disabled. Keep address assignment
+    // internal so users never need to choose or coordinate a static IPv4;
+    // EasyTier will allocate a free address once another device joins.
+    config.set_dhcp(true);
 
-    // Run the VPN-capable SDK instance in its own EasyTier-managed runtime.
-    // The default flags keep TUN enabled so the virtual IPv4 can be used by
-    // the routing API and by other applications on this device.
+    // Use EasyTier's no-TUN mode so the desktop app does not need Wintun,
+    // administrator privileges, or a system virtual adapter. The virtual
+    // address is still assigned by EasyTier; outbound HTTP to another device
+    // is sent through the internal loopback SOCKS5 portal below.
     let mut flags = config.get_flags();
-    flags.dev_name = "Codex Switcher Mesh".to_string();
-    flags.no_tun = false;
+    flags.no_tun = true;
+    // Keep EasyTier's in-process TCP/UDP stack active for the SOCKS5 portal.
+    // This is the SDK equivalent of the CLI's no-TUN networking path.
+    flags.use_smoltcp = true;
     config.set_flags(flags);
+    config.set_socks5_portal(Some(
+        format!("socks5://127.0.0.1:{MESH_SOCKS5_PORT}")
+            .parse()
+            .map_err(display_err)?,
+    ));
     Ok(config)
 }
 
@@ -1088,6 +1227,9 @@ fn stop_runtime() {
             let _ = thread.join();
         }
         if let Some(thread) = runtime.account_sync_thread.take() {
+            let _ = thread.join();
+        }
+        if let Some(thread) = runtime.routing_thread.take() {
             let _ = thread.join();
         }
         let _ = runtime
@@ -1136,6 +1278,41 @@ fn runtime_snapshot() -> MeshRuntimeSnapshot {
         .as_ref()
         .map(|value| value.peers.len())
         .or_else(|| Some(runtime.peers.len()));
+    let peers = info
+        .as_ref()
+        .map(|value| {
+            value
+                .routes
+                .iter()
+                .filter_map(|route| {
+                    let ip = route
+                        .ipv4_addr
+                        .as_ref()
+                        .and_then(|inet| inet.address.as_ref())
+                        .map(ToString::to_string);
+                    let name = if route.hostname.trim().is_empty() {
+                        format!("Peer {}", route.peer_id)
+                    } else {
+                        route.hostname.clone()
+                    };
+                    let latency_ms = route
+                        .path_latency_latency_first
+                        .or_else(|| (route.path_latency > 0).then_some(route.path_latency))
+                        .map(|value| value as f64);
+                    if ip.is_none() {
+                        None
+                    } else {
+                        Some(MeshPeerView {
+                            peer_id: route.peer_id,
+                            name,
+                            ip,
+                            latency_ms,
+                        })
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     if let Some(error) = runtime_error.clone() {
         set_last_runtime_error(Some(error));
     }
@@ -1145,6 +1322,7 @@ fn runtime_snapshot() -> MeshRuntimeSnapshot {
         process_id: None,
         executable_path: None,
         peer_count,
+        peers,
         virtual_ipv4,
         started_at: Some(runtime.started_at.clone()),
         last_error: runtime_error.or(last_error),
@@ -1737,10 +1915,12 @@ fn routing_share(
         return (None, None);
     }
     let runtime = runtime_snapshot();
-    let host = advertised_routing_host(
+    let Some(host) = advertised_routing_host(
         &store.settings.routing.listen_host,
         runtime.virtual_ipv4.as_deref(),
-    );
+    ) else {
+        return (None, None);
+    };
     let base_url = Some(format!(
         "http://{}:{}/v1",
         host, store.settings.routing.port
@@ -1763,14 +1943,29 @@ fn display_mesh_host(host: &str) -> String {
     }
 }
 
-fn advertised_routing_host(listen_host: &str, virtual_ipv4: Option<&str>) -> String {
+fn advertised_routing_host(listen_host: &str, virtual_ipv4: Option<&str>) -> Option<String> {
     if matches!(listen_host, "0.0.0.0" | "::") {
-        virtual_ipv4
-            .map(ToString::to_string)
-            .unwrap_or_else(|| display_mesh_host(listen_host))
+        virtual_ipv4.map(ToString::to_string)
     } else {
-        display_mesh_host(listen_host)
+        Some(display_mesh_host(listen_host))
     }
+}
+
+fn mesh_socks5_proxy_url() -> String {
+    format!("socks5h://127.0.0.1:{MESH_SOCKS5_PORT}")
+}
+
+fn should_use_mesh_socks5(base_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.trim_matches(['[', ']'])
+        .parse::<IpAddr>()
+        .map(|address| !address.is_loopback())
+        .unwrap_or(true)
 }
 
 fn local_device_id() -> String {
@@ -1863,6 +2058,28 @@ mod tests {
         assert_eq!(
             pull_endpoint("http://10.126.126.2:15722/v1").unwrap(),
             "http://10.126.126.2:15722/mesh/pull"
+        );
+    }
+
+    #[test]
+    fn routes_remote_mesh_addresses_through_internal_socks5() {
+        assert!(should_use_mesh_socks5("http://10.126.126.2:15722/v1"));
+        assert!(should_use_mesh_socks5("http://mesh-device.local:15722/v1"));
+        assert!(!should_use_mesh_socks5("http://127.0.0.1:15722/v1"));
+        assert!(!should_use_mesh_socks5("http://[::1]:15722/v1"));
+        assert_eq!(mesh_socks5_proxy_url(), "socks5h://127.0.0.1:22333");
+    }
+
+    #[test]
+    fn does_not_advertise_loopback_routing_before_mesh_ip_exists() {
+        assert_eq!(advertised_routing_host("0.0.0.0", None), None);
+        assert_eq!(
+            advertised_routing_host("0.0.0.0", Some("10.126.126.2")),
+            Some("10.126.126.2".to_string())
+        );
+        assert_eq!(
+            advertised_routing_host("127.0.0.1", None),
+            Some("127.0.0.1".to_string())
         );
     }
 

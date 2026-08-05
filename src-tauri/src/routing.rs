@@ -2205,7 +2205,7 @@ fn hash_text(value: &str) -> String {
     URL_SAFE_NO_PAD.encode(&hasher.finalize()[..12])
 }
 
-fn is_running() -> bool {
+pub(crate) fn is_running() -> bool {
     ROUTER
         .get()
         .and_then(|slot| slot.try_lock().ok())

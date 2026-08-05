@@ -1,4 +1,4 @@
-import { FileClock, Save } from "lucide-react";
+import { FileClock, FolderOpen, Save } from "lucide-react";
 import type { I18n } from "../../i18n";
 
 type RoutingLogSettingsProps = {
@@ -7,6 +7,7 @@ type RoutingLogSettingsProps = {
   busy: boolean;
   onRetentionDaysChange: (value: number) => void;
   onSave: () => void | Promise<unknown>;
+  onOpenLogs: () => void | Promise<unknown>;
 };
 
 export function RoutingLogSettings({
@@ -14,7 +15,8 @@ export function RoutingLogSettings({
   retentionDays,
   busy,
   onRetentionDaysChange,
-  onSave
+  onSave,
+  onOpenLogs
 }: RoutingLogSettingsProps) {
   return (
     <section className="routing-log-settings-band">
@@ -45,6 +47,15 @@ export function RoutingLogSettings({
       >
         <Save size={17} />
         {t.saveRoutingLogSettings}
+      </button>
+      <button
+        className="icon-button"
+        onClick={() => void onOpenLogs()}
+        disabled={busy}
+        title="打开日志目录"
+      >
+        <FolderOpen size={17} />
+        打开日志目录
       </button>
     </section>
   );

@@ -15,7 +15,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::Argon2;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use fs2::FileExt;
 use provider_compat::{is_longcat_base_url, is_longcat_model};
 use rand::rngs::OsRng;
@@ -44,6 +44,7 @@ use zip::{ZipArchive, ZipWriter};
 
 const STORE_FILE: &str = "store.json";
 const SWITCH_DIAGNOSTICS_FILE: &str = "switch-diagnostics.log";
+const APP_LOG_DIR: &str = "logs";
 const LOCAL_KEY_FILE: &str = "local-profile.key";
 const EXPORT_FORMAT: &str = "codex-switcher.bundle";
 const EXPORT_VERSION: u32 = 1;
@@ -1354,6 +1355,13 @@ fn open_codex_home(app: AppHandle, codex_home: Option<String>) -> Result<(), Str
     if !path.exists() {
         return Err(format!("目录不存在：{}", path.to_string_lossy()));
     }
+    open_path_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn open_logs_directory(app: AppHandle) -> Result<(), String> {
+    let path = app_data_dir(&app)?.join(APP_LOG_DIR);
+    fs::create_dir_all(&path).map_err(display_err)?;
     open_path_in_file_manager(&path)
 }
 
@@ -2845,9 +2853,8 @@ pub(crate) fn import_accounts_bundle_with_scope(
         }
         let out = target_codex_home.join(safe_relative_path(&file.path)?);
         if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!("无法创建导入目录 {}：{}", parent.display(), error)
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("无法创建导入目录 {}：{}", parent.display(), error))?;
         }
         fs::write(&out, bytes)
             .map_err(|error| format!("无法写入导入文件 {}：{}", out.display(), error))?;
@@ -3055,7 +3062,13 @@ pub(crate) fn load_store(app: &AppHandle) -> Result<AppStore, String> {
 
 pub(crate) fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String> {
     let _guard = STORE_IO_MUTEX.lock().map_err(display_err)?;
-    write_store_unlocked(app, store)
+    let result = write_store_unlocked(app, store);
+    if result.is_ok() {
+        if let Some(event) = store.events.first() {
+            append_app_log(app, &event.level, &event.message);
+        }
+    }
+    result
 }
 
 pub(crate) fn mutate_store<T>(
@@ -5005,6 +5018,53 @@ pub(crate) fn push_event(store: &mut AppStore, level: &str, message: &str) {
     store.events.truncate(100);
 }
 
+fn app_log_path(data_dir: &Path, now: DateTime<Local>) -> PathBuf {
+    data_dir
+        .join(APP_LOG_DIR)
+        .join(format!("app-{}.jsonl", now.format("%Y-%m-%d")))
+}
+
+fn redact_log_message(message: &str) -> String {
+    let mut value = message.replace(['\r', '\n'], " ");
+    let lower = value.to_ascii_lowercase();
+    for marker in [
+        "network secret",
+        "network_secret",
+        "api key",
+        "api_key",
+        "authorization:",
+        "bearer ",
+    ] {
+        if let Some(index) = lower.find(marker) {
+            value.truncate(index);
+            value.push_str("[redacted]");
+            break;
+        }
+    }
+    value.chars().take(1000).collect()
+}
+
+pub(crate) fn append_app_log(app: &AppHandle, level: &str, message: &str) {
+    let Ok(data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = app_log_path(&data_dir, Local::now());
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let line = serde_json::json!({
+        "ts": now_string(),
+        "level": level,
+        "message": redact_log_message(message),
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 fn append_switch_diagnostic(
     app: &AppHandle,
     switch_id: &str,
@@ -5012,6 +5072,7 @@ fn append_switch_diagnostic(
     stage: &str,
     detail: impl AsRef<str>,
 ) {
+    append_app_log(app, "debug", &format!("switch stage: {stage}"));
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
@@ -5095,6 +5156,7 @@ fn main() {
             save_proxy_settings,
             test_proxy_settings,
             open_codex_home,
+            open_logs_directory,
             save_auto_settings,
             routing_status,
             routing_save_settings,

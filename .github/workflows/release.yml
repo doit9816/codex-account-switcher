@@ -48,10 +48,38 @@ jobs:
           cache: npm
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "25.3"
-          repo-token: ${{ github.token }}
+        shell: bash
+        run: |
+          case "${{ matrix.platform }}" in
+            ubuntu-22.04)
+              sudo apt-get install -y protobuf-compiler
+              ;;
+            macos-latest)
+              brew install protobuf || brew upgrade protobuf
+              ;;
+            windows-latest)
+              choco install protoc -y --no-progress
+              ;;
+          esac
+          protoc --version
+
+      - name: Install Windows Packet.lib
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "WpdPack_4_1_2"
+          $archive = Join-Path $env:RUNNER_TEMP "WpdPack_4_1_2.zip"
+          Invoke-WebRequest `
+            -Uri "https://www.winpcap.org/install/bin/WpdPack_4_1_2.zip" `
+            -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
+          $packetLibDir = Join-Path $root "WpdPack\Lib\x64"
+          $packetLib = Join-Path $packetLibDir "Packet.lib"
+          if (-not (Test-Path -LiteralPath $packetLib)) {
+            throw "Packet.lib was not found at $packetLib"
+          }
+          "LIB=$packetLibDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Packet.lib: $packetLib"
 
       - name: Validate release version
         shell: bash
