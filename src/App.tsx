@@ -895,11 +895,11 @@ export default function App() {
     setNotice({ kind: "ok", text: "共享码已复制" });
   }
 
-  async function importMeshSharePayload() {
-    if (!meshImportPayload.trim()) return;
-    await run(async () => {
+  async function importMeshSharePayload(payloadText = meshImportPayload) {
+    if (!payloadText.trim()) return;
+    return await run(async () => {
       const result = await invoke<MeshImportResult>("mesh_import_share_payload", {
-        payloadText: meshImportPayload
+        payloadText
       });
       setMeshImportPayload("");
       await refresh();

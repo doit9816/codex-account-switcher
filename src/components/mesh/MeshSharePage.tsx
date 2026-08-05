@@ -1,11 +1,12 @@
 import {
-  BookOpen,
   Clipboard,
+  BookOpen,
   Copy,
   Download,
   KeyRound,
   Link2,
   Network,
+  Plus,
   PlugZap,
   RefreshCcw,
   Save,
@@ -14,8 +15,9 @@ import {
   Share2,
   Upload,
   Wifi,
+  X,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { MeshDevice, MeshStatus, MeshSyncScope, Profile } from "../../types";
 import { formatDate } from "../../profileUtils";
 import { StatusPill } from "../StatusPill";
@@ -56,7 +58,7 @@ type MeshSharePageProps = {
   onRefreshNodes: () => void | Promise<unknown>;
   onCreateShare: () => void | Promise<unknown>;
   onCopyShare: () => void | Promise<unknown>;
-  onImportShare: () => void | Promise<unknown>;
+  onImportShare: (payload?: string) => void | Promise<unknown>;
   onSaveDevice: (device: MeshDevice) => void | Promise<unknown>;
   onSyncNow: (deviceId?: string) => void | Promise<unknown>;
   onExportMigration: () => void | Promise<unknown>;
@@ -105,6 +107,8 @@ export function MeshSharePage({
   onExportMigration,
   onImportMigration,
 }: MeshSharePageProps) {
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false);
+  const [devicePayload, setDevicePayload] = useState("");
   const upNodes = status?.publicNodes.filter((node) => node.status === "up").length || 0;
   const selectedProfiles = profiles.filter((profile) => exportProfileIds.includes(profile.id));
   const onlineDevices = (status?.devices || []).filter(
@@ -369,7 +373,19 @@ export function MeshSharePage({
                 <h2>在线设备</h2>
                 <p>设备断开后会从这里隐藏，重新连接后自动出现。</p>
               </div>
-              <Send size={22} />
+              <div className="mesh-device-panel-actions">
+                <button
+                  className="icon-button mesh-add-device-button"
+                  onClick={() => {
+                    setDevicePayload("");
+                    setAddDeviceOpen(true);
+                  }}
+                  disabled={busy}
+                >
+                  <Plus size={17} /> 添加设备
+                </button>
+                <Send size={22} />
+              </div>
             </div>
             <div className="mesh-device-list">
               {onlineDevices.map((device) => (
@@ -454,6 +470,65 @@ export function MeshSharePage({
           </section>
         </div>
       </div>
+      {addDeviceOpen && (
+        <div
+          className="update-dialog-backdrop"
+          role="presentation"
+          onMouseDown={() => setAddDeviceOpen(false)}
+        >
+          <section
+            className="mesh-add-device-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mesh-add-device-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="update-dialog-head">
+              <div>
+                <span>多设备共享</span>
+                <h2 id="mesh-add-device-title">添加设备</h2>
+              </div>
+              <button
+                className="notice-close"
+                onClick={() => setAddDeviceOpen(false)}
+                title="关闭"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="mesh-add-device-hint">
+              粘贴其他设备生成的分享码。导入后会自动建立连接；服务未启动时会自动启动。
+            </p>
+            <textarea
+              className="mesh-payload-box mesh-add-device-input"
+              value={devicePayload}
+              onChange={(event) => setDevicePayload(event.target.value)}
+              placeholder="粘贴分享码"
+              spellCheck={false}
+              autoFocus
+              aria-label="设备分享码"
+            />
+            <div className="update-dialog-actions">
+              <button className="icon-button" onClick={() => setAddDeviceOpen(false)}>
+                取消
+              </button>
+              <button
+                className="icon-button primary"
+                disabled={busy || !devicePayload.trim()}
+                onClick={async () => {
+                  const result = await onImportShare(devicePayload.trim());
+                  if (result) {
+                    setDevicePayload("");
+                    setAddDeviceOpen(false);
+                  }
+                }}
+              >
+                <Link2 size={17} /> 添加并启动
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   );
 }

@@ -2635,7 +2635,7 @@ input:focus {
 }
 
 .mesh-import-group {
-  margin-top: 14px;
+  display: none;
 }
 
 .mesh-import-group .mesh-payload-box {
@@ -2719,6 +2719,38 @@ input:focus {
 
 .mesh-device-panel {
   min-height: 340px;
+}
+
+.mesh-device-panel-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.mesh-add-device-button {
+  white-space: nowrap;
+}
+
+.mesh-add-device-dialog {
+  background: #ffffff;
+  border: 1px solid #d9e3ee;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  display: grid;
+  gap: 16px;
+  max-width: 620px;
+  padding: 22px;
+  width: 100%;
+}
+
+.mesh-add-device-hint {
+  color: #667085;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.mesh-add-device-input {
+  min-height: 150px;
 }
 
 .mesh-peer-discovered {
