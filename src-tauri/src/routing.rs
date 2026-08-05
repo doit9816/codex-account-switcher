@@ -931,6 +931,10 @@ fn handle_request(app: AppHandle, mut request: Request) {
         crate::easytier_mesh::handle_pull_request(app, request).map_err(|error| {
             Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
         })
+    } else if method == Method::Get && url == "/mesh/hello" {
+        crate::easytier_mesh::handle_hello_request(app, request).map_err(|error| {
+            Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
+        })
     } else if method == Method::Post && url == "/v1/responses" {
         match proxy_responses(app.clone(), &mut request, started) {
             Ok(response) => {

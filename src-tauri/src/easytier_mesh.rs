@@ -36,6 +36,10 @@ const MAX_BOOTSTRAP_PEERS: usize = 8;
 const MAX_NODE_PROBES: usize = 32;
 const NODE_PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_MESH_SYNC_BYTES: usize = 256 * 1024 * 1024;
+const MESH_HELLO_PATH: &str = "/mesh/hello";
+const MESH_HELLO_TOKEN_HEADER: &str = "X-Codex-Mesh-Token";
+const MESH_HELLO_TOKEN_SUFFIX: &[u8] = b":codex-switcher-mesh-hello:v1";
+const MESH_HELLO_TIMEOUT: Duration = Duration::from_secs(4);
 // Internal-only loopback proxy used for outbound requests to mesh virtual IPs.
 // It is intentionally not persisted or exposed in the UI/share payload.
 const MESH_SOCKS5_PORT: u16 = 22333;
@@ -52,6 +56,7 @@ struct MeshRuntime {
     refresh_stop: Arc<AtomicBool>,
     refresh_thread: Option<JoinHandle<()>>,
     account_sync_thread: Option<JoinHandle<()>>,
+    peer_discovery_thread: Option<JoinHandle<()>>,
     routing_thread: Option<JoinHandle<()>>,
 }
 
@@ -116,7 +121,7 @@ impl Default for MeshSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeshSyncScope {
     #[serde(default = "default_true")]
@@ -311,6 +316,19 @@ pub(crate) struct MeshSharePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MeshHello {
+    format: String,
+    version: u32,
+    device_id: String,
+    device_name: String,
+    virtual_ipv4: Option<String>,
+    routing_base_url: Option<String>,
+    routing_api_key: Option<String>,
+    sync_scope: MeshSyncScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MeshImportResult {
     pub(crate) mode: MeshShareMode,
     pub(crate) device_id: String,
@@ -453,7 +471,11 @@ pub(crate) fn create_share_payload(app: AppHandle, mode: MeshShareMode) -> Resul
     } else {
         MeshSyncScope::default()
     };
-    let include_routing = !matches!(mode, MeshShareMode::MigrationBundle) && sync_scope.routing;
+    // The routing API is the private transport used for all mesh sync types.
+    // It must travel with a normal share code even when the sender does not
+    // share routing configuration itself. The scope still controls which
+    // data the receiver may pull; the API key is never shown in the UI.
+    let include_routing = !matches!(mode, MeshShareMode::MigrationBundle);
     if include_routing {
         let runtime = runtime_snapshot();
         if !runtime.running {
@@ -513,8 +535,9 @@ pub(crate) fn import_share_payload(
     store.settings.mesh.encrypted_network_secret =
         Some(encrypt_secret(payload.network_secret.as_bytes(), &key)?);
     store.settings.mesh.node_source_url = default_node_source_url();
-    store.settings.mesh.sync_scope = payload.sync_scope.clone();
-    store.settings.mesh.sync_scope_initialized = true;
+    // The imported device controls what it shares. Keep this device's own
+    // sharing preferences unchanged so the connection becomes two-way
+    // without silently enabling rules, routing or conversations locally.
     merge_shared_peers(&mut store, &payload);
     upsert_device(
         &mut store,
@@ -525,7 +548,8 @@ pub(crate) fn import_share_payload(
             last_seen_at: Some(now_string()),
             trusted: true,
             sync_scope: payload.sync_scope.clone(),
-            auto_account_sync: payload.mode == MeshShareMode::ContinuousSync,
+            auto_account_sync: !matches!(payload.mode, MeshShareMode::MigrationBundle)
+                && payload.sync_scope.accounts,
             encrypted_routing_api_key: payload
                 .routing_api_key
                 .as_deref()
@@ -795,12 +819,13 @@ pub(crate) fn handle_sync_request(app: AppHandle, mut request: Request) -> Resul
         return Ok(());
     }
 
-    let scope = request
+    let requested_scope = request
         .headers()
         .iter()
         .find(|header| header.field.equiv("X-Codex-Mesh-Scope"))
         .and_then(|header| serde_json::from_str::<MeshSyncScope>(header.value.as_str()).ok())
         .unwrap_or_default();
+    let scope = intersect_mesh_scopes(&requested_scope, &local_mesh_scope(&store));
     let mut bytes = Vec::new();
     request
         .as_reader()
@@ -873,12 +898,13 @@ pub(crate) fn handle_pull_request(app: AppHandle, request: Request) -> Result<()
         return Ok(());
     }
 
-    let scope = request
+    let requested_scope = request
         .headers()
         .iter()
         .find(|header| header.field.equiv("X-Codex-Mesh-Scope"))
         .and_then(|header| serde_json::from_str::<MeshSyncScope>(header.value.as_str()).ok())
         .unwrap_or_default();
+    let scope = intersect_mesh_scopes(&requested_scope, &local_mesh_scope(&store));
     let only_valid_accounts = request
         .headers()
         .iter()
@@ -926,6 +952,61 @@ pub(crate) fn handle_pull_request(app: AppHandle, request: Request) -> Result<()
     Ok(())
 }
 
+pub(crate) fn handle_hello_request(app: AppHandle, request: Request) -> Result<(), String> {
+    let store = load_store(&app)?;
+    let key = load_master_key(&app)?;
+    let network_secret = decrypt_network_secret(&store, &key)?;
+    let expected = mesh_hello_token(&network_secret);
+    let provided = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv(MESH_HELLO_TOKEN_HEADER))
+        .map(|header| header.value.as_str())
+        .unwrap_or_default();
+    if provided != expected {
+        respond_sync_json(
+            request,
+            401,
+            serde_json::json!({ "error": "invalid mesh token" }),
+        )?;
+        return Ok(());
+    }
+
+    let runtime = runtime_snapshot();
+    let routing_base_url = advertised_routing_host(
+        &store.settings.routing.listen_host,
+        runtime.virtual_ipv4.as_deref(),
+    )
+    .map(|host| format!("http://{}:{}/v1", host, store.settings.routing.port));
+    let routing_api_key = store
+        .settings
+        .routing
+        .encrypted_access_key
+        .as_ref()
+        .and_then(|envelope| decrypt_secret(envelope, &key).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    let sync_scope = if store.settings.mesh.sync_scope_initialized {
+        store.settings.mesh.sync_scope.clone()
+    } else {
+        MeshSyncScope::default()
+    };
+    respond_sync_json(
+        request,
+        200,
+        serde_json::to_value(MeshHello {
+            format: MESH_SHARE_FORMAT.to_string(),
+            version: 1,
+            device_id: local_device_id(),
+            device_name: local_device_name(),
+            virtual_ipv4: runtime.virtual_ipv4,
+            routing_base_url,
+            routing_api_key,
+            sync_scope,
+        })
+        .map_err(display_err)?,
+    )
+}
+
 fn respond_sync_json(request: Request, status: u16, body: Value) -> Result<(), String> {
     let json = serde_json::to_string(&body).map_err(display_err)?;
     let content_type = Header::from_bytes("Content-Type", "application/json")
@@ -954,6 +1035,30 @@ pub(crate) fn migration_password_from_mesh(
     hasher.update(secret.as_bytes());
     hasher.update(b":codex-switcher-migration-share:v1");
     Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+}
+
+fn mesh_hello_token(network_secret: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(network_secret.as_bytes());
+    hasher.update(MESH_HELLO_TOKEN_SUFFIX);
+    URL_SAFE_NO_PAD.encode(hasher.finalize())
+}
+
+fn local_mesh_scope(store: &AppStore) -> MeshSyncScope {
+    if store.settings.mesh.sync_scope_initialized {
+        store.settings.mesh.sync_scope.clone()
+    } else {
+        MeshSyncScope::default()
+    }
+}
+
+fn intersect_mesh_scopes(requested: &MeshSyncScope, allowed: &MeshSyncScope) -> MeshSyncScope {
+    MeshSyncScope {
+        accounts: requested.accounts && allowed.accounts,
+        rules: requested.rules && allowed.rules,
+        routing: requested.routing && allowed.routing,
+        conversations: requested.conversations && allowed.conversations,
+    }
 }
 
 fn build_status(_app: &AppHandle, store: &AppStore) -> MeshStatus {
@@ -1053,6 +1158,12 @@ fn start_embedded_runtime(
         refresh_stop.clone(),
         store.settings.mesh.node_refresh_secs,
     ));
+    let peer_discovery_thread = Some(spawn_mesh_peer_discovery_loop(
+        app.clone(),
+        manager.clone(),
+        instance_id,
+        refresh_stop.clone(),
+    ));
     let routing_thread = Some(spawn_mesh_routing_loop(
         app.clone(),
         manager.clone(),
@@ -1069,8 +1180,194 @@ fn start_embedded_runtime(
         refresh_stop,
         refresh_thread,
         account_sync_thread,
+        peer_discovery_thread,
         routing_thread,
     })
+}
+
+fn spawn_mesh_peer_discovery_loop(
+    app: AppHandle,
+    manager: Arc<NetworkInstanceManager>,
+    instance_id: uuid::Uuid,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut last_error: Option<String> = None;
+        while !stop.load(AtomicOrdering::Relaxed) {
+            match discover_mesh_peers(&app, &manager, instance_id) {
+                Ok(()) => last_error = None,
+                Err(error) => {
+                    if last_error.as_deref() != Some(error.as_str()) {
+                        append_app_log(&app, "debug", &format!("mesh peer discovery: {error}"));
+                        last_error = Some(error);
+                    }
+                }
+            }
+            for _ in 0..3 {
+                if stop.load(AtomicOrdering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    })
+}
+
+fn discover_mesh_peers(
+    app: &AppHandle,
+    manager: &NetworkInstanceManager,
+    instance_id: uuid::Uuid,
+) -> Result<(), String> {
+    let info = manager
+        .collect_network_infos_sync()
+        .map_err(display_err)?
+        .remove(&instance_id)
+        .ok_or_else(|| "mesh runtime information is not ready".to_string())?;
+    let local_ip = info
+        .my_node_info
+        .as_ref()
+        .and_then(|node| node.virtual_ipv4.as_ref())
+        .and_then(|value| value.to_string().split('/').next().map(str::to_string));
+    let peer_ips = info
+        .routes
+        .iter()
+        .filter_map(|route| {
+            route
+                .ipv4_addr
+                .as_ref()
+                .and_then(|inet| inet.address.as_ref())
+                .map(ToString::to_string)
+                .map(|value| value.split('/').next().unwrap_or(&value).to_string())
+        })
+        .filter(|ip| local_ip.as_deref() != Some(ip.as_str()))
+        .filter(|ip| ip.parse::<IpAddr>().is_ok())
+        .collect::<Vec<_>>();
+    if peer_ips.is_empty() {
+        return Ok(());
+    }
+
+    let store = load_store(app)?;
+    let key = load_master_key(app)?;
+    let network_secret = decrypt_network_secret(&store, &key)?;
+    let token = mesh_hello_token(&network_secret);
+    let configured_port = store.settings.routing.port;
+    let mut hellos = Vec::new();
+    for ip in peer_ips {
+        if let Some(hello) = request_mesh_hello(&ip, configured_port, &token).or_else(|| {
+            (configured_port != 15_722)
+                .then(|| request_mesh_hello(&ip, 15_722, &token))
+                .flatten()
+        }) {
+            if hello.device_id != local_device_id()
+                && !hellos
+                    .iter()
+                    .any(|item: &MeshHello| item.device_id == hello.device_id)
+            {
+                hellos.push(hello);
+            }
+        }
+    }
+    if hellos.is_empty() {
+        return Ok(());
+    }
+
+    let mut store = load_store(app)?;
+    let key = load_master_key(app)?;
+    let mut changed = false;
+    for hello in hellos {
+        let existing = store
+            .settings
+            .mesh
+            .authorized_devices
+            .iter()
+            .find(|device| device.id == hello.device_id)
+            .cloned();
+        let trusted = existing
+            .as_ref()
+            .map(|device| device.trusted)
+            .unwrap_or(true);
+        let auto_account_sync = existing
+            .as_ref()
+            .map(|device| device.auto_account_sync)
+            .unwrap_or(hello.sync_scope.accounts);
+        let encrypted_key = hello
+            .routing_api_key
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| encrypt_secret(value.as_bytes(), &key))
+            .transpose()?;
+        let key_changed = match (&existing, &hello.routing_api_key) {
+            (Some(device), Some(remote_key)) => {
+                device
+                    .encrypted_routing_api_key
+                    .as_ref()
+                    .and_then(|envelope| decrypt_secret(envelope, &key).ok())
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .as_deref()
+                    != Some(remote_key.as_str())
+            }
+            (Some(device), None) => device.encrypted_routing_api_key.is_some(),
+            (None, _) => true,
+        };
+        let address = hello.routing_base_url.clone();
+        let changed_for_device = existing.as_ref().is_none_or(|device| {
+            device.name != hello.device_name
+                || device.address != address
+                || device.sync_scope != hello.sync_scope
+                || key_changed
+        });
+        if changed_for_device {
+            upsert_device(
+                &mut store,
+                MeshDevice {
+                    id: hello.device_id.clone(),
+                    name: hello.device_name.clone(),
+                    address,
+                    last_seen_at: Some(now_string()),
+                    trusted,
+                    sync_scope: hello.sync_scope.clone(),
+                    auto_account_sync,
+                    encrypted_routing_api_key: encrypted_key,
+                },
+            );
+            changed = true;
+            push_event(
+                &mut store,
+                "info",
+                &format!("已自动发现共享设备：{}", hello.device_name),
+            );
+        }
+    }
+    if changed {
+        save_store(app, &store)?;
+        // Account sharing is the default automatic action. Rules, routing
+        // and conversations remain available through the explicit sync
+        // action and are limited by the remote device's advertised scope.
+        run_auto_account_sync(app);
+    }
+    Ok(())
+}
+
+fn request_mesh_hello(ip: &str, port: u16, token: &str) -> Option<MeshHello> {
+    let base_url = format!("http://{ip}:{port}");
+    let mut builder = Client::builder()
+        .connect_timeout(MESH_HELLO_TIMEOUT)
+        .timeout(MESH_HELLO_TIMEOUT);
+    if should_use_mesh_socks5(&base_url) {
+        builder = builder.proxy(reqwest::Proxy::all(mesh_socks5_proxy_url()).ok()?);
+    }
+    let response = builder
+        .build()
+        .ok()?
+        .get(format!("{base_url}{MESH_HELLO_PATH}"))
+        .header(MESH_HELLO_TOKEN_HEADER, token)
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let hello = response.json::<MeshHello>().ok()?;
+    (hello.format == MESH_SHARE_FORMAT && hello.version == 1).then_some(hello)
 }
 
 fn spawn_mesh_routing_loop(
@@ -1235,6 +1532,9 @@ fn stop_runtime() {
             let _ = thread.join();
         }
         if let Some(thread) = runtime.account_sync_thread.take() {
+            let _ = thread.join();
+        }
+        if let Some(thread) = runtime.peer_discovery_thread.take() {
             let _ = thread.join();
         }
         if let Some(thread) = runtime.routing_thread.take() {
@@ -2076,6 +2376,39 @@ mod tests {
         assert!(!should_use_mesh_socks5("http://127.0.0.1:15722/v1"));
         assert!(!should_use_mesh_socks5("http://[::1]:15722/v1"));
         assert_eq!(mesh_socks5_proxy_url(), "socks5h://127.0.0.1:22333");
+    }
+
+    #[test]
+    fn remote_scope_limits_requested_sync_scope() {
+        let requested = MeshSyncScope {
+            accounts: true,
+            rules: true,
+            routing: true,
+            conversations: true,
+        };
+        let allowed = MeshSyncScope {
+            accounts: true,
+            rules: false,
+            routing: false,
+            conversations: false,
+        };
+        assert_eq!(
+            intersect_mesh_scopes(&requested, &allowed),
+            MeshSyncScope {
+                accounts: true,
+                rules: false,
+                routing: false,
+                conversations: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mesh_hello_token_is_stable_without_exposing_network_secret() {
+        let first = mesh_hello_token("network-secret");
+        assert_eq!(first, mesh_hello_token("network-secret"));
+        assert_ne!(first, "network-secret");
+        assert_ne!(first, mesh_hello_token("another-secret"));
     }
 
     #[test]
