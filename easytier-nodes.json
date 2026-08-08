@@ -1,7 +1,7 @@
 {
   "format": "codex-switcher.easytier-nodes.v1",
   "source": "https://info.qtet.cn/uptime/easytier",
-  "updatedAt": "2026-08-08T09:55:16.845Z",
+  "updatedAt": "2026-08-08T10:52:08.808Z",
   "nodes": [
     {
       "id": "47",
@@ -10,7 +10,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 19,
+      "pingMs": 21,
       "tags": []
     },
     {
@@ -20,7 +20,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 195,
+      "pingMs": 191,
       "tags": [
         "我的"
       ]
@@ -32,7 +32,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 1249,
+      "pingMs": 221,
       "tags": []
     },
     {
@@ -42,7 +42,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 662,
+      "pingMs": 216,
       "tags": []
     },
     {
@@ -52,7 +52,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 32,
+      "pingMs": 33,
       "tags": []
     },
     {
@@ -62,7 +62,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 92,
+      "pingMs": 126,
       "tags": [
         "web"
       ]
@@ -73,8 +73,8 @@
       "address": "tcp://etgen.myqfeng.top:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 262,
+      "uptime24": 99.86064308314398,
+      "pingMs": 239,
       "tags": []
     },
     {
@@ -84,7 +84,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 196,
+      "pingMs": 200,
       "tags": [
         "后端",
         "我的"
@@ -96,8 +96,8 @@
       "address": "tcp://net.qicwken.top:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.85939418037724,
-      "pingMs": 1455,
+      "uptime24": 99.85710178014901,
+      "pingMs": 358,
       "tags": [
         "web"
       ]
@@ -109,7 +109,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 1276,
+      "pingMs": 257,
       "tags": []
     },
     {
@@ -118,8 +118,8 @@
       "address": "tcp://qwe.p8.ink:11010",
       "group": "社区公共节点[海外]",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 182,
+      "uptime24": 99.85963377753525,
+      "pingMs": 193,
       "tags": [
         "海外"
       ]
@@ -130,8 +130,8 @@
       "address": "tcp://ruixuan.online:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 99.85934145319484,
-      "pingMs": 1324,
+      "uptime24": 100,
+      "pingMs": 1915,
       "tags": [
         "我的"
       ]
@@ -142,8 +142,8 @@
       "address": "tcp://ruixuan.online:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.86051385536588,
-      "pingMs": 1489,
+      "uptime24": 100,
+      "pingMs": 1380,
       "tags": [
         "web",
         "我的"
@@ -156,7 +156,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 220,
+      "pingMs": 209,
       "tags": []
     },
     {
@@ -165,7 +165,7 @@
       "address": "txt://net.qicwken.top",
       "group": "社区公共节点",
       "status": "up",
-      "uptime24": 100,
+      "uptime24": 81.4864263336221,
       "pingMs": 41,
       "tags": []
     },
@@ -176,7 +176,7 @@
       "group": "社区公共节点[海外]",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 195,
+      "pingMs": 193,
       "tags": [
         "海外",
         "我的"
@@ -189,7 +189,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 204,
+      "pingMs": 170,
       "tags": [
         "后端"
       ]
@@ -201,7 +201,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 1175,
+      "pingMs": 385,
       "tags": []
     },
     {
@@ -210,8 +210,8 @@
       "address": "wss://et.xn--6kr850c.com:11010/",
       "group": "社区公共节点[海外]",
       "status": "up",
-      "uptime24": 99.86066242151882,
-      "pingMs": 291,
+      "uptime24": 100,
+      "pingMs": 271,
       "tags": [
         "海外"
       ]
@@ -222,8 +222,8 @@
       "address": "wss://net.qicwken.top:11010/",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.86058627976234,
-      "pingMs": 1669,
+      "uptime24": 100,
+      "pingMs": 363,
       "tags": [
         "后端"
       ]
