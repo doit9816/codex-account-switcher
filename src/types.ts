@@ -178,6 +178,62 @@ export type MeshSyncScope = {
   conversations: boolean;
 };
 
+export const DEFAULT_MESH_SYNC_SCOPE: MeshSyncScope = {
+  accounts: true,
+  rules: false,
+  routing: false,
+  conversations: false,
+};
+
+export type MeshGroupRuntimeStatus =
+  | "running"
+  | "stopped"
+  | "starting"
+  | "stopping"
+  | "error";
+
+export type MeshGroup = {
+  id: string;
+  name: string;
+  runtimeStatus: MeshGroupRuntimeStatus;
+  onlineDeviceCount: number;
+  deviceCount?: number;
+  selected?: boolean;
+  lastError?: string;
+};
+
+export type MeshGroupRuntime = {
+  running: boolean;
+  instanceId?: string;
+  virtualIpv4?: string;
+  startedAt?: string;
+  lastError?: string;
+};
+
+export type MeshGroupView = {
+  groupId: string;
+  name: string;
+  enabled: boolean;
+  autoStart: boolean;
+  syncScope: MeshSyncScope;
+  nodeCount: number;
+  deviceCount: number;
+  onlineDeviceCount: number;
+  virtualCidr: string;
+  listenPort: number;
+  socks5Port: number;
+  runtime: MeshGroupRuntime;
+};
+
+export type MeshGroupStatus = {
+  group: MeshGroupView;
+  devices: MeshDevice[];
+  peers: MeshPeer[];
+  localDeviceId: string;
+  localDeviceName: string;
+  routingBaseUrl?: string;
+};
+
 export type MeshSettings = {
   enabled: boolean;
   autoStart: boolean;
@@ -203,12 +259,15 @@ export type MeshPublicNode = {
 
 export type MeshDevice = {
   id: string;
+  groupId?: string;
   name: string;
   address?: string;
   lastSeenAt?: string;
   trusted: boolean;
   syncScope: MeshSyncScope;
+  allowedSyncScope: MeshSyncScope;
   autoAccountSync?: boolean;
+  revokedAt?: string;
   online?: boolean;
   ip?: string;
   latencyMs?: number;
@@ -225,6 +284,7 @@ export type MeshShareMode = "joinOnly" | "migrationBundle" | "continuousSync" | 
 
 export type MeshStatus = {
   running: boolean;
+  groups?: MeshGroupView[];
   settings: MeshSettings;
   publicNodes: MeshPublicNode[];
   devices: MeshDevice[];
@@ -243,6 +303,7 @@ export type MeshStatus = {
 };
 
 export type MeshImportResult = {
+  groupId?: string;
   mode: MeshShareMode;
   deviceId: string;
   deviceName: string;

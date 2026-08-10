@@ -2753,6 +2753,160 @@ input:focus {
   min-height: 150px;
 }
 
+.mesh-groups-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.mesh-groups-header {
+  align-items: flex-start;
+}
+
+.mesh-groups-header p {
+  max-width: 720px;
+}
+
+.mesh-group-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.mesh-group-card {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dce4ed;
+  border-radius: 10px;
+  color: #1d2939;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 12px;
+  text-align: left;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.mesh-group-card:hover {
+  background: #f8fbff;
+  border-color: #b7cbe7;
+}
+
+.mesh-group-card.active {
+  background: #f5f9ff;
+  border-color: #4f82d8;
+  box-shadow: 0 0 0 2px rgba(79, 130, 216, 0.12);
+}
+
+.mesh-group-card-icon {
+  align-items: center;
+  background: #eaf2ff;
+  border-radius: 8px;
+  color: #2867c7;
+  display: grid;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.mesh-group-card-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mesh-group-card-title,
+.mesh-group-card-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mesh-group-card-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-group-card-meta {
+  color: #667085;
+  font-size: 12px;
+  justify-content: space-between;
+}
+
+.mesh-group-selected,
+.mesh-group-status {
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
+
+.mesh-group-selected,
+.mesh-group-status.selected {
+  background: #e7f0ff;
+  color: #2357c6;
+}
+
+.mesh-group-status {
+  background: #f1f4f8;
+  color: #667085;
+}
+
+.mesh-group-card-check {
+  color: #2867c7;
+}
+
+.mesh-current-group-status {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e6ebf2;
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.mesh-current-group-status span,
+.mesh-groups-backend-hint,
+.mesh-group-selection-note {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mesh-groups-backend-hint {
+  display: block;
+}
+
+.mesh-group-selection-note,
+.mesh-group-notice {
+  background: #f8fbff;
+  border: 1px solid #dbe8f7;
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+
+.mesh-group-notice {
+  color: #1769e0;
+  font-size: 13px;
+}
+
+.mesh-join-group-dialog {
+  max-width: 660px;
+}
+
+.mesh-group-dialog-field {
+  color: #344054;
+  display: grid;
+  font-size: 13px;
+  gap: 6px;
+}
+
 .mesh-peer-discovered {
   grid-template-columns: minmax(0, 1fr) auto;
   background: #f8fbff;
@@ -2762,6 +2916,14 @@ input:focus {
   color: #667085;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.mesh-peer-actions {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .mesh-guide-list {
@@ -2857,6 +3019,13 @@ input:focus {
   display: block;
 }
 
+.mesh-device-permission-hint {
+  color: #667085;
+  display: block;
+  font-size: 12px;
+  grid-column: 1 / -1;
+}
+
 .mesh-device-title {
   display: flex !important;
   grid-template-columns: none !important;
@@ -2871,10 +3040,6 @@ input:focus {
 .mesh-device-row > .mini-button {
   grid-column: 2;
   justify-self: end;
-}
-
-.mesh-scope-editor.compact .checkline:first-child {
-  display: none;
 }
 
 .mesh-node-panel {
@@ -2924,4 +3089,176 @@ input:focus {
 }
 .mesh-internal-settings {
   display: none;
+}
+
+/* Group-aware sharing UI. The older mesh rules above remain for compatibility
+   with adjacent branches, while this namespace defines the current surface. */
+.mesh-groups-page {
+  gap: 14px;
+}
+
+.mesh-groups-page .mesh-groups-panel {
+  border-color: #d7e2ef;
+  gap: 12px;
+  padding: 16px;
+}
+
+.mesh-group-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mesh-groups-page .mesh-group-list {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.mesh-groups-page .mesh-group-card {
+  appearance: none;
+  font: inherit;
+}
+
+.mesh-groups-page .mesh-group-card:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.mesh-groups-page .mesh-group-card:not(.active):disabled {
+  opacity: 0.62;
+}
+
+.mesh-groups-page .mesh-current-group-status {
+  background: linear-gradient(135deg, #f7faff, #fbfdff);
+}
+
+.mesh-groups-page .mesh-current-group-status > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-group-content {
+  grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
+}
+
+.mesh-groups-page .mesh-device-panel,
+.mesh-groups-page .mesh-share-panel,
+.mesh-groups-page .mesh-migration-panel {
+  margin: 0;
+}
+
+.mesh-groups-page .mesh-device-list {
+  max-height: 620px;
+  margin-bottom: 12px;
+}
+
+.mesh-groups-page .mesh-device-row {
+  padding: 12px;
+}
+
+.mesh-groups-page .mesh-device-sync-options {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.mesh-groups-page .mesh-device-sync-options .mesh-scope-editor {
+  margin: 0;
+}
+
+.mesh-groups-page .mesh-device-sync-options > .checkline {
+  white-space: nowrap;
+}
+
+.mesh-groups-page .mesh-device-row.revoked {
+  background: #fafafa;
+  border-color: #e5e7eb;
+}
+
+.mesh-groups-page .mesh-device-row.revoked strong {
+  color: #667085;
+}
+
+.mesh-groups-page .mesh-device-actions .mini-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.mesh-groups-page .mesh-share-panel .mesh-scope-editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 16px;
+}
+
+.mesh-groups-page .mesh-share-panel .mesh-scope-editor .checkline {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e4eaf1;
+  border-radius: 8px;
+  display: flex;
+  gap: 7px;
+  padding: 9px;
+}
+
+.mesh-groups-page .mesh-share-panel .mesh-payload-box {
+  margin-top: 12px;
+  min-height: 82px;
+}
+
+.mesh-groups-page .mesh-migration-options {
+  grid-template-columns: minmax(220px, 1fr);
+}
+
+.mesh-groups-page .mesh-migration-options > input[type="password"] {
+  grid-column: 1 / -1;
+}
+
+.mesh-groups-page .mesh-migration-options .checkline {
+  align-items: center;
+  display: flex !important;
+  gap: 8px;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.mesh-groups-page .mesh-migration-options .checkline input[type="checkbox"] {
+  flex: 0 0 16px;
+  height: 16px;
+  width: 16px;
+}
+
+.mesh-groups-page .mesh-warning {
+  margin: 0;
+}
+
+.mesh-join-group-dialog .mesh-group-dialog-field input,
+.mesh-join-group-dialog .mesh-group-dialog-field textarea {
+  width: 100%;
+}
+
+@media (max-width: 980px) {
+  .mesh-group-content {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .mesh-groups-page .mesh-groups-header,
+  .mesh-groups-page .mesh-current-group-status {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .mesh-group-header-actions {
+    justify-content: flex-start;
+  }
+
+  .mesh-groups-page .mesh-share-panel .mesh-scope-editor {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

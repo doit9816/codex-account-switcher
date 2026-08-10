@@ -2270,6 +2270,8 @@ mod tests {
                 ..Default::default()
             },
             route_health: crate::RouteHealth::default(),
+            source_device_name: None,
+            source_device_ip: None,
             created_at: now_string(),
             updated_at: now_string(),
         }

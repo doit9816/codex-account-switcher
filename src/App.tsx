@@ -45,6 +45,8 @@ import type {
   DetectedLimit,
   LanguageSetting,
   MeshDevice,
+  MeshGroup,
+  MeshGroupStatus,
   MeshImportResult,
   MeshShareMode,
   MeshStatus,
@@ -186,6 +188,8 @@ export default function App() {
   const [routingLogRetentionDays, setRoutingLogRetentionDays] = useState(7);
   const [routingBusy, setRoutingBusy] = useState(false);
   const [meshStatus, setMeshStatus] = useState<MeshStatus | null>(null);
+  const [meshSelectedGroupId, setMeshSelectedGroupId] = useState<string | null>(null);
+  const [meshGroupStatus, setMeshGroupStatus] = useState<MeshGroupStatus | null>(null);
   const [meshShareMode, setMeshShareMode] = useState<MeshShareMode>("joinOnly");
   const [meshSharePayload, setMeshSharePayload] = useState("");
   const [meshImportPayload, setMeshImportPayload] = useState("");
@@ -294,6 +298,23 @@ export default function App() {
     const selected = new Set(exportProfileIds);
     return (store?.profiles || []).filter((profile) => selected.has(profile.id));
   }, [store?.profiles, exportProfileIds]);
+  const meshGroups = useMemo<MeshGroup[]>(() => (meshStatus?.groups || []).map((group) => {
+    const selectedStatus = meshGroupStatus?.group.groupId === group.groupId ? meshGroupStatus : null;
+    return {
+      id: group.groupId,
+      name: group.name,
+      runtimeStatus: group.runtime.lastError
+        ? "error"
+        : group.runtime.running
+          ? "running"
+          : "stopped",
+      onlineDeviceCount: selectedStatus?.devices.filter((device) => device.online && !device.revokedAt).length
+        ?? group.onlineDeviceCount,
+      deviceCount: group.deviceCount,
+      selected: group.groupId === meshSelectedGroupId,
+      lastError: group.runtime.lastError
+    };
+  }), [meshStatus?.groups, meshGroupStatus, meshSelectedGroupId]);
   const passwordTooShort = password.length > 0 && password.length < 8;
   const selectedIdRef = useRef("");
   const autoBusyRef = useRef(false);
@@ -376,6 +397,28 @@ export default function App() {
   }, [accountViewMode]);
 
   useEffect(() => {
+    const ids = (meshStatus?.groups || []).map((group) => group.groupId);
+    if (ids.length === 0) {
+      setMeshSelectedGroupId(null);
+      setMeshGroupStatus(null);
+      return;
+    }
+    if (!meshSelectedGroupId || !ids.includes(meshSelectedGroupId)) {
+      setMeshSelectedGroupId(ids[0]);
+    }
+  }, [meshStatus?.groups, meshSelectedGroupId]);
+
+  useEffect(() => {
+    if (!meshSelectedGroupId || activePage !== "mesh") return;
+    void invoke<MeshGroupStatus>("mesh_group_status", { groupId: meshSelectedGroupId })
+      .then((groupStatus) => {
+        setMeshGroupStatus(groupStatus);
+        setMeshSyncScope(groupStatus.group.syncScope);
+      })
+      .catch(() => setMeshGroupStatus(null));
+  }, [meshSelectedGroupId, activePage]);
+
+  useEffect(() => {
     setAccountPage(1);
   }, [accountFilter, accountExpiryFilter, accountStatusFilter]);
 
@@ -408,13 +451,15 @@ export default function App() {
       setMeshNodeSourceUrl(mesh.nodeSourceUrl || "https://info.qtet.cn/uptime/easytier");
       setMeshNodeRefreshSecs(mesh.nodeRefreshSecs || 120);
       setMeshAutoStart(!!mesh.autoStart);
-      setMeshSyncScope(
-        mesh.syncScopeInitialized === false
-          ? { accounts: true, rules: false, routing: false, conversations: false }
-          : mesh.syncScope || { accounts: true, rules: false, routing: false, conversations: false }
-      );
+      if (!meshSelectedGroupId || meshSelectedGroupId === "legacy") {
+        setMeshSyncScope(
+          mesh.syncScopeInitialized === false
+            ? { accounts: true, rules: false, routing: false, conversations: false }
+            : mesh.syncScope || { accounts: true, rules: false, routing: false, conversations: false }
+        );
+      }
     }
-  }, [store]);
+  }, [store, meshSelectedGroupId]);
 
   useEffect(() => {
     const profileIds = (store?.profiles || []).map((profile) => profile.id);
@@ -448,16 +493,33 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (activePage !== "mesh") return;
-    const timer = window.setInterval(() => {
-      void invoke<MeshStatus>("mesh_status")
-        .then(setMeshStatus)
+    const refreshStore = () => {
+      void invoke<StoreView>("get_store")
+        .then(setStore)
         .catch(() => {
-          // A stopped or restarting mesh runtime is reflected on the next tick.
+          // Background sync may be writing the store; retry on the next tick.
         });
+    };
+    refreshStore();
+    const timer = window.setInterval(() => {
+      if (activePage === "mesh") {
+        void invoke<MeshStatus>("mesh_status")
+          .then(setMeshStatus)
+          .catch(() => {
+            // A stopped or restarting mesh runtime is reflected on the next tick.
+          });
+        if (meshSelectedGroupId) {
+          void invoke<MeshGroupStatus>("mesh_group_status", { groupId: meshSelectedGroupId })
+            .then(setMeshGroupStatus)
+            .catch(() => {
+              // A group may be restarting or have just been removed from persisted state.
+            });
+        }
+      }
+      refreshStore();
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [activePage]);
+  }, [activePage, meshSelectedGroupId]);
 
   useEffect(() => {
     if (!notice) return;
@@ -829,6 +891,130 @@ export default function App() {
     return mesh;
   }
 
+  async function reloadMeshGroupStatus(groupId = meshSelectedGroupId) {
+    if (!groupId) {
+      setMeshGroupStatus(null);
+      return null;
+    }
+    const groupStatus = await invoke<MeshGroupStatus>("mesh_group_status", { groupId });
+    setMeshGroupStatus(groupStatus);
+    return groupStatus;
+  }
+
+  async function createMeshGroup(input: { name: string; syncScope: MeshSyncScope }) {
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>("mesh_group_create", {
+        input: {
+          name: input.name,
+          enabled: true,
+          autoStart: true,
+          syncScope: input.syncScope
+        }
+      });
+      setMeshSelectedGroupId(groupStatus.group.groupId);
+      setMeshGroupStatus(groupStatus);
+      setMeshSyncScope(groupStatus.group.syncScope);
+      await reloadMeshStatus();
+      return groupStatus;
+    }, "分享组已创建");
+  }
+
+  async function importMeshGroup(input: { shareCode: string }) {
+    return await run(async () => {
+      const result = await invoke<MeshImportResult>("mesh_group_import", {
+        payloadText: input.shareCode
+      });
+      await reloadMeshStatus();
+      if (result.groupId) {
+        setMeshSelectedGroupId(result.groupId);
+        await reloadMeshGroupStatus(result.groupId);
+      }
+      return result;
+    }, "分享组已加入");
+  }
+
+  async function selectMeshGroup(input: { groupId: string }) {
+    setMeshSelectedGroupId(input.groupId);
+    const groupStatus = await reloadMeshGroupStatus(input.groupId);
+    if (groupStatus) setMeshSyncScope(groupStatus.group.syncScope);
+    return groupStatus;
+  }
+
+  async function setMeshGroupRunning(groupId: string, running: boolean) {
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>(
+        running ? "mesh_group_start" : "mesh_group_stop",
+        { groupId }
+      );
+      setMeshGroupStatus(groupStatus);
+      await reloadMeshStatus();
+      return groupStatus;
+    }, running ? "分享组连接已启动" : "分享组连接已停止");
+  }
+
+  async function revokeMeshGroupDevice(input: { groupId: string; deviceId: string; revoked: boolean }) {
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>("mesh_group_revoke", input);
+      setMeshGroupStatus(groupStatus);
+      await reloadMeshStatus();
+      return groupStatus;
+    }, input.revoked ? "已禁止该设备使用此分享组" : "已恢复该设备使用此分享组");
+  }
+
+  async function saveMeshGroupDevice(input: {
+    groupId: string;
+    deviceId: string;
+    autoAccountSync: boolean;
+    syncScope: MeshSyncScope;
+  }) {
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>("mesh_group_save_device_sync", input);
+      setMeshGroupStatus(groupStatus);
+      return groupStatus;
+    }, "设备同步设置已保存");
+  }
+
+  async function syncMeshGroup(input: { groupId: string; deviceId?: string }) {
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>("mesh_group_sync_now", input);
+      setMeshGroupStatus(groupStatus);
+      const refreshedStore = await invoke<StoreView>("get_store");
+      setStore(refreshedStore);
+      return groupStatus;
+    }, "设备同步完成");
+  }
+
+  async function createMeshGroupShare(input: { groupId: string; mode: MeshShareMode }) {
+    return await run(async () => {
+      const payload = await invoke<string>("mesh_group_create_share_payload", input);
+      setMeshSharePayload(payload);
+      await reloadMeshGroupStatus(input.groupId);
+      return payload;
+    }, "分享码已生成");
+  }
+
+  async function saveMeshGroupScope(groupId: string, syncScope: MeshSyncScope) {
+    const group = meshStatus?.groups?.find((item) => item.groupId === groupId);
+    if (!group) return;
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>("mesh_group_create", {
+        input: {
+          groupId,
+          name: group.name,
+          enabled: group.enabled,
+          autoStart: group.autoStart,
+          syncScope,
+          virtualCidr: group.virtualCidr,
+          listenPort: group.listenPort,
+          socks5Port: group.socks5Port
+        }
+      });
+      setMeshGroupStatus(groupStatus);
+      await reloadMeshStatus();
+      return groupStatus;
+    }, "分享内容已保存");
+  }
+
   async function saveMeshSettings() {
     await run(async () => {
       const mesh = await invoke<MeshStatus>("mesh_save_settings", {
@@ -926,8 +1112,20 @@ export default function App() {
         deviceId
       });
       setMeshStatus(mesh);
+      const refreshedStore = await invoke<StoreView>("get_store");
+      setStore(refreshedStore);
       return mesh;
     }, "已请求设备同步");
+  }
+
+  async function authorizeMeshPeer(ip: string) {
+    await run(async () => {
+      const mesh = await invoke<MeshStatus>("mesh_authorize_peer_sync", { ip });
+      setMeshStatus(mesh);
+      const refreshedStore = await invoke<StoreView>("get_store");
+      setStore(refreshedStore);
+      return mesh;
+    }, "设备已授权并同步");
   }
 
   async function exportMeshMigrationShare() {
@@ -2063,6 +2261,9 @@ export default function App() {
       ) : activePage === "mesh" ? (
         <MeshSharePage
           status={meshStatus}
+          groups={meshGroups}
+          selectedGroupId={meshSelectedGroupId}
+          groupStatus={meshGroupStatus}
           profiles={store?.profiles || []}
           busy={busy}
           sharePayload={meshSharePayload}
@@ -2100,8 +2301,19 @@ export default function App() {
           onImportShare={importMeshSharePayload}
           onSaveDevice={saveMeshDevice}
           onSyncNow={syncMeshNow}
+          onAuthorizePeer={authorizeMeshPeer}
           onExportMigration={exportMeshMigrationShare}
           onImportMigration={importMeshMigrationShare}
+          onCreateGroup={createMeshGroup}
+          onImportGroup={importMeshGroup}
+          onSelectGroup={selectMeshGroup}
+          onStartGroup={({ groupId }) => setMeshGroupRunning(groupId, true)}
+          onStopGroup={({ groupId }) => setMeshGroupRunning(groupId, false)}
+          onRevokeDevice={revokeMeshGroupDevice}
+          onSaveGroupDevice={saveMeshGroupDevice}
+          onSyncGroup={syncMeshGroup}
+          onCreateGroupShare={createMeshGroupShare}
+          onSaveGroupScope={saveMeshGroupScope}
         />
       ) : activePage === "settings" ? (
         <>

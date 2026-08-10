@@ -504,6 +504,10 @@ pub(crate) struct AccountProfile {
     pub(crate) usage: UsageStats,
     #[serde(default)]
     pub(crate) route_health: RouteHealth,
+    #[serde(default)]
+    pub(crate) source_device_name: Option<String>,
+    #[serde(default)]
+    pub(crate) source_device_ip: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -778,6 +782,10 @@ struct ExportProfile {
     #[serde(default)]
     api_config: Option<ApiProviderConfig>,
     usage: UsageStats,
+    #[serde(default)]
+    source_device_name: Option<String>,
+    #[serde(default)]
+    source_device_ip: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -788,6 +796,7 @@ pub(crate) struct ImportResult {
     imported_profiles: usize,
     restored_files: usize,
     skipped_conversation_files: usize,
+    skipped_expired_profiles: usize,
     message: String,
 }
 
@@ -994,6 +1003,10 @@ fn upsert_auth_profile(
         route_health: existing_index
             .map(|idx| store.profiles[idx].route_health.clone())
             .unwrap_or_default(),
+        source_device_name: existing_index
+            .and_then(|idx| store.profiles[idx].source_device_name.clone()),
+        source_device_ip: existing_index
+            .and_then(|idx| store.profiles[idx].source_device_ip.clone()),
         created_at: existing_index
             .map(|idx| store.profiles[idx].created_at.clone())
             .unwrap_or_else(|| now.clone()),
@@ -1141,6 +1154,8 @@ fn add_api_profile(
         }),
         usage: UsageStats::default(),
         route_health: RouteHealth::default(),
+        source_device_name: None,
+        source_device_ip: None,
         created_at: now.clone(),
         updated_at: now,
     });
@@ -1478,6 +1493,100 @@ async fn mesh_status(app: AppHandle) -> Result<easytier_mesh::MeshStatus, String
 }
 
 #[tauri::command]
+async fn mesh_group_list(app: AppHandle) -> Result<Vec<easytier_mesh::MeshGroupView>, String> {
+    run_mesh_blocking(move || easytier_mesh::list_groups(app)).await
+}
+
+#[tauri::command]
+async fn mesh_group_status(
+    app: AppHandle,
+    group_id: String,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::group_status(app, group_id)).await
+}
+
+#[tauri::command]
+async fn mesh_group_create(
+    app: AppHandle,
+    input: easytier_mesh::MeshSaveGroupInput,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::create_group(app, input)).await
+}
+
+#[tauri::command]
+async fn mesh_group_start(
+    app: AppHandle,
+    group_id: String,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::start_group(app, group_id)).await
+}
+
+#[tauri::command]
+async fn mesh_group_stop(
+    app: AppHandle,
+    group_id: String,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::stop_group(app, group_id)).await
+}
+
+#[tauri::command]
+async fn mesh_group_import(
+    app: AppHandle,
+    payload_text: String,
+) -> Result<easytier_mesh::MeshImportResult, String> {
+    run_mesh_blocking(move || easytier_mesh::import_share_payload(app, payload_text)).await
+}
+
+#[tauri::command]
+async fn mesh_group_revoke(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+    revoked: bool,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::revoke_group_device(app, group_id, device_id, revoked))
+        .await
+}
+
+#[tauri::command]
+async fn mesh_group_save_device_sync(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+    auto_account_sync: bool,
+    sync_scope: easytier_mesh::MeshSyncScope,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || {
+        easytier_mesh::save_group_device_sync(
+            app,
+            group_id,
+            device_id,
+            auto_account_sync,
+            sync_scope,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn mesh_group_sync_now(
+    app: AppHandle,
+    group_id: String,
+    device_id: Option<String>,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::sync_group_now(app, group_id, device_id)).await
+}
+
+#[tauri::command]
+fn mesh_group_create_share_payload(
+    app: AppHandle,
+    group_id: String,
+    mode: easytier_mesh::MeshShareMode,
+) -> Result<String, String> {
+    easytier_mesh::create_group_share_payload(app, group_id, mode)
+}
+
+#[tauri::command]
 async fn mesh_save_settings(
     app: AppHandle,
     input: easytier_mesh::MeshSaveSettingsInput,
@@ -1541,6 +1650,14 @@ fn mesh_sync_now(
 }
 
 #[tauri::command]
+fn mesh_authorize_peer_sync(
+    app: AppHandle,
+    ip: String,
+) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::authorize_peer_and_sync(app, ip)
+}
+
+#[tauri::command]
 fn mesh_export_migration_share(
     app: AppHandle,
     output_path: String,
@@ -1584,6 +1701,8 @@ fn refresh_profile_tokens_from_codex_home(
     codex_home: Option<String>,
     profile_id: Option<String>,
 ) -> Result<StoreView, String> {
+    let _refresh_guard = easytier_mesh::begin_profile_refresh()
+        .ok_or_else(|| "账号同步进行中，请稍后再刷新 token".to_string())?;
     let path = resolve_codex_home(&app, codex_home)?;
     let auth_json = fs::read_to_string(path.join("auth.json"))
         .map_err(|e| format!("无法读取当前 auth.json: {}", e))?;
@@ -1737,6 +1856,14 @@ async fn refresh_all_profile_tokens(
     include_current: bool,
     threshold_secs: Option<u64>,
 ) -> Result<TokenRefreshBatchResult, String> {
+    let Some(_refresh_guard) = easytier_mesh::begin_profile_refresh() else {
+        return Ok(TokenRefreshBatchResult {
+            refreshed: 0,
+            skipped: 0,
+            failed: 0,
+            message: "账号同步进行中，已跳过本轮 token 保活".to_string(),
+        });
+    };
     let key = load_master_key(&app)?;
     let mut store = load_store(&app)?;
     let client = build_probe_client(&store.settings.probe_proxy)?;
@@ -2300,6 +2427,15 @@ fn repair_codex_session_visibility_after_switch(
 
 #[tauri::command]
 async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeResult, String> {
+    let Some(_refresh_guard) = easytier_mesh::begin_profile_refresh() else {
+        return Ok(UsageProbeResult {
+            profile_id,
+            status: "skipped_sync".to_string(),
+            http_status: None,
+            raw_json: None,
+            message: "账号同步进行中，已跳过本次额度探测".to_string(),
+        });
+    };
     let mut store = load_store(&app)?;
     let key = load_master_key(&app)?;
     let idx = store
@@ -2653,6 +2789,7 @@ fn export_bundle_internal(
         selected_ids.as_deref(),
         allow_empty_profiles,
     )?;
+    let (source_device_name, source_device_ip) = easytier_mesh::local_mesh_source();
     let export_profiles = profiles
         .into_iter()
         .map(|p| {
@@ -2670,6 +2807,8 @@ fn export_bundle_internal(
                 auth_json,
                 api_config: p.api_config.clone(),
                 usage: p.usage.clone(),
+                source_device_name: Some(source_device_name.clone()),
+                source_device_ip: source_device_ip.clone(),
                 created_at: p.created_at.clone(),
                 updated_at: p.updated_at.clone(),
             })
@@ -2807,9 +2946,47 @@ pub(crate) fn import_accounts_bundle_with_scope(
     })?;
 
     let mut imported = 0usize;
+    let mut skipped_expired_profiles = 0usize;
+    let mut source_devices = Vec::<String>::new();
+    for profile in &payload.profiles {
+        let label = match (
+            profile.source_device_name.as_deref(),
+            profile.source_device_ip.as_deref(),
+        ) {
+            (Some(name), Some(ip)) => format!("{name} ({ip})"),
+            (Some(name), None) => name.to_string(),
+            (None, Some(ip)) => ip.to_string(),
+            (None, None) => String::new(),
+        };
+        if !label.is_empty() && !source_devices.contains(&label) {
+            source_devices.push(label);
+        }
+    }
     for profile in payload.profiles {
         if mesh_scope.as_ref().is_some_and(|scope| !scope.accounts) {
             break;
+        }
+        let existing_index = store.profiles.iter().position(|p| {
+            p.id == profile.id
+                || (p.summary.account_id.is_some()
+                    && p.summary.account_id == profile.summary.account_id)
+        });
+        if profile_auth_is_expired_or_invalid(
+            &profile.summary,
+            &profile.usage,
+            profile.api_config.as_ref(),
+        ) && existing_index
+            .map(|idx| {
+                !profile_auth_is_expired_or_invalid(
+                    &store.profiles[idx].summary,
+                    &store.profiles[idx].usage,
+                    store.profiles[idx].api_config.as_ref(),
+                )
+            })
+            .unwrap_or(false)
+        {
+            skipped_expired_profiles += 1;
+            continue;
         }
         let encrypted_auth_json = encrypt_secret(profile.auth_json.as_bytes(), &key)?;
         let local_profile = AccountProfile {
@@ -2825,6 +3002,8 @@ pub(crate) fn import_accounts_bundle_with_scope(
             api_config: profile.api_config,
             usage: profile.usage,
             route_health: RouteHealth::default(),
+            source_device_name: profile.source_device_name,
+            source_device_ip: profile.source_device_ip,
             created_at: profile.created_at,
             updated_at: now_string(),
         };
@@ -2880,12 +3059,30 @@ pub(crate) fn import_accounts_bundle_with_scope(
         "info",
         &format!("已导入迁移包，恢复 {} 个账号", imported),
     );
+    if !source_devices.is_empty() {
+        push_event(
+            &mut store,
+            "info",
+            &format!("导入设备来源：{}", source_devices.join("、")),
+        );
+    }
+    if skipped_expired_profiles > 0 {
+        push_event(
+            &mut store,
+            "warn",
+            &format!(
+                "同步跳过 {} 个已过期或无效账号，保留本机有效账号",
+                skipped_expired_profiles
+            ),
+        );
+    }
     save_store(&app, &store)?;
 
     Ok(ImportResult {
         imported_profiles: imported,
         restored_files: restored,
         skipped_conversation_files: skipped_conversations,
+        skipped_expired_profiles,
         message: "迁移包已导入；选择账号后可写入当前机器的 auth.json".to_string(),
     })
 }
@@ -3098,13 +3295,20 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
         return Ok(AppStore::default());
     }
     let text = fs::read_to_string(path).map_err(display_err)?;
-    serde_json::from_str(&text).map_err(display_err)
+    let mut store: AppStore = serde_json::from_str(&text).map_err(display_err)?;
+    if easytier_mesh::migrate_settings(&mut store.settings.mesh) {
+        write_store_unlocked(app, &store)?;
+    }
+    Ok(store)
 }
 
 fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String> {
     let path = app_data_dir(app)?.join(STORE_FILE);
     let tmp = path.with_extension("json.tmp");
-    let text = serde_json::to_string_pretty(store).map_err(display_err)?;
+    let mut store = store.clone();
+    easytier_mesh::migrate_settings(&mut store.settings.mesh);
+    easytier_mesh::sync_legacy_settings(&mut store.settings.mesh);
+    let text = serde_json::to_string_pretty(&store).map_err(display_err)?;
     fs::write(&tmp, text).map_err(display_err)?;
     if path.exists() {
         let _ = fs::remove_file(&path);
@@ -3403,6 +3607,71 @@ pub(crate) fn refresh_error_requires_relogin(error: &str) -> bool {
         || normalized.contains("token_invalidated")
         || normalized.contains("invalid_grant")
         || normalized.contains("invalid refresh token")
+}
+
+fn token_error_is_invalid(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    [
+        "invalid_grant",
+        "invalid_token",
+        "token_invalidated",
+        "refresh_token_invalidated",
+        "refresh_token_reused",
+        "invalid_refresh_token",
+        "invalid refresh token",
+        "unauthorized",
+        "access denied",
+        "token expired",
+        "access token expired",
+        "id token expired",
+        "subscription expired",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn profile_auth_is_expired_or_invalid(
+    summary: &AuthSummary,
+    usage: &UsageStats,
+    api_config: Option<&ApiProviderConfig>,
+) -> bool {
+    if api_config.is_some() {
+        return false;
+    }
+
+    let now = Utc::now();
+    let subscription_expired = summary
+        .subscription_active_until
+        .as_deref()
+        .and_then(parse_time)
+        .is_some_and(|until| until <= now);
+    let access_token_expired = summary
+        .access_token_exp
+        .is_some_and(|exp| exp <= now.timestamp());
+    let id_token_expired = summary
+        .id_token_exp
+        .is_some_and(|exp| exp <= now.timestamp());
+    let relogin_required = usage.last_token_refresh_status.as_deref() == Some("relogin_required");
+    let invalid_refresh_error = usage
+        .last_token_refresh_error
+        .as_deref()
+        .is_some_and(token_error_is_invalid);
+    let invalid_probe_error = usage
+        .last_error
+        .as_deref()
+        .is_some_and(token_error_is_invalid);
+    let unauthorized_probe = matches!(
+        usage.last_probe_status.as_deref(),
+        Some("401") | Some("403") | Some("unauthorized") | Some("forbidden")
+    );
+
+    subscription_expired
+        || access_token_expired
+        || id_token_expired
+        || relogin_required
+        || invalid_refresh_error
+        || invalid_probe_error
+        || unauthorized_probe
 }
 
 fn normalize_provider_id(value: &str) -> Result<String, String> {
@@ -5179,6 +5448,16 @@ fn main() {
             routing_apply_codex_config,
             routing_restore_codex_config,
             mesh_status,
+            mesh_group_list,
+            mesh_group_status,
+            mesh_group_create,
+            mesh_group_start,
+            mesh_group_stop,
+            mesh_group_import,
+            mesh_group_revoke,
+            mesh_group_save_device_sync,
+            mesh_group_sync_now,
+            mesh_group_create_share_payload,
             mesh_save_settings,
             mesh_start,
             mesh_stop,
@@ -5188,6 +5467,7 @@ fn main() {
             mesh_list_devices,
             mesh_save_device_sync,
             mesh_sync_now,
+            mesh_authorize_peer_sync,
             mesh_export_migration_share,
             mesh_import_migration_share,
             refresh_profile_tokens_from_codex_home,
@@ -5340,6 +5620,8 @@ mod tests {
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
+            source_device_name: None,
+            source_device_ip: None,
             created_at: now_string(),
             updated_at: now_string(),
         }
@@ -5402,6 +5684,8 @@ mod tests {
                 auth_json: fake_auth("acc-1", "one@example.com"),
                 api_config: None,
                 usage: UsageStats::default(),
+                source_device_name: None,
+                source_device_ip: None,
                 created_at: now_string(),
                 updated_at: now_string(),
             }],
@@ -6426,6 +6710,8 @@ command = "demo-server"
                 api_config: None,
                 usage: UsageStats::default(),
                 route_health: RouteHealth::default(),
+                source_device_name: None,
+                source_device_ip: None,
                 created_at: now_string(),
                 updated_at: now_string(),
             },
@@ -6442,6 +6728,8 @@ command = "demo-server"
                 api_config: None,
                 usage: UsageStats::default(),
                 route_health: RouteHealth::default(),
+                source_device_name: None,
+                source_device_ip: None,
                 created_at: now_string(),
                 updated_at: now_string(),
             },
@@ -6499,6 +6787,8 @@ command = "demo-server"
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
+            source_device_name: None,
+            source_device_ip: None,
             created_at: now_string(),
             updated_at: now_string(),
         });
@@ -6587,6 +6877,40 @@ command = "demo-server"
     }
 
     #[test]
+    fn classifies_expired_and_invalid_oauth_profiles_but_not_api_profiles() {
+        let mut expired = summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap();
+        expired.access_token_exp = Some(1);
+        assert!(profile_auth_is_expired_or_invalid(
+            &expired,
+            &UsageStats::default(),
+            None,
+        ));
+
+        let valid = summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap();
+        let invalid_usage = UsageStats {
+            last_probe_status: Some("401".to_string()),
+            ..UsageStats::default()
+        };
+        assert!(profile_auth_is_expired_or_invalid(
+            &valid,
+            &invalid_usage,
+            None,
+        ));
+
+        let api_config = ApiProviderConfig {
+            provider_id: "test".to_string(),
+            base_url: DEFAULT_API_BASE_URL.to_string(),
+            model: "test-model".to_string(),
+            wire_api: "responses".to_string(),
+        };
+        assert!(!profile_auth_is_expired_or_invalid(
+            &expired,
+            &invalid_usage,
+            Some(&api_config),
+        ));
+    }
+
+    #[test]
     fn detects_usage_limits_from_nested_probe_body() {
         let body = serde_json::json!({
             "rate_limits": [
@@ -6661,6 +6985,8 @@ command = "demo-server"
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
+            source_device_name: None,
+            source_device_ip: None,
             created_at: now_string(),
             updated_at: now_string(),
         };
@@ -6704,6 +7030,8 @@ command = "demo-server"
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
+            source_device_name: None,
+            source_device_ip: None,
             created_at: now_string(),
             updated_at: now_string(),
         };

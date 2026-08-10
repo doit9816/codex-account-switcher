@@ -63,7 +63,7 @@ jobs:
           esac
           protoc --version
 
-      - name: Install Windows Packet.lib
+      - name: Install Windows Packet.lib (build-time only)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
@@ -78,6 +78,22 @@ jobs:
           if (-not (Test-Path -LiteralPath $packetLib)) {
             throw "Packet.lib was not found at $packetLib"
           }
+          $runtimeCandidates = @(
+            (Join-Path $env:WINDIR "System32\Npcap\Packet.dll"),
+            (Join-Path $env:WINDIR "System32\Packet.dll")
+          )
+          $packetDll = $runtimeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $packetDll) {
+            choco install npcap -y --no-progress
+            $packetDll = $runtimeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          }
+          if (-not $packetDll) {
+            throw "Packet.dll was not found after installing Npcap"
+          }
+          $runtimeDir = Join-Path $env:GITHUB_WORKSPACE "src-tauri\easytier\third_party\x86_64"
+          New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+          Copy-Item -LiteralPath $packetDll -Destination (Join-Path $runtimeDir "Packet.dll") -Force
+          Write-Host "Packet.dll: $packetDll"
           "LIB=$packetLibDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Packet.lib: $packetLib"
 
@@ -147,17 +163,17 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
-            ## 0.1.31 更新内容
+            ## 0.1.35 更新内容
 
             ### 新增
-            - 首页账号列表增加卡片/行视图切换、过期筛选、登录状态筛选和分页。
+            - 支持多个独立分享组同时加入和运行。
+            - 分享组支持设备授权、撤销、恢复和按设备设置同步范围。
+            - 账号迁移支持选择单个、多个或部分账号。
 
             ### 优化与修复
-            - 首页账号默认排序改为有效可用账号优先，未过期账号靠前。
-            - 首页移除重复的 API Provider 面板，统一从“添加账号”入口添加 API Key 账号。
-            - 路由自动会话粘性不再使用每次请求变化的 `x-client-request-id`。
-            - 修复一键接管尝试覆盖内置 `openai` provider 导致 Codex 无法加载 `config.toml` 的问题。
-            - 修复 LongCat 等严格 Responses API 上游因不支持 `reasoning.context` 返回 HTTP 400 的问题。
+            - 分享组使用独立运行实例、虚拟网段和代理端口，互不影响。
+            - 保存分享内容后，账号同步立即触发；规则、API 和会话仍按需手动同步。
+            - 修复迁移账号选择区和迁移选项布局问题。
 
             请从下方 Assets 下载对应平台的安装包。
 

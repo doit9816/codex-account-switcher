@@ -1,6 +1,6 @@
 [package]
 name = "codex-account-switcher"
-version = "0.1.34"
+version = "0.1.35"
 description = "Desktop manager for multiple Codex ChatGPT accounts"
 authors = ["cmsCloud"]
 edition = "2021"
@@ -13,7 +13,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
-easytier = { git = "https://github.com/EasyTier/EasyTier", tag = "v2.5.0", default-features = true }
+easytier = { git = "https://github.com/EasyTier/EasyTier", tag = "v2.6.0", default-features = true }
 fs2 = "0.4"
 keyring = "2.3"
 rand = "0.8"
