@@ -69,9 +69,13 @@ jobs:
         run: |
           $root = Join-Path $env:RUNNER_TEMP "WpdPack_4_1_2"
           $archive = Join-Path $env:RUNNER_TEMP "WpdPack_4_1_2.zip"
-          Invoke-WebRequest `
-            -Uri "https://www.winpcap.org/install/bin/WpdPack_4_1_2.zip" `
-            -OutFile $archive
+          curl.exe --fail --location --retry 5 --retry-all-errors `
+            --user-agent "CodexSwitcher-Release/1.0" `
+            --output $archive `
+            "https://www.winpcap.org/install/bin/WpdPack_4_1_2.zip"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf) -or (Get-Item -LiteralPath $archive).Length -lt 100000) {
+            throw "WpdPack download is missing or unexpectedly small: $archive"
+          }
           Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
           $packetLibDir = Join-Path $root "WpdPack\Lib\x64"
           $packetLib = Join-Path $packetLibDir "Packet.lib"
@@ -163,7 +167,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
-            ## 0.1.35 更新内容
+            ## 0.1.36 更新内容
 
             ### 新增
             - 支持多个独立分享组同时加入和运行。
