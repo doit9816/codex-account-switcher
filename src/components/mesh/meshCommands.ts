@@ -18,6 +18,7 @@ export const meshCommands = {
   groupStart: "mesh_group_start",
   groupStop: "mesh_group_stop",
   groupRevoke: "mesh_group_revoke",
+  groupRemoveDevice: "mesh_group_remove_device",
   groupSaveDeviceSync: "mesh_group_save_device_sync",
   groupSyncNow: "mesh_group_sync_now",
   groupCreateSharePayload: "mesh_group_create_share_payload",
@@ -41,6 +42,11 @@ export type MeshGroupRevokeDeviceInput = {
   groupId: string;
   deviceId: string;
   revoked: boolean;
+};
+
+export type MeshGroupRemoveDeviceInput = {
+  groupId: string;
+  deviceId: string;
 };
 
 export type MeshGroupSyncInput = {

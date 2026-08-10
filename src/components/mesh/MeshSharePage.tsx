@@ -10,6 +10,7 @@ import {
   Save,
   ShieldOff,
   Square,
+  Trash2,
   Upload,
   Users,
   X,
@@ -33,6 +34,7 @@ import {
   type MeshGroupDeviceSyncInput,
   type MeshGroupImportInput,
   type MeshGroupRevokeDeviceInput,
+  type MeshGroupRemoveDeviceInput,
   type MeshGroupShareInput,
   type MeshGroupStartInput,
   type MeshGroupStopInput,
@@ -93,6 +95,7 @@ export type MeshSharePageProps = {
   onStartGroup?: (input: MeshGroupStartInput) => void | Promise<unknown>;
   onStopGroup?: (input: MeshGroupStopInput) => void | Promise<unknown>;
   onRevokeDevice?: (input: MeshGroupRevokeDeviceInput) => void | Promise<unknown>;
+  onRemoveDevice?: (input: MeshGroupRemoveDeviceInput) => void | Promise<unknown>;
   onSaveGroupDevice?: (input: MeshGroupDeviceSyncInput) => void | Promise<unknown>;
   onSyncGroup?: (input: MeshGroupSyncInput) => void | Promise<unknown>;
   onCreateGroupShare?: (input: MeshGroupShareInput) => void | Promise<unknown>;
@@ -195,6 +198,12 @@ export function MeshSharePage(props: MeshSharePageProps) {
     }
   }
 
+  function removeDevice(device: MeshDevice) {
+    if (!activeGroup || !canUseGroupCommands || !props.onRemoveDevice) return;
+    if (!window.confirm(`${t.removeDeviceConfirm}\n\n${device.name}`)) return;
+    void runAction(() => props.onRemoveDevice!({ groupId: activeGroup.id, deviceId: device.id }));
+  }
+
   function saveDeviceSelection(device: MeshDevice, syncScope: MeshSyncScope, autoAccountSync = device.autoAccountSync === true) {
     if (!activeGroup) return;
     if (canUseGroupCommands && props.onSaveGroupDevice) {
@@ -238,6 +247,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
     || (running ? Boolean(props.onStopGroup) : Boolean(props.onStartGroup));
   const syncAvailable = activeIsLegacy || Boolean(props.onSyncGroup);
   const revokeAvailable = activeIsLegacy || Boolean(props.onRevokeDevice);
+  const removeAvailable = canUseGroupCommands && Boolean(props.onRemoveDevice);
 
   function deviceIsRevoked(device: MeshDevice) {
     return Boolean(device.revokedAt) || (activeIsLegacy && !device.trusted);
@@ -388,6 +398,17 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         {revoked ? <CheckCircle2 size={14} /> : <ShieldOff size={14} />}
                         {revoked ? t.restoreDevice : t.revokeDevice}
                       </button>
+                      {removeAvailable && (
+                        <button
+                          type="button"
+                          className="mini-button danger"
+                          onClick={() => removeDevice(device)}
+                          disabled={props.busy}
+                          title={t.removeDevice}
+                        >
+                          <Trash2 size={14} /> {t.removeDevice}
+                        </button>
+                      )}
                     </div>
                   </article>
                 );

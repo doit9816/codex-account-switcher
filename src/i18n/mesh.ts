@@ -33,6 +33,8 @@ export type MeshI18n = {
   autoSyncAccounts: string;
   revokeDevice: string;
   restoreDevice: string;
+  removeDevice: string;
+  removeDeviceConfirm: string;
   sharingTitle: string;
   sharingHint: string;
   shareContents: string;
@@ -105,6 +107,8 @@ const zhCN: MeshI18n = {
   autoSyncAccounts: "自动同步账号",
   revokeDevice: "撤销同步",
   restoreDevice: "恢复授权",
+  removeDevice: "移除设备",
+  removeDeviceConfirm: "确定从当前分享组移除这台设备吗？移除后它不会再显示在本组设备列表中。",
   sharingTitle: "当前组分享",
   sharingHint: "生成当前组的分享码，并设置允许同步的内容。",
   shareContents: "分享内容",
@@ -177,6 +181,8 @@ const en: MeshI18n = {
   autoSyncAccounts: "Auto-sync accounts",
   revokeDevice: "Revoke sync",
   restoreDevice: "Restore access",
+  removeDevice: "Remove device",
+  removeDeviceConfirm: "Remove this device from the current share group? It will no longer appear in this group.",
   sharingTitle: "Share current group",
   sharingHint: "Create a code for this group and choose what it may sync.",
   shareContents: "Shared content",

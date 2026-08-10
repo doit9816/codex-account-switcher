@@ -961,6 +961,15 @@ export default function App() {
     }, input.revoked ? "已禁止该设备使用此分享组" : "已恢复该设备使用此分享组");
   }
 
+  async function removeMeshGroupDevice(input: { groupId: string; deviceId: string }) {
+    return await run(async () => {
+      const groupStatus = await invoke<MeshGroupStatus>("mesh_group_remove_device", input);
+      setMeshGroupStatus(groupStatus);
+      await reloadMeshStatus();
+      return groupStatus;
+    }, "设备已从当前分享组移除");
+  }
+
   async function saveMeshGroupDevice(input: {
     groupId: string;
     deviceId: string;
@@ -2310,6 +2319,7 @@ export default function App() {
           onStartGroup={({ groupId }) => setMeshGroupRunning(groupId, true)}
           onStopGroup={({ groupId }) => setMeshGroupRunning(groupId, false)}
           onRevokeDevice={revokeMeshGroupDevice}
+          onRemoveDevice={removeMeshGroupDevice}
           onSaveGroupDevice={saveMeshGroupDevice}
           onSyncGroup={syncMeshGroup}
           onCreateGroupShare={createMeshGroupShare}

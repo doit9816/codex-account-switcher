@@ -1549,6 +1549,15 @@ async fn mesh_group_revoke(
 }
 
 #[tauri::command]
+async fn mesh_group_remove_device(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::remove_group_device(app, group_id, device_id)).await
+}
+
+#[tauri::command]
 async fn mesh_group_save_device_sync(
     app: AppHandle,
     group_id: String,
@@ -5455,6 +5464,7 @@ fn main() {
             mesh_group_stop,
             mesh_group_import,
             mesh_group_revoke,
+            mesh_group_remove_device,
             mesh_group_save_device_sync,
             mesh_group_sync_now,
             mesh_group_create_share_payload,

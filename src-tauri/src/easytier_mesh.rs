@@ -923,6 +923,57 @@ pub(crate) fn revoke_group_device(
     group_status(app, group_id)
 }
 
+pub(crate) fn remove_group_device(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+) -> Result<MeshGroupStatus, String> {
+    if group_id == MESH_GROUP_LEGACY_ID {
+        return Err("legacy mesh group does not support removing devices".to_string());
+    }
+    let mut store = load_store(&app)?;
+    let removed_fingerprint = {
+        let group = store
+            .settings
+            .mesh
+            .groups
+            .iter_mut()
+            .find(|group| group.group_id == group_id)
+            .ok_or_else(|| "mesh group not found".to_string())?;
+        let index = group
+            .authorized_devices
+            .iter()
+            .position(|device| device.id == device_id)
+            .ok_or_else(|| "device not found in mesh group".to_string())?;
+        group
+            .authorized_devices
+            .remove(index)
+            .credential_fingerprint
+    };
+    if let Some(group) = store
+        .settings
+        .mesh
+        .groups
+        .iter_mut()
+        .find(|group| group.group_id == group_id)
+    {
+        group.credential_grants.retain(|grant| {
+            grant.bound_device_id.as_deref() != Some(device_id.as_str())
+                && removed_fingerprint
+                    .as_deref()
+                    .map(|fingerprint| grant.fingerprint != fingerprint)
+                    .unwrap_or(true)
+        });
+    }
+    push_event(
+        &mut store,
+        "info",
+        &format!("设备已从分享组移除：{group_id} / {device_id}"),
+    );
+    save_store(&app, &store)?;
+    group_status(app, group_id)
+}
+
 pub(crate) fn save_group_device_sync(
     app: AppHandle,
     group_id: String,
