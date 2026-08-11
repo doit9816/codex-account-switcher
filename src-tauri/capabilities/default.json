@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "dialog:allow-confirm",
     "updater:default",
     "process:default"
   ]

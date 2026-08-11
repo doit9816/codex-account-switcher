@@ -15,7 +15,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
@@ -43,6 +43,9 @@ const MAX_BOOTSTRAP_PEERS: usize = 8;
 const MAX_NODE_PROBES: usize = 32;
 const NODE_PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_MESH_SYNC_BYTES: usize = 256 * 1024 * 1024;
+const MESH_SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MESH_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MESH_SYNC_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const MESH_HELLO_PATH: &str = "/mesh/hello";
 const MESH_HELLO_TOKEN_HEADER: &str = "X-Codex-Mesh-Token";
 const MESH_GROUP_ID_HEADER: &str = "X-Codex-Mesh-Group-Id";
@@ -109,10 +112,15 @@ fn begin_mesh_data_sync() -> Result<MeshDataSyncGuard, String> {
         .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
         .map_err(|_| "账号同步正在进行，请稍后重试".to_string())?;
 
+    let guard = MeshDataSyncGuard;
+    let deadline = Instant::now() + MESH_SYNC_REFRESH_WAIT_TIMEOUT;
     while PROFILE_REFRESH_IN_FLIGHT.load(AtomicOrdering::Acquire) != 0 {
+        if Instant::now() >= deadline {
+            return Err("等待账号 token 刷新结束超时，请稍后重试".to_string());
+        }
         thread::sleep(Duration::from_millis(50));
     }
-    Ok(MeshDataSyncGuard)
+    Ok(guard)
 }
 
 struct MeshRuntime {
@@ -1383,9 +1391,34 @@ pub(crate) fn save_device_sync(
     status(app)
 }
 
+pub(crate) fn remove_device(app: AppHandle, device_id: String) -> Result<MeshStatus, String> {
+    let mut store = load_store(&app)?;
+    let index = store
+        .settings
+        .mesh
+        .authorized_devices
+        .iter()
+        .position(|device| device.id == device_id)
+        .ok_or_else(|| "未找到已连接设备".to_string())?;
+    let device = store.settings.mesh.authorized_devices.remove(index);
+    push_event(
+        &mut store,
+        "info",
+        &format!("设备已从当前分享组移除：{}", device.name),
+    );
+    save_store(&app, &store)?;
+    status(app)
+}
+
 pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<MeshStatus, String> {
     let mut store = load_store(&app)?;
     let key = load_master_key(&app)?;
+    let online_device_ids = build_status(&app, &store)
+        .devices
+        .into_iter()
+        .filter(|device| device.online)
+        .map(|device| device.id)
+        .collect::<BTreeSet<_>>();
     let targets = store
         .settings
         .mesh
@@ -1393,6 +1426,7 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
         .iter()
         .filter(|device| device.trusted && device.revoked_at.is_none())
         .filter(|device| device.id != local_device_id())
+        .filter(|device| online_device_ids.contains(&device.id))
         .filter(|device| {
             device.sync_scope.accounts
                 || device.sync_scope.rules
@@ -1403,7 +1437,11 @@ pub(crate) fn sync_now(app: AppHandle, device_id: Option<String>) -> Result<Mesh
         .cloned()
         .collect::<Vec<_>>();
     if targets.is_empty() {
-        return Err("没有可同步的受信任设备".to_string());
+        return Err(if device_id.is_some() {
+            "设备当前不在线，已取消同步".to_string()
+        } else {
+            "没有在线且受信任的可同步设备".to_string()
+        });
     }
     let _sync_guard = begin_mesh_data_sync()?;
     let mut succeeded = 0usize;
@@ -1453,16 +1491,27 @@ pub(crate) fn sync_group_now(
     }
     let store = load_store(&app)?;
     let key = load_master_key(&app)?;
+    let online_device_ids = build_group_status(&store, &group_id)?
+        .devices
+        .into_iter()
+        .filter(|device| device.online)
+        .map(|device| device.id)
+        .collect::<BTreeSet<_>>();
     let targets = find_group(&store, &group_id)?
         .authorized_devices
         .iter()
         .filter(|device| device.trusted && device.revoked_at.is_none())
         .filter(|device| device.id != local_device_id())
+        .filter(|device| online_device_ids.contains(&device.id))
         .filter(|device| device_id.as_deref().is_none_or(|id| id == device.id))
         .cloned()
         .collect::<Vec<_>>();
     if targets.is_empty() {
-        return Err("no trusted sync target in mesh group".to_string());
+        return Err(if device_id.is_some() {
+            "设备当前不在线，已取消同步".to_string()
+        } else {
+            "当前分享组没有在线且受信任的可同步设备".to_string()
+        });
     }
     let _sync_guard = begin_mesh_data_sync()?;
     let mut failures = Vec::new();
@@ -1770,8 +1819,8 @@ fn sync_from_device_with_scope(
         credential
     };
     let mut client_builder = Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(180));
+        .connect_timeout(MESH_SYNC_CONNECT_TIMEOUT)
+        .timeout(MESH_SYNC_REQUEST_TIMEOUT);
     if should_use_mesh_socks5(base_url) {
         client_builder = client_builder.proxy(
             reqwest::Proxy::all(mesh_socks5_proxy_url_for_group(group_id)).map_err(display_err)?,

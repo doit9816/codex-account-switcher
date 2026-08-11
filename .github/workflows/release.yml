@@ -158,7 +158,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: CodexSwitcher v__VERSION__
           releaseBody: |
-            ## 0.1.40 更新内容
+            ## 0.1.41 更新内容
 
             ### 新增
             - 支持多个独立分享组同时加入和运行。

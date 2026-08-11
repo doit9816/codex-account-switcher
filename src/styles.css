@@ -1420,6 +1420,50 @@ input:focus {
   gap: 5px;
 }
 
+.opencode-zen-preset {
+  background: linear-gradient(135deg, #f4f7ff, #eefaf8);
+  border: 1px solid #cadbeb;
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  padding: 13px 14px;
+}
+
+.opencode-zen-preset-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.opencode-zen-preset-copy strong {
+  color: #1d3f6e;
+  font-size: 14px;
+}
+
+.opencode-zen-preset-copy p,
+.opencode-zen-preset small {
+  color: #61758b;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.opencode-zen-preset-actions {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.opencode-zen-preset-actions label {
+  min-width: 0;
+}
+
+.opencode-zen-preset-actions select {
+  min-width: 0;
+  width: 100%;
+}
+
 .edit-api-provider-form {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -2422,6 +2466,10 @@ input:focus {
   .profile-rule-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .opencode-zen-preset-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .mesh-page {
@@ -3157,19 +3205,67 @@ input:focus {
 }
 
 .mesh-groups-page .mesh-device-sync-options {
-  align-items: center;
+  align-items: stretch;
+  background: #f8fafc;
+  border: 1px solid #e5ebf2;
+  border-radius: 10px;
   display: grid;
-  gap: 8px;
+  gap: 9px;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 10px;
 }
 
 .mesh-groups-page .mesh-device-sync-options .mesh-scope-editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
   margin: 0;
 }
 
-.mesh-groups-page .mesh-device-sync-options > .checkline {
+.mesh-groups-page .mesh-device-sync-options .mesh-scope-editor .checkline {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dfe7f0;
+  border-radius: 7px;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  min-width: 0;
+  padding: 8px 6px;
   white-space: nowrap;
+}
+
+.mesh-device-sync-heading {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mesh-device-auto-sync {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dfe7f0;
+  border-radius: 8px;
+  display: flex;
+  gap: 9px;
+  padding: 9px 10px;
+}
+
+.mesh-device-auto-sync span {
+  display: grid;
+  gap: 2px;
+}
+
+.mesh-device-auto-sync strong {
+  color: #344054;
+  font-size: 13px;
+}
+
+.mesh-device-auto-sync small {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .mesh-groups-page .mesh-device-row.revoked {
@@ -3186,6 +3282,13 @@ input:focus {
   display: inline-flex;
   gap: 5px;
   white-space: nowrap;
+}
+
+.mesh-groups-page .mesh-device-actions {
+  border-top: 1px solid #edf1f5;
+  justify-content: flex-start;
+  margin-top: 2px;
+  padding-top: 10px;
 }
 
 .mesh-groups-page .mesh-share-panel .mesh-scope-editor {
@@ -3259,6 +3362,10 @@ input:focus {
   }
 
   .mesh-groups-page .mesh-share-panel .mesh-scope-editor {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mesh-groups-page .mesh-device-sync-options .mesh-scope-editor {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

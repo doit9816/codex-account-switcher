@@ -1651,6 +1651,14 @@ fn mesh_save_device_sync(
 }
 
 #[tauri::command]
+fn mesh_remove_device(
+    app: AppHandle,
+    device_id: String,
+) -> Result<easytier_mesh::MeshStatus, String> {
+    easytier_mesh::remove_device(app, device_id)
+}
+
+#[tauri::command]
 fn mesh_sync_now(
     app: AppHandle,
     device_id: Option<String>,
@@ -5476,6 +5484,7 @@ fn main() {
             mesh_import_share_payload,
             mesh_list_devices,
             mesh_save_device_sync,
+            mesh_remove_device,
             mesh_sync_now,
             mesh_authorize_peer_sync,
             mesh_export_migration_share,

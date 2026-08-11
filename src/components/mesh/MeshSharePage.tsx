@@ -110,6 +110,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const [groupName, setGroupName] = useState("");
   const [shareCode, setShareCode] = useState("");
   const [actionError, setActionError] = useState("");
+  const [removeConfirmDeviceId, setRemoveConfirmDeviceId] = useState<string | null>(null);
 
   const statusDevices = props.groupStatus?.devices ?? props.status?.devices ?? [];
   const localDeviceId = props.groupStatus?.localDeviceId ?? props.status?.localDeviceId;
@@ -199,9 +200,15 @@ export function MeshSharePage(props: MeshSharePageProps) {
   }
 
   function removeDevice(device: MeshDevice) {
-    if (!activeGroup || !canUseGroupCommands || !props.onRemoveDevice) return;
-    if (!window.confirm(`${t.removeDeviceConfirm}\n\n${device.name}`)) return;
-    void runAction(() => props.onRemoveDevice!({ groupId: activeGroup.id, deviceId: device.id }));
+    if (!activeGroup || !props.onRemoveDevice) return;
+    if (removeConfirmDeviceId !== device.id) {
+      setRemoveConfirmDeviceId(device.id);
+      return;
+    }
+    void runAction(
+      () => props.onRemoveDevice!({ groupId: activeGroup.id, deviceId: device.id }),
+      () => setRemoveConfirmDeviceId(null),
+    );
   }
 
   function saveDeviceSelection(device: MeshDevice, syncScope: MeshSyncScope, autoAccountSync = device.autoAccountSync === true) {
@@ -247,7 +254,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
     || (running ? Boolean(props.onStopGroup) : Boolean(props.onStartGroup));
   const syncAvailable = activeIsLegacy || Boolean(props.onSyncGroup);
   const revokeAvailable = activeIsLegacy || Boolean(props.onRevokeDevice);
-  const removeAvailable = canUseGroupCommands && Boolean(props.onRemoveDevice);
+  const removeAvailable = Boolean(props.onRemoveDevice);
 
   function deviceIsRevoked(device: MeshDevice) {
     return Boolean(device.revokedAt) || (activeIsLegacy && !device.trusted);
@@ -346,6 +353,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
             <div className="mesh-device-list">
               {groupDevices.map((device) => {
                 const revoked = deviceIsRevoked(device);
+                const removing = removeConfirmDeviceId === device.id;
                 return (
                   <article className={`mesh-device-row ${revoked ? "revoked" : ""}`} key={device.id}>
                     <div>
@@ -363,6 +371,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                       </small>
                     </div>
                     <div className="mesh-device-sync-options">
+                      <div className="mesh-device-sync-heading">{t.allowedSyncContents}</div>
                       <ScopeEditor
                         compact
                         value={device.syncScope}
@@ -370,22 +379,28 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         disabled={revoked || !device.trusted}
                         onChange={(scope) => saveDeviceSelection(device, scope)}
                       />
-                      <label className="checkline">
-                        <input
-                          type="checkbox"
-                          checked={device.autoAccountSync === true}
-                          disabled={revoked || !device.trusted || !device.allowedSyncScope.accounts}
-                          onChange={(event) => saveDeviceSelection(device, device.syncScope, event.target.checked)}
-                        />
-                        {t.autoSyncAccounts}
-                      </label>
+                      {device.allowedSyncScope.accounts && (
+                        <label className="checkline mesh-device-auto-sync">
+                          <input
+                            type="checkbox"
+                            checked={device.autoAccountSync === true}
+                            disabled={revoked || !device.trusted}
+                            onChange={(event) => saveDeviceSelection(device, device.syncScope, event.target.checked)}
+                          />
+                          <span>
+                            <strong>{t.autoSyncAccounts}</strong>
+                            <small>{t.autoSyncAccountsHint}</small>
+                          </span>
+                        </label>
+                      )}
                     </div>
                     <div className="mesh-device-actions">
                       <button
                         type="button"
                         className="mini-button"
                         onClick={() => syncDevice(device.id)}
-                        disabled={props.busy || revoked || !device.trusted || !syncAvailable}
+                        disabled={props.busy || !device.online || revoked || !device.trusted || !syncAvailable}
+                        title={!device.online ? t.deviceStatusOffline : undefined}
                       >
                         <RefreshCcw size={14} /> {t.syncDevice}
                       </button>
@@ -399,15 +414,27 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         {revoked ? t.restoreDevice : t.revokeDevice}
                       </button>
                       {removeAvailable && (
-                        <button
-                          type="button"
-                          className="mini-button danger"
-                          onClick={() => removeDevice(device)}
-                          disabled={props.busy}
-                          title={t.removeDevice}
-                        >
-                          <Trash2 size={14} /> {t.removeDevice}
-                        </button>
+                        <>
+                          {removing && (
+                            <button
+                              type="button"
+                              className="mini-button"
+                              onClick={() => setRemoveConfirmDeviceId(null)}
+                              disabled={props.busy}
+                            >
+                              <X size={14} /> {t.cancel}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="mini-button danger"
+                            onClick={() => removeDevice(device)}
+                            disabled={props.busy}
+                            title={removing ? t.removeDeviceConfirm : t.removeDevice}
+                          >
+                            <Trash2 size={14} /> {removing ? t.confirmRemoveDevice : t.removeDevice}
+                          </button>
+                        </>
                       )}
                     </div>
                   </article>

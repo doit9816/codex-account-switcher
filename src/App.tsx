@@ -35,6 +35,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { RoutingPage } from "./components/routing/RoutingPage";
 import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
 import { MeshSharePage } from "./components/mesh/MeshSharePage";
+import { OpenCodeZenPreset } from "./components/OpenCodeZenPreset";
 import { ProfileRuleFields } from "./components/ProfileRuleFields";
 import { StatusPill } from "./components/StatusPill";
 import type {
@@ -963,6 +964,12 @@ export default function App() {
 
   async function removeMeshGroupDevice(input: { groupId: string; deviceId: string }) {
     return await run(async () => {
+      if (input.groupId === "legacy") {
+        const mesh = await invoke<MeshStatus>("mesh_remove_device", { deviceId: input.deviceId });
+        setMeshStatus(mesh);
+        setMeshGroupStatus(null);
+        return mesh;
+      }
       const groupStatus = await invoke<MeshGroupStatus>("mesh_group_remove_device", input);
       setMeshGroupStatus(groupStatus);
       await reloadMeshStatus();
@@ -1602,7 +1609,7 @@ export default function App() {
 
   async function consumeUsageReset(profileId = selectedId) {
     const profile = store?.profiles.find((item) => item.id === profileId);
-    if (!profile || !window.confirm(t.useResetConfirm)) return;
+    if (!profile || !(await confirmDialog(t.useResetConfirm, { title: t.useReset, kind: "warning" }))) return;
     await run(async () => {
       const result = await invoke<{ message: string; outcome: string; availableResetCount?: number }>(
         "consume_usage_reset",
@@ -1621,8 +1628,9 @@ export default function App() {
     const profile = store?.profiles.find((item) => item.id === profileId);
     if (!profile) return;
     const isCurrent = currentGlobalProfileId === profile.id;
-    const confirmed = window.confirm(
-      `${isCurrent ? t.deleteCurrentAccountConfirm : t.deleteAccountConfirm}\n\n${profile.alias}`
+    const confirmed = await confirmDialog(
+      `${isCurrent ? t.deleteCurrentAccountConfirm : t.deleteAccountConfirm}\n\n${profile.alias}`,
+      { title: t.deleteAccount, kind: "warning" },
     );
     if (!confirmed) return;
     await run(async () => {
@@ -2085,6 +2093,18 @@ export default function App() {
             )}
             {addAccountTab === "api" && (
               <div className="api-provider-form add-account-content">
+                <OpenCodeZenPreset
+                  disabled={busy}
+                  t={t}
+                  onApply={(preset) => {
+                    setApiProviderName(preset.providerName);
+                    setApiProviderId("");
+                    setApiBaseUrl(preset.baseUrl);
+                    setApiModel(preset.model);
+                    setApiWireApi(preset.wireApi);
+                    setApiKey(preset.apiKey);
+                  }}
+                />
                 <label>{t.apiModel}<input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" /></label>
                 <label>{t.apiKey}<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
                 <label>{t.importAlias}<input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="可空，默认使用模型名" /></label>

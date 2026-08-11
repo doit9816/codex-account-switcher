@@ -1753,6 +1753,33 @@ mod tests {
     }
 
     #[test]
+    fn prepares_opencode_zen_free_model_through_chat_proxy() {
+        let prepared = prepare_api_request(
+            "opencode-zen",
+            "https://opencode.ai/zen/v1",
+            "mimo-v2.5-free",
+            "chat_completions",
+            json!({
+                "model": "client-selected-model",
+                "instructions": "Be concise",
+                "input": "hello",
+                "stream": false
+            }),
+        )
+        .unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+
+        assert_eq!(prepared.protocol, WireProtocol::ChatCompletions);
+        assert_eq!(
+            prepared.endpoint,
+            "https://opencode.ai/zen/v1/chat/completions"
+        );
+        assert_eq!(body["model"], "mimo-v2.5-free");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "hello");
+    }
+
+    #[test]
     fn converts_chat_sse_to_responses_sse() {
         let body = concat!(
             "data: {\"id\":\"chatcmpl_1\",\"created\":123,\"model\":\"glm-5\",\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\n",

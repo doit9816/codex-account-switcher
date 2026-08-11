@@ -30,11 +30,14 @@ export type MeshI18n = {
   revocationPersisted: string;
   syncDevice: string;
   syncAllDevices: string;
+  allowedSyncContents: string;
   autoSyncAccounts: string;
+  autoSyncAccountsHint: string;
   revokeDevice: string;
   restoreDevice: string;
   removeDevice: string;
   removeDeviceConfirm: string;
+  confirmRemoveDevice: string;
   sharingTitle: string;
   sharingHint: string;
   shareContents: string;
@@ -104,11 +107,14 @@ const zhCN: MeshI18n = {
   revocationPersisted: "同步授权已撤销，设备记录保留",
   syncDevice: "同步此设备",
   syncAllDevices: "同步当前组在线设备",
-  autoSyncAccounts: "自动同步账号",
+  allowedSyncContents: "允许同步内容",
+  autoSyncAccounts: "账号自动同步",
+  autoSyncAccountsHint: "开启后，账号变更会自动同步到此设备。",
   revokeDevice: "撤销同步",
   restoreDevice: "恢复授权",
   removeDevice: "移除设备",
-  removeDeviceConfirm: "确定从当前分享组移除这台设备吗？移除后它不会再显示在本组设备列表中。",
+  removeDeviceConfirm: "再次点击确认从当前分享组移除这台设备。",
+  confirmRemoveDevice: "确认移除",
   sharingTitle: "当前组分享",
   sharingHint: "生成当前组的分享码，并设置允许同步的内容。",
   shareContents: "分享内容",
@@ -178,11 +184,14 @@ const en: MeshI18n = {
   revocationPersisted: "Sync access revoked; device record retained",
   syncDevice: "Sync device",
   syncAllDevices: "Sync online devices in this group",
+  allowedSyncContents: "Allowed sync content",
   autoSyncAccounts: "Auto-sync accounts",
+  autoSyncAccountsHint: "When enabled, account changes are sent to this device automatically.",
   revokeDevice: "Revoke sync",
   restoreDevice: "Restore access",
   removeDevice: "Remove device",
-  removeDeviceConfirm: "Remove this device from the current share group? It will no longer appear in this group.",
+  removeDeviceConfirm: "Click again to remove this device from the current share group.",
+  confirmRemoveDevice: "Confirm removal",
   sharingTitle: "Share current group",
   sharingHint: "Create a code for this group and choose what it may sync.",
   shareContents: "Shared content",

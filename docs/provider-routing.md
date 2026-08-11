@@ -152,7 +152,10 @@ classDiagram
 | --- | --- | --- | --- |
 | DeepSeek | 官方根地址使用 `/responses` | 清理不支持的 `reasoning.context`、`summary` 和 `encrypted_content` | 使用 API Key 模式，默认高推理强度 |
 | LongCat | 根地址使用 `/v1/responses` | 清理 `reasoning.context` | 写入 LongCat 所需的响应存储、搜索和推理选项 |
+| OpenCode Zen 免费模型 | `https://opencode.ai/zen/v1/chat/completions` | 复用 Responses → Chat Completions 请求、响应与 SSE 转换 | API Provider 预设按官方客户端匿名模式使用公共凭据 `public`，也可替换为个人 API Key |
 | Generic | 根地址使用 `/v1/{endpoint}` | 保留通用请求结构 | 清理已知的 Provider 专属旧选项 |
+
+OpenCode Zen 的免费模型可能限时开放。前端预设只负责填入当前官方模型 ID、Base URL、`chat_completions` 协议和 OpenCode 官方客户端当前使用的匿名公共凭据；`public` 不是第三方 API 的稳定 SLA，实际可用性与数据条款以 OpenCode Zen 当前页面为准。免费端点的请求可能被保留或用于模型改进，不应发送个人或机密数据。
 
 Provider 类型按 `provider_id`、Base URL 和模型名综合识别，优先识别 LongCat 和 DeepSeek，避免仅依赖模型名称造成误判。
 
