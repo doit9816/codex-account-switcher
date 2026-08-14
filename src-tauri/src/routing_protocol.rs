@@ -1205,6 +1205,19 @@ fn chat_completion_to_response(chat: Value) -> Result<Value, String> {
         .get("message")
         .ok_or_else(|| "Chat Completions 响应缺少 message".to_string())?;
     let mut output = Vec::new();
+    let (xml_reasoning, xml_content) = split_xml_reasoning(
+        message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    if !xml_reasoning.is_empty() {
+        output.push(json!({
+            "id": format!("rs_{}", Uuid::new_v4().simple()),
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": xml_reasoning}]
+        }));
+    }
     if let Some(reasoning) = reasoning_text(message).filter(|value| !value.is_empty()) {
         output.push(json!({
             "id": format!("rs_{}", Uuid::new_v4().simple()),
@@ -1212,7 +1225,7 @@ fn chat_completion_to_response(chat: Value) -> Result<Value, String> {
             "summary": [{"type": "summary_text", "text": reasoning}]
         }));
     }
-    if let Some(content) = message.get("content").and_then(Value::as_str) {
+    if let Some(content) = (!xml_content.is_empty()).then_some(xml_content.as_str()) {
         if !content.is_empty() {
             output.push(json!({
                 "id": format!("msg_{}", Uuid::new_v4().simple()),
@@ -1273,6 +1286,31 @@ fn chat_completion_to_response(chat: Value) -> Result<Value, String> {
             json!({"reason": if finish_reason == "content_filter" { "content_filter" } else { "max_output_tokens" }})
         }
     }))
+}
+
+fn split_xml_reasoning(content: &str) -> (String, String) {
+    let mut reasoning = String::new();
+    let mut answer = String::new();
+    let mut rest = content;
+    for (open, close) in [
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+        ("<analysis>", "</analysis>"),
+    ] {
+        while let Some(start) = rest.find(open) {
+            answer.push_str(&rest[..start]);
+            let body_start = start + open.len();
+            let Some(end) = rest[body_start..].find(close) else {
+                reasoning.push_str(&rest[body_start..]);
+                rest = "";
+                break;
+            };
+            reasoning.push_str(&rest[body_start..body_start + end]);
+            rest = &rest[body_start + end + close.len()..];
+        }
+    }
+    answer.push_str(rest);
+    (reasoning.trim().to_string(), answer.trim().to_string())
 }
 
 fn chat_usage_to_responses(usage: Option<&Value>) -> Value {

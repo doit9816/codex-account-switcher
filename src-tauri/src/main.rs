@@ -1276,6 +1276,19 @@ fn update_profile_details(
     if alias.is_empty() {
         return Err("账号备注不能为空".to_string());
     }
+    let api_config_changed = profile.api_config.as_ref().is_some_and(|config| {
+        provider_id
+            .as_deref()
+            .is_some_and(|value| value != config.provider_id)
+            || base_url
+                .as_deref()
+                .is_some_and(|value| value != config.base_url)
+            || model.as_deref().is_some_and(|value| value != config.model)
+            || wire_api
+                .as_deref()
+                .is_some_and(|value| value != config.wire_api)
+            || encrypted_api_auth.is_some()
+    });
     profile.alias = alias.to_string();
     profile.note = note.trim().to_string();
     profile.quota_rule = QuotaRule {
@@ -1300,6 +1313,12 @@ fn update_profile_details(
         }
         if let Some(encrypted_api_auth) = encrypted_api_auth {
             profile.encrypted_auth_json = encrypted_api_auth;
+        }
+        if api_config_changed {
+            // A model/provider change starts a new upstream identity. Do not
+            // carry a previous provider's 429/network cooldown into it.
+            profile.cooldown_until = None;
+            profile.route_health = RouteHealth::default();
         }
     }
     profile.updated_at = now_string();
@@ -3866,7 +3885,7 @@ fn cleanup_non_api_config_with_timeout(
         let _ = sender.send(result);
     });
 
-    match receiver.recv_timeout(Duration::from_secs(2)) {
+    match receiver.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(format!("config.toml 清理失败，auth.json 已写入：{error}")),
         Err(mpsc::RecvTimeoutError::Timeout) => {

@@ -2836,6 +2836,24 @@ input:focus {
   transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
 
+.mesh-group-card-select {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.mesh-group-card-select:disabled {
+  cursor: default;
+}
+
 .mesh-group-card:hover {
   background: #f8fbff;
   border-color: #b7cbe7;

@@ -3,6 +3,7 @@ import {
   Copy,
   Download,
   KeyRound,
+  LoaderCircle,
   Link2,
   Plus,
   Play,
@@ -110,6 +111,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const [groupName, setGroupName] = useState("");
   const [shareCode, setShareCode] = useState("");
   const [actionError, setActionError] = useState("");
+  const [syncingDeviceId, setSyncingDeviceId] = useState<string | null>(null);
   const [removeConfirmDeviceId, setRemoveConfirmDeviceId] = useState<string | null>(null);
 
   const statusDevices = props.groupStatus?.devices ?? props.status?.devices ?? [];
@@ -170,15 +172,21 @@ export function MeshSharePage(props: MeshSharePageProps) {
     void runAction(props.onToggleService);
   }
 
-  function syncDevice(deviceId?: string) {
+  async function syncDevice(deviceId?: string) {
     if (!activeGroup) return;
-    if (canUseGroupCommands) {
-      if (props.onSyncGroup) {
-        void runAction(() => props.onSyncGroup!({ groupId: activeGroup.id, deviceId }));
+    const syncKey = deviceId ?? "__all__";
+    setSyncingDeviceId(syncKey);
+    try {
+      if (canUseGroupCommands) {
+        if (props.onSyncGroup) {
+          await runAction(() => props.onSyncGroup!({ groupId: activeGroup.id, deviceId }));
+        }
+        return;
       }
-      return;
+      await runAction(() => props.onSyncNow(deviceId));
+    } finally {
+      setSyncingDeviceId(null);
     }
-    void runAction(() => props.onSyncNow(deviceId));
   }
 
   function toggleDeviceRevocation(device: MeshDevice) {
@@ -293,15 +301,18 @@ export function MeshSharePage(props: MeshSharePageProps) {
             const selected = group.id === activeGroup?.id;
             const groupRunning = group.runtimeStatus === "running";
             return (
-              <button
-                type="button"
+              <div
                 className={`mesh-group-card ${selected ? "active" : ""}`}
                 key={group.id}
-                onClick={() => selectGroup(group)}
-                disabled={props.busy || (!selected && !props.onSelectGroup)}
               >
-                <span className="mesh-group-card-icon"><Users size={19} /></span>
-                <span className="mesh-group-card-main">
+                <button
+                  type="button"
+                  className="mesh-group-card-select"
+                  onClick={() => selectGroup(group)}
+                  disabled={props.busy || (!selected && !props.onSelectGroup)}
+                >
+                  <span className="mesh-group-card-icon"><Users size={19} /></span>
+                  <span className="mesh-group-card-main">
                   <span className="mesh-group-card-title">
                     <strong>{group.name}</strong>
                     {selected && <span className="mesh-group-selected">{t.activeGroup}</span>}
@@ -310,30 +321,18 @@ export function MeshSharePage(props: MeshSharePageProps) {
                     <span>{groupRunning ? t.running : group.runtimeStatus === "error" ? t.runtimeError : t.stopped}</span>
                     <span>{meshText(t.onlineDevices, { count: String(group.onlineDeviceCount) })}</span>
                   </span>
-                </span>
-                {selected && <CheckCircle2 className="mesh-group-card-check" size={18} />}
-              </button>
+                  </span>
+                  {selected && <CheckCircle2 className="mesh-group-card-check" size={18} />}
+                </button>
+                {selected && <button className={`icon-button ${groupRunning ? "" : "primary"}`} onClick={toggleGroupRuntime} disabled={props.busy || runtimePending || !groupActionAvailable}>
+                  {groupRunning ? <Square size={16} /> : <Play size={16} />}
+                  {runtimePending ? t.processing : groupRunning ? t.stopGroup : t.startGroup}
+                </button>}
+              </div>
             );
           })}
         </div>
 
-        {activeGroup && (
-          <div className="mesh-current-group-status">
-            <span>
-              <strong>{activeGroup.name}</strong>
-              {" · "}{meshText(t.onlineDevices, { count: String(activeGroup.onlineDeviceCount) })}
-            </span>
-            <button
-              className={`icon-button ${running ? "" : "primary"}`}
-              onClick={toggleGroupRuntime}
-              disabled={props.busy || runtimePending || !groupActionAvailable}
-              title={!groupActionAvailable ? t.waitingForGroupCommands : undefined}
-            >
-              {running ? <Square size={16} /> : <Play size={16} />}
-              {runtimePending ? t.processing : running ? t.stopGroup : t.startGroup}
-            </button>
-          </div>
-        )}
       </section>
 
       {(actionError || activeGroup?.lastError || props.status?.lastError) && (
@@ -399,10 +398,10 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         type="button"
                         className="mini-button"
                         onClick={() => syncDevice(device.id)}
-                        disabled={props.busy || !device.online || revoked || !device.trusted || !syncAvailable}
+                        disabled={props.busy || syncingDeviceId !== null || !device.online || revoked || !device.trusted || !syncAvailable}
                         title={!device.online ? t.deviceStatusOffline : undefined}
                       >
-                        <RefreshCcw size={14} /> {t.syncDevice}
+                        {syncingDeviceId === device.id ? <LoaderCircle className="button-spinner" size={14} /> : <RefreshCcw size={14} />} {syncingDeviceId === device.id ? t.processing : t.syncDevice}
                       </button>
                       <button
                         type="button"
@@ -445,9 +444,9 @@ export function MeshSharePage(props: MeshSharePageProps) {
             <button
               className="icon-button"
               onClick={() => syncDevice()}
-              disabled={props.busy || !syncAvailable || !groupDevices.some((device) => device.online && device.trusted && !deviceIsRevoked(device))}
+              disabled={props.busy || syncingDeviceId !== null || !syncAvailable || !groupDevices.some((device) => device.online && device.trusted && !deviceIsRevoked(device))}
             >
-              <RefreshCcw size={17} /> {t.syncAllDevices}
+              {syncingDeviceId === "__all__" ? <LoaderCircle className="button-spinner" size={17} /> : <RefreshCcw size={17} />} {syncingDeviceId === "__all__" ? t.processing : t.syncAllDevices}
             </button>
           </section>
         </div>

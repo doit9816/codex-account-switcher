@@ -35,7 +35,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { RoutingPage } from "./components/routing/RoutingPage";
 import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
 import { MeshSharePage } from "./components/mesh/MeshSharePage";
-import { OpenCodeZenPreset } from "./components/OpenCodeZenPreset";
+import { OpenCodeZenPreset, OPENCODE_ZEN_BASE_URL, OPENCODE_ZEN_FREE_MODELS } from "./components/OpenCodeZenPreset";
 import { ProfileRuleFields } from "./components/ProfileRuleFields";
 import { StatusPill } from "./components/StatusPill";
 import type {
@@ -1468,6 +1468,11 @@ export default function App() {
     const profile = store?.profiles.find((item) => item.id === profileId);
     if (!profile) return;
     setSelectedId(profile.id);
+    const apiProtocol = profile.apiConfig?.wireApi;
+    if (apiProtocol && apiProtocol !== "responses") {
+      await routeApiProfile(profile);
+      return;
+    }
     const restoreRoutingFirst = !!store?.settings.routing.appliedToCodex;
     if (restoreRoutingFirst) {
       const confirmed = await confirmDialog(
@@ -1494,6 +1499,38 @@ export default function App() {
     });
   }
 
+  async function routeApiProfile(profile: Profile) {
+    const codexRunning = await invoke<boolean>("is_codex_process_running");
+    let restartCodex = false;
+    if (codexRunning) {
+      const confirmed = await confirmDialog(
+        `检测到 Codex 正在运行。\n\n接管路由后需要重启 Codex，才能让新会话使用 ${profile.alias}。是否继续？`,
+        { title: "固定账号到路由", kind: "warning" }
+      );
+      if (!confirmed) return;
+      restartCodex = true;
+    }
+    await run(async () => {
+      const saved = await invoke<RoutingStatus>("routing_save_settings", {
+        input: {
+          listenHost: routingHost,
+          port: routingPort,
+          enabled: true,
+          mode: "fixed",
+          fixedProfileId: profile.id,
+          stickyTtlSecs: routingStickyTtlSecs
+        }
+      });
+      setRoutingStatus(saved);
+      const applied = await invoke<RoutingStatus>("routing_apply_codex_config", {
+        restartCodex
+      });
+      setRoutingStatus(applied);
+      await refresh();
+      return applied;
+    }, restartCodex ? "路由已启动并固定账号，Codex 已重启" : "路由已启动并固定账号，请新建 Codex 会话");
+  }
+
   async function autoSwitch() {
     if (!store) return;
     const candidate = store.profiles
@@ -1507,6 +1544,10 @@ export default function App() {
     const force = await shouldForceSwitch(candidate);
     if (force == null) return;
     await run(async () => {
+      if (store.settings.routing.appliedToCodex) {
+        const routing = await invoke<RoutingStatus>("routing_restore_codex_config");
+        setRoutingStatus(routing);
+      }
       const result = await invoke<{ message: string; codexRunning: boolean }>("switch_profile", {
         profileId: candidate.id,
         codexHome: codexHome || undefined,
@@ -1824,10 +1865,10 @@ export default function App() {
             void switchProfile(profile.id);
           }}
           disabled={busy}
-          title={t.switch}
-          aria-label={t.switch}
+          title={profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? "固定到路由" : t.switch}
+          aria-label={profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? "固定到路由" : t.switch}
         >
-          <Zap size={14} />
+          {profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? <Network size={14} /> : <Zap size={14} />}
         </button>
         {store?.settings.routing.appliedToCodex && (
           <button
@@ -2159,6 +2200,24 @@ export default function App() {
                 <label>
                   {t.accountAlias}
                   <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} placeholder={t.accountAlias} />
+                </label>
+                <label>
+                  {t.openCodeZenFreeModel}
+                  <select
+                    value={OPENCODE_ZEN_FREE_MODELS.some((item) => item.id === editModelDraft) ? editModelDraft : ""}
+                    onChange={(event) => {
+                      const model = event.target.value;
+                      if (!model) return;
+                      setEditModelDraft(model);
+                      setEditBaseUrlDraft(OPENCODE_ZEN_BASE_URL);
+                      setEditWireApiDraft("chat_completions");
+                    }}
+                  >
+                    <option value="">手动输入模型…</option>
+                    {OPENCODE_ZEN_FREE_MODELS.map((item) => (
+                      <option value={item.id} key={item.id}>{item.name} ({item.id})</option>
+                    ))}
+                  </select>
                 </label>
                 <label>
                   {t.apiModel}

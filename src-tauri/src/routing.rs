@@ -646,6 +646,24 @@ pub(crate) fn apply_codex_config(app: AppHandle) -> Result<RoutingStatus, String
         backup_provider_id.as_deref(),
     );
     document["model_provider"] = toml_edit::value(&provider_id);
+    let fixed_api_model = (store.settings.routing.mode == RoutingMode::Fixed)
+        .then(|| store.settings.routing.fixed_profile_id.as_deref())
+        .flatten()
+        .and_then(|profile_id| {
+            store
+                .profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+        })
+        .and_then(|profile| profile.api_config.as_ref())
+        .map(|config| config.model.trim().to_string())
+        .filter(|model| !model.is_empty());
+    if let Some(model) = fixed_api_model {
+        // Keep Codex's model picker aligned with the fixed API upstream. The
+        // router still owns protocol conversion, but the UI should not keep
+        // displaying the previous OAuth model (for example gpt-5.6-sol).
+        document["model"] = toml_edit::value(model);
+    }
     if !document.as_table().contains_key("model_providers")
         || !document["model_providers"].is_table()
     {
@@ -1599,6 +1617,34 @@ fn select_profile(
     let key = load_master_key(app)?;
     refresh_due_profiles(app, &mut store, &key)?;
     let settings = store.settings.routing.clone();
+
+    // Fixed mode must remain fixed. Falling through to the account pool after
+    // an upstream failure makes the UI show one model while the request is
+    // silently served by another provider (for example OpenCode -> ChatGPT).
+    if settings.mode == RoutingMode::Fixed {
+        let fixed_id = settings
+            .fixed_profile_id
+            .as_deref()
+            .ok_or_else(|| "固定账号模式未选择账号".to_string())?;
+        if attempted.contains(fixed_id) {
+            return Err("固定账号请求失败，已停止切换其它账号".to_string());
+        }
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.id == fixed_id)
+            .cloned()
+            .ok_or_else(|| "固定账号不存在，请重新选择".to_string())?;
+        if !profile_available(&profile) {
+            return Err(format!(
+                "固定账号当前不可用：{}；{}",
+                profile.alias,
+                profile_unavailable_reason(&profile)
+            ));
+        }
+        return selected_with_auth(profile, &key, fallback);
+    }
+
     if let Some(routing_key) = routing_key {
         if let Some(binding) = sticky_binding(routing_key) {
             if !attempted.contains(&binding.profile_id) {
@@ -1608,18 +1654,6 @@ fn select_profile(
                     .find(|profile| profile.id == binding.profile_id)
                     .cloned()
                 {
-                    if profile_available(&profile) {
-                        return selected_with_auth(profile, &key, fallback);
-                    }
-                }
-            }
-        }
-    }
-
-    if settings.mode == RoutingMode::Fixed {
-        if let Some(fixed_id) = &settings.fixed_profile_id {
-            if !attempted.contains(fixed_id) {
-                if let Some(profile) = store.profiles.iter().find(|p| p.id == *fixed_id).cloned() {
                     if profile_available(&profile) {
                         return selected_with_auth(profile, &key, fallback);
                     }
@@ -1746,6 +1780,39 @@ fn profile_available(profile: &AccountProfile) -> bool {
         return false;
     }
     quota_remaining(profile) > 0
+}
+
+fn profile_unavailable_reason(profile: &AccountProfile) -> String {
+    if !profile.enabled {
+        return "账号已禁用".to_string();
+    }
+    if let Some(cooldown) = profile
+        .cooldown_until
+        .as_deref()
+        .and_then(parse_time)
+        .filter(|time| *time > Utc::now())
+    {
+        if profile.route_health.cooldown_reason.as_deref() == Some("rate_limited") {
+            return format!("上游触发限流，预计 {} 后重试", cooldown.to_rfc3339());
+        }
+        return format!("账号冷却中，预计 {} 后重试", cooldown.to_rfc3339());
+    }
+    if profile
+        .summary
+        .subscription_active_until
+        .as_deref()
+        .and_then(parse_time)
+        .is_some_and(|time| time <= Utc::now())
+    {
+        return "账号订阅已过期".to_string();
+    }
+    if profile.usage.last_token_refresh_status.as_deref() == Some("relogin_required") {
+        return "账号需要重新登录".to_string();
+    }
+    if quota_remaining(profile) <= 0 {
+        return "账号额度已用尽".to_string();
+    }
+    "账号健康状态暂不可用".to_string()
 }
 
 fn compare_profiles(left: &AccountProfile, right: &AccountProfile) -> Ordering {
