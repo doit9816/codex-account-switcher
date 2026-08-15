@@ -99,9 +99,13 @@ pub(crate) fn begin_profile_refresh() -> Option<ProfileRefreshGuard> {
     if MESH_DATA_SYNC_ACTIVE.load(AtomicOrdering::Acquire) {
         return None;
     }
-    PROFILE_REFRESH_IN_FLIGHT.fetch_add(1, AtomicOrdering::AcqRel);
+    // Refresh tokens are rotated by the provider. A counter alone would allow
+    // two callers to submit the same token and trigger `refresh_token_reused`.
+    PROFILE_REFRESH_IN_FLIGHT
+        .compare_exchange(0, 1, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        .ok()?;
     if MESH_DATA_SYNC_ACTIVE.load(AtomicOrdering::Acquire) {
-        PROFILE_REFRESH_IN_FLIGHT.fetch_sub(1, AtomicOrdering::AcqRel);
+        PROFILE_REFRESH_IN_FLIGHT.store(0, AtomicOrdering::Release);
         return None;
     }
     Some(ProfileRefreshGuard)
