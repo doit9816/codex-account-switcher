@@ -439,13 +439,6 @@ export default function App() {
     setTokenRefreshThresholdSecs(store.settings.tokenRefreshThresholdSecs ?? 0);
     setAutoProbeEnabled(store.settings.autoProbeEnabled ?? true);
     setAutoProbeIntervalSecs(store.settings.autoProbeIntervalSecs || 60);
-    const routing = store.settings.routing;
-    setRoutingHost(routing.listenHost || "0.0.0.0");
-    setRoutingPort(routing.port || 15722);
-    setRoutingMode(routing.mode || "auto");
-    setRoutingFixedProfileId(routing.fixedProfileId || "");
-    setRoutingStickyTtlSecs(routing.stickyTtlSecs || 3600);
-    setRoutingLogRetentionDays(routing.logRetentionDays || 7);
     const mesh = store.settings.mesh;
     if (mesh) {
       setMeshNetworkName(mesh.networkName || "codex-switcher");
@@ -461,6 +454,20 @@ export default function App() {
       }
     }
   }, [store, meshSelectedGroupId]);
+
+  // Keep the routing form aligned with an actual backend status response.
+  // The store is refreshed in the background every few seconds; syncing the
+  // draft fields from it made an unsaved mode change jump back unexpectedly.
+  useEffect(() => {
+    const settings = routingStatus?.settings;
+    if (!settings) return;
+    setRoutingHost(settings.listenHost || "0.0.0.0");
+    setRoutingPort(settings.port || 15722);
+    setRoutingMode(settings.mode || "auto");
+    setRoutingFixedProfileId(settings.fixedProfileId || "");
+    setRoutingStickyTtlSecs(settings.stickyTtlSecs || 3600);
+    setRoutingLogRetentionDays(settings.logRetentionDays || 7);
+  }, [routingStatus]);
 
   useEffect(() => {
     const profileIds = (store?.profiles || []).map((profile) => profile.id);
@@ -1225,9 +1232,20 @@ export default function App() {
 
   async function toggleRoutingService() {
     const running = routingStatus?.running;
+    if (running && meshStatus?.running) {
+      const stopMeshToo = await confirmDialog(
+        "检测到多设备共享正在运行。它会自动拉起路由 API。是否同时停止多设备共享和路由 API？",
+        { title: "停止路由 API", kind: "warning" }
+      );
+      if (!stopMeshToo) return;
+    }
     setRoutingBusy(true);
     try {
       await run(async () => {
+      if (running && meshStatus?.running) {
+        const mesh = await invoke<MeshStatus>("mesh_stop");
+        setMeshStatus(mesh);
+      }
       const routing = await invoke<RoutingStatus>("routing_save_settings", {
         input: {
           listenHost: routingHost,
