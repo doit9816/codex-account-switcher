@@ -68,6 +68,7 @@ import {
   authSummariesMatch,
   formatDate,
   formatReset,
+  formatResetDateTime,
   formatResetExpiry,
   formatSubscriptionValidity,
   formatUsage,
@@ -2802,7 +2803,7 @@ export default function App() {
                           <div className="account-limit-track">
                             <i style={{ width: `${remainingPercent ?? 0}%` }} />
                           </div>
-                          <small>{item.resetAt ? formatReset(item.resetAt) : t.notProbed}</small>
+                          <small>{item.resetAt ? formatResetDateTime(item.resetAt) : t.notProbed}</small>
                         </div>
                       );
                     })}
