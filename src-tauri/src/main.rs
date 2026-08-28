@@ -3353,36 +3353,102 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
 }
 
 pub(crate) fn load_master_key(app: &AppHandle) -> Result<[u8; 32], String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+    let data_dir = app_data_dir(app)?;
+    let key_path = data_dir.join(LOCAL_KEY_FILE);
+    let keyring_entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).ok();
+
+    if let Some(entry) = keyring_entry.as_ref() {
         if let Ok(secret) = entry.get_password() {
-            if let Ok(bytes) = STANDARD.decode(secret) {
-                if bytes.len() == 32 {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&bytes);
-                    return Ok(key);
-                }
+            if let Some(key) = decode_master_key(&secret) {
+                return Ok(key);
             }
-        }
-        let mut key = [0u8; 32];
-        OsRng.fill_bytes(&mut key);
-        if entry.set_password(&STANDARD.encode(key)).is_ok() {
-            return Ok(key);
         }
     }
 
-    let key_path = app_data_dir(app)?.join(LOCAL_KEY_FILE);
+    // Older installations may have fallen back to a local key file when the
+    // system credential store was temporarily unavailable. Always try it
+    // before creating a new key, and promote it back into the keyring when
+    // possible.
     if key_path.exists() {
         let bytes = fs::read(&key_path).map_err(display_err)?;
         if bytes.len() == 32 {
             let mut key = [0u8; 32];
             key.copy_from_slice(&bytes);
+            if let Some(entry) = keyring_entry.as_ref() {
+                let _ = entry.set_password(&STANDARD.encode(key));
+            }
             return Ok(key);
         }
     }
+
+    // Never silently replace a missing/inaccessible key when encrypted data
+    // already exists. Doing so makes every later decrypt fail with the opaque
+    // `aead::Error` and hides the real Keychain permission/recovery problem.
+    if store_contains_encrypted_data(&data_dir.join(STORE_FILE)) {
+        return Err(local_key_unavailable_message().to_string());
+    }
+
     let mut key = [0u8; 32];
     OsRng.fill_bytes(&mut key);
+    if let Some(entry) = keyring_entry.as_ref() {
+        if entry.set_password(&STANDARD.encode(key)).is_ok() {
+            return Ok(key);
+        }
+    }
     fs::write(key_path, key).map_err(display_err)?;
     Ok(key)
+}
+
+fn decode_master_key(secret: &str) -> Option<[u8; 32]> {
+    let bytes = STANDARD.decode(secret).ok()?;
+    let mut key = [0u8; 32];
+    (bytes.len() == key.len()).then(|| {
+        key.copy_from_slice(&bytes);
+        key
+    })
+}
+
+fn store_contains_encrypted_data(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    value_contains_encrypted_data(&value)
+}
+
+fn value_contains_encrypted_data(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let is_envelope = object.get("alg").and_then(Value::as_str) == Some("AES-256-GCM")
+                && object.get("nonce").and_then(Value::as_str).is_some()
+                && object.get("ciphertext").and_then(Value::as_str).is_some();
+            is_envelope || object.values().any(value_contains_encrypted_data)
+        }
+        Value::Array(values) => values.iter().any(value_contains_encrypted_data),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn local_key_unavailable_message() -> &'static str {
+    "无法读取本地存储密钥。请在 macOS 钥匙串中允许 CodexSwitcher 访问“codex-account-switcher / profiles”，然后重试；若该项已丢失，请使用迁移包恢复或重置本机数据。"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_key_unavailable_message() -> &'static str {
+    "无法读取本地存储密钥。请检查系统凭据存储权限后重试；若密钥已丢失，请使用迁移包恢复或重置本机数据。"
+}
+
+#[cfg(target_os = "macos")]
+fn local_key_mismatch_message() -> &'static str {
+    "本地存储密钥与加密数据不匹配。请检查 macOS 钥匙串访问权限；若密钥已丢失，请重新登录账号或使用迁移包恢复。"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_key_mismatch_message() -> &'static str {
+    "本地存储密钥与加密数据不匹配。请检查系统凭据存储权限；若密钥已丢失，请重新登录账号或使用迁移包恢复。"
 }
 
 pub(crate) fn encrypt_secret(plaintext: &[u8], key: &[u8; 32]) -> Result<SecretEnvelope, String> {
@@ -3406,7 +3472,7 @@ pub(crate) fn decrypt_secret(envelope: &SecretEnvelope, key: &[u8; 32]) -> Resul
     let ciphertext = STANDARD.decode(&envelope.ciphertext).map_err(display_err)?;
     cipher
         .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
-        .map_err(display_err)
+        .map_err(|_| local_key_mismatch_message().to_string())
 }
 
 fn encrypt_export(plaintext: &[u8], password: &str) -> Result<ExportEnvelope, String> {
@@ -5347,6 +5413,13 @@ fn redact_log_message(message: &str) -> String {
         "network_secret",
         "api key",
         "api_key",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "client_secret",
+        "password",
+        "cookie:",
+        "set-cookie:",
         "authorization:",
         "bearer ",
     ] {
@@ -5357,6 +5430,17 @@ fn redact_log_message(message: &str) -> String {
         }
     }
     value.chars().take(1000).collect()
+}
+
+#[tauri::command]
+fn frontend_log_error(app: AppHandle, operation: String, message: String) {
+    let operation = redact_log_message(&operation);
+    let message = redact_log_message(&message);
+    append_app_log(
+        &app,
+        "error",
+        &format!("frontend operation={operation} error={message}"),
+    );
 }
 
 pub(crate) fn append_app_log(app: &AppHandle, level: &str, message: &str) {
@@ -5450,6 +5534,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            frontend_log_error,
             get_store,
             scan_codex_home,
             import_current_auth_as_profile,
@@ -5670,6 +5755,33 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, value).unwrap();
+    }
+
+    #[test]
+    fn detects_encrypted_envelopes_in_existing_store() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(STORE_FILE);
+        write_text(
+            &path,
+            r#"{"profiles":[{"encryptedAuthJson":{"v":1,"alg":"AES-256-GCM","nonce":"n","ciphertext":"c"}}]}"#,
+        );
+        assert!(store_contains_encrypted_data(&path));
+    }
+
+    #[test]
+    fn empty_store_does_not_block_first_key_creation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(STORE_FILE);
+        write_text(&path, r#"{"profiles":[],"settings":{}}"#);
+        assert!(!store_contains_encrypted_data(&path));
+    }
+
+    #[test]
+    fn decodes_only_valid_master_keys() {
+        let encoded = STANDARD.encode([7u8; 32]);
+        assert_eq!(decode_master_key(&encoded), Some([7u8; 32]));
+        assert_eq!(decode_master_key("not-base64"), None);
+        assert_eq!(decode_master_key(&STANDARD.encode([1u8; 31])), None);
     }
 
     fn bundle_payload_with_profile(

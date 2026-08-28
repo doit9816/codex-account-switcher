@@ -32,6 +32,7 @@ import {
   Zap
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { logAppError } from "./api/appLog";
 import { RoutingPage } from "./components/routing/RoutingPage";
 import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
 import { MeshSharePage } from "./components/mesh/MeshSharePage";
@@ -328,7 +329,10 @@ export default function App() {
 
   useEffect(() => {
     void refresh().finally(() => setInitializing(false));
-    void getVersion().then(setAppVersion).catch(() => setAppVersion(""));
+    void getVersion().then(setAppVersion).catch((error) => {
+      setAppVersion("");
+      void logAppError("get_app_version", error);
+    });
     const updateTimer = window.setTimeout(() => {
       void checkForUpdate(false);
     }, 3500);
@@ -417,7 +421,10 @@ export default function App() {
         setMeshGroupStatus(groupStatus);
         setMeshSyncScope(groupStatus.group.syncScope);
       })
-      .catch(() => setMeshGroupStatus(null));
+      .catch((error) => {
+        setMeshGroupStatus(null);
+        void logAppError("load_mesh_group_status", error);
+      });
   }, [meshSelectedGroupId, activePage]);
 
   useEffect(() => {
@@ -505,7 +512,8 @@ export default function App() {
     const refreshStore = () => {
       void invoke<StoreView>("get_store")
         .then(setStore)
-        .catch(() => {
+        .catch((error) => {
+          void logAppError("background_refresh_store", error);
           // Background sync may be writing the store; retry on the next tick.
         });
     };
@@ -514,13 +522,15 @@ export default function App() {
       if (activePage === "mesh") {
         void invoke<MeshStatus>("mesh_status")
           .then(setMeshStatus)
-          .catch(() => {
+          .catch((error) => {
+            void logAppError("background_refresh_mesh", error);
             // A stopped or restarting mesh runtime is reflected on the next tick.
           });
         if (meshSelectedGroupId) {
           void invoke<MeshGroupStatus>("mesh_group_status", { groupId: meshSelectedGroupId })
             .then(setMeshGroupStatus)
-            .catch(() => {
+            .catch((error) => {
+              void logAppError("background_refresh_mesh_group", error);
               // A group may be restarting or have just been removed from persisted state.
             });
         }
@@ -564,7 +574,7 @@ export default function App() {
     };
   }, [selectedId, store, codexHome, forceSwitch]);
 
-  async function run<T>(task: () => Promise<T>, okText?: string) {
+  async function run<T>(task: () => Promise<T>, okText?: string, operation = "ui_action") {
     setBusy(true);
     setNotice(null);
     let timeoutId: number | undefined;
@@ -580,6 +590,7 @@ export default function App() {
       if (okText) setNotice({ kind: "ok", text: okText });
       return result;
     } catch (error) {
+      void logAppError(operation, error);
       setNotice({ kind: "error", text: String(error) });
       return undefined;
     } finally {
@@ -603,6 +614,7 @@ export default function App() {
         setScan(currentScan);
       }
     } catch (error) {
+      void logAppError("refresh_application_state", error);
       setNotice({ kind: "error", text: `${t.failed}: ${String(error)}` });
     }
   }
@@ -659,6 +671,7 @@ export default function App() {
       setOauthSession(session);
       setOauthStatus("waiting");
     } catch (error) {
+      void logAppError("oauth_login_start", error);
       setOauthStatus("error");
       setOauthError(String(error));
     }
@@ -695,6 +708,7 @@ export default function App() {
       setShowAddAccountDialog(false);
       setNotice({ kind: "ok", text: t.accountAdded });
     } catch (error) {
+      void logAppError("oauth_login_complete", error);
       setOauthStatus("error");
       setOauthError(String(error));
     } finally {
@@ -711,6 +725,7 @@ export default function App() {
         callbackUrl: oauthCallbackInput
       });
     } catch (error) {
+      void logAppError("oauth_submit_callback", error);
       setOauthStatus("error");
       setOauthError(String(error));
     }
@@ -721,6 +736,7 @@ export default function App() {
     try {
       await invoke("codex_oauth_open_auth_url", { loginId: oauthSession.loginId });
     } catch (error) {
+      void logAppError("oauth_open_authorization_url", error);
       setOauthError(String(error));
     }
   }
@@ -731,6 +747,7 @@ export default function App() {
       await navigator.clipboard.writeText(oauthSession.authUrl);
       setNotice({ kind: "ok", text: t.copied });
     } catch (error) {
+      void logAppError("oauth_copy_authorization_url", error);
       setOauthError(String(error));
     }
   }
@@ -745,7 +762,8 @@ export default function App() {
     if (loginId) {
       try {
         await invoke("codex_oauth_login_cancel", { loginId });
-      } catch {
+      } catch (error) {
+        void logAppError("oauth_login_cancel", error);
         // Session may already be completed or timed out.
       }
     }
@@ -1370,6 +1388,7 @@ export default function App() {
       }
       return update;
     } catch (error) {
+      void logAppError("check_for_update", error);
       const message = String(error);
       setUpdateChecked(true);
       setAvailableUpdate(null);
@@ -1402,6 +1421,7 @@ export default function App() {
       setUpdateInstalled(true);
       setNotice({ kind: "ok", text: t.updateInstalled });
     } catch (error) {
+      void logAppError("install_update", error);
       setNotice({ kind: "error", text: `${t.updateInstallFailed}: ${String(error)}` });
     } finally {
       setUpdateInstalling(false);
@@ -1430,6 +1450,7 @@ export default function App() {
         await reloadRoutingStatus();
       }
     } catch (error) {
+      void logAppError("automatic_usage_probe", error);
       console.warn("auto probe failed", error);
     } finally {
       autoBusyRef.current = false;
@@ -1448,6 +1469,7 @@ export default function App() {
       const view = await invoke<StoreView>("get_store");
       setStore(view);
     } catch (error) {
+      void logAppError("background_token_refresh", error);
       console.warn("background token refresh failed", error);
     } finally {
       backgroundTokenBusyRef.current = false;
@@ -1764,6 +1786,7 @@ export default function App() {
       });
       return log;
     } catch (error) {
+      void logAppError("routing_test_request", error);
       setNotice({ kind: "error", text: String(error) });
       return null;
     }

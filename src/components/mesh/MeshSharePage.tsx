@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { logAppError } from "../../api/appLog";
 import {
   DEFAULT_MESH_SYNC_SCOPE,
   type MeshDevice,
@@ -150,6 +151,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
       await action();
       onSuccess?.();
     } catch (error) {
+      void logAppError("mesh_share_action", error);
       setActionError(error instanceof Error ? error.message : t.actionFailed);
     }
   }

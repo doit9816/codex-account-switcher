@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { logAppError } from "./api/appLog";
 import "./styles.css";
 
 function showStartupError(error: unknown) {
@@ -18,8 +19,15 @@ function showStartupError(error: unknown) {
   if (pre) pre.textContent = message;
 }
 
-window.addEventListener("error", (event) => showStartupError(event.error || event.message));
-window.addEventListener("unhandledrejection", (event) => showStartupError(event.reason));
+window.addEventListener("error", (event) => {
+  const error = event.error || event.message;
+  void logAppError("unhandled_window_error", error);
+  showStartupError(error);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  void logAppError("unhandled_promise_rejection", event.reason);
+  showStartupError(event.reason);
+});
 
 try {
   const root = document.getElementById("root");
@@ -32,5 +40,6 @@ try {
     </React.StrictMode>
   );
 } catch (error) {
+  void logAppError("frontend_startup", error);
   showStartupError(error);
 }
