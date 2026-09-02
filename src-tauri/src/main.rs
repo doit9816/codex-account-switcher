@@ -5409,8 +5409,9 @@ fn redact_log_message(message: &str) -> String {
     let mut value = message.replace(['\r', '\n'], " ");
     let lower = value.to_ascii_lowercase();
     for marker in [
-        "network secret",
-        "network_secret",
+        // Keep structural diagnostics such as "Mesh network secret has not
+        // been generated" visible. These are error descriptions, not secret
+        // values; truncating at the marker made sync failures unreadable.
         "api key",
         "api_key",
         "access_token",
