@@ -2822,7 +2822,7 @@ export default function App() {
                   )}
 
                   {!profile.apiConfig && <div className="account-limit-list">
-                    {limits.slice(0, 2).map((item, index) => {
+                    {limits.map((item, index) => {
                       const remainingPercent = limitRemainingPercent(item);
                       return (
                         <div className="account-limit" key={`${item.window}-${index}`}>
