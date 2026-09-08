@@ -1850,13 +1850,23 @@ input:focus {
 }
 
 .account-limit-head {
+  align-items: baseline;
   color: #415269;
+  display: flex;
   font-size: 13px;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.account-limit-head span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .account-limit-head strong {
   color: #13a65a;
   font-size: 15px;
+  flex: 0 0 auto;
 }
 
 .account-limit-track {

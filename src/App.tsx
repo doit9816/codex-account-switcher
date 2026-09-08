@@ -2832,7 +2832,7 @@ export default function App() {
                       return (
                         <div className="account-limit" key={`${item.window}-${index}`}>
                           <div className="account-limit-head">
-                            <span>{localizedLimitLabel(item.label || item.window, t)}</span>
+                            <span title={localizedLimitLabel(item.label || item.window, t)}>{localizedLimitLabel(item.label || item.window, t)}</span>
                             <strong>{remainingPercent != null ? `${remainingPercent}%` : formatUsage(item.used, item.limit, t)}</strong>
                           </div>
                           <div className="account-limit-track">
