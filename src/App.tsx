@@ -325,7 +325,7 @@ export default function App() {
   const aliasRef = useRef("");
   const oauthCompletingRef = useRef(false);
   const storeRef = useRef<StoreView | null>(null);
-  const proxyDraftHydratedRef = useRef(false);
+  const proxyDraftDirtyRef = useRef(false);
   const oauthReauthProfileIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -441,13 +441,11 @@ export default function App() {
     const current = store.settings.currentProfileId || store.profiles[0]?.id || "";
     setSelectedId((old) => old || current);
     setCodexHome(store.settings.codexHome || "");
-    // Do not rehydrate the draft on every background store refresh (currently
-    // every 3 seconds). Doing so overwrites characters while the user edits or
-    // pastes the proxy URL with the previous persisted value.
-    if (!proxyDraftHydratedRef.current) {
+    // Keep persisted settings in sync after startup/update, but never overwrite
+    // a draft while the user is editing it.
+    if (!proxyDraftDirtyRef.current) {
       setProxyEnabled(!!store.settings.probeProxy?.enabled);
       setProxyUrl(store.settings.probeProxy?.url || "");
-      proxyDraftHydratedRef.current = true;
     }
     setBackgroundTokenRefreshEnabled(store.settings.backgroundTokenRefreshEnabled ?? false);
     setBackgroundTokenRefreshIntervalSecs(store.settings.backgroundTokenRefreshIntervalSecs || 3600);
@@ -875,6 +873,7 @@ export default function App() {
         enabled: proxyEnabled,
         url: proxyUrl
       });
+      proxyDraftDirtyRef.current = false;
       setStore(view);
       return view;
     }, proxyEnabled ? t.savedProxy : t.disabledProxy);
@@ -2479,7 +2478,10 @@ export default function App() {
           <input
             type="checkbox"
             checked={proxyEnabled}
-            onChange={(event) => setProxyEnabled(event.target.checked)}
+            onChange={(event) => {
+              proxyDraftDirtyRef.current = true;
+              setProxyEnabled(event.target.checked);
+            }}
           />
           {t.proxyEnabled}
         </label>
@@ -2487,7 +2489,10 @@ export default function App() {
           className="proxy-input"
           placeholder={t.proxyPlaceholder}
           value={proxyUrl}
-          onChange={(event) => setProxyUrl(event.target.value)}
+          onChange={(event) => {
+            proxyDraftDirtyRef.current = true;
+            setProxyUrl(event.target.value);
+          }}
         />
         <button className="icon-button" onClick={() => void saveProxySettings()} disabled={busy} title={t.saveProxy}>
           <ShieldCheck size={17} />

@@ -2590,6 +2590,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
     let response = client
         .get(CHATGPT_USAGE_URL)
         .bearer_auth(access_token)
+        .header("x-openai-codex-luna-reserve", "1")
         .send()
         .await;
 
@@ -2710,6 +2711,7 @@ async fn consume_usage_reset(
     let usage_response = client
         .get(CHATGPT_USAGE_URL)
         .bearer_auth(access_token)
+        .header("x-openai-codex-luna-reserve", "1")
         .send()
         .await;
     if let Ok(response) = usage_response {
@@ -5062,8 +5064,31 @@ fn detect_usage_limits(body: &Value) -> Vec<DetectedLimit> {
 
 fn collect_codex_rate_limit_windows(body: &Value, out: &mut Vec<DetectedLimit>) {
     let Some(rate_limit) = body.get("rate_limit").and_then(Value::as_object) else {
+        collect_additional_rate_limit_windows(body, out);
         return;
     };
+
+    collect_rate_limit_windows(rate_limit, None, out);
+    collect_additional_rate_limit_windows(body, out);
+}
+
+fn collect_additional_rate_limit_windows(body: &Value, out: &mut Vec<DetectedLimit>) {
+    let Some(additional) = body.get("additional_rate_limits").and_then(Value::as_array) else {
+        return;
+    };
+    for item in additional {
+        let Some(item) = item.as_object() else { continue };
+        let limit_name = pick_string(item, &["limit_name", "metered_feature"]);
+        let Some(rate_limit) = item.get("rate_limit").and_then(Value::as_object) else { continue };
+        collect_rate_limit_windows(rate_limit, limit_name.as_deref(), out);
+    }
+}
+
+fn collect_rate_limit_windows(
+    rate_limit: &serde_json::Map<String, Value>,
+    limit_name: Option<&str>,
+    out: &mut Vec<DetectedLimit>,
+) {
 
     for (key, label) in [
         ("primary_window", "primary"),
@@ -5080,8 +5105,15 @@ fn collect_codex_rate_limit_windows(body: &Value, out: &mut Vec<DetectedLimit>) 
             .map(window_name_from_seconds)
             .unwrap_or_else(|| label.to_string());
 
+        let display_label = match limit_name {
+            Some(name) if name.eq_ignore_ascii_case("gpt-reserve") => {
+                if window_name == "1周" { "GPT reserve Weekly".to_string() } else { format!("GPT reserve {window_name}") }
+            }
+            Some(name) => format!("{name} {window_name}"),
+            None => window_name.clone(),
+        };
         out.push(DetectedLimit {
-            label: Some(window_name.clone()),
+            label: Some(display_label),
             window: window_name,
             used: None,
             limit: None,
@@ -7112,6 +7144,34 @@ command = "demo-server"
             item.window == "1周"
                 && item.used_percent == Some(8)
                 && item.remaining_percent == Some(92)
+        }));
+    }
+
+    #[test]
+    fn detects_gpt_reserve_additional_rate_limit() {
+        let body = serde_json::json!({
+            "rate_limit": {
+                "primary_window": { "used_percent": 0, "limit_window_seconds": 18000 },
+                "secondary_window": { "used_percent": 39, "limit_window_seconds": 604800 }
+            },
+            "additional_rate_limits": [{
+                "limit_name": "gpt-reserve",
+                "metered_feature": "gpt-reserve",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 0,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1778638742
+                    }
+                }
+            }]
+        });
+
+        let detected = detect_usage_limits(&body);
+        assert!(detected.iter().any(|item| {
+            item.label.as_deref() == Some("GPT reserve Weekly")
+                && item.window == "1周"
+                && item.remaining_percent == Some(100)
         }));
     }
 
