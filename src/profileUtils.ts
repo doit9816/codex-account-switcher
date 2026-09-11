@@ -185,6 +185,9 @@ export function friendlyProbeSummary(profile: Profile | undefined, t: I18n) {
 
 export function localizedLimitLabel(label: string, t: I18n) {
   const normalized = label.toLowerCase().replace(/\s+/g, "");
+  if (normalized.includes("gptreserve") || normalized.includes("gpt-reserve")) {
+    return label;
+  }
   if (
     normalized.includes("5小时") ||
     normalized.includes("5小時") ||
