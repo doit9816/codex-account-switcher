@@ -20,6 +20,8 @@ use std::fs;
 use std::io::Read;
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -3932,6 +3934,22 @@ fn clean_endpoint(value: &str) -> String {
 }
 
 fn ensure_network_secret(store: &mut AppStore, key: &[u8; 32]) -> Result<(), String> {
+    // During the multi-group migration the legacy compatibility field can be
+    // empty while the migrated legacy group already contains the user's
+    // encrypted secret. Recover it before generating anything new; otherwise
+    // an upgrade can silently split the mesh into two networks.
+    if store.settings.mesh.encrypted_network_secret.is_none() {
+        if let Some(secret) = store
+            .settings
+            .mesh
+            .groups
+            .iter()
+            .find(|group| group.group_id == MESH_GROUP_LEGACY_ID)
+            .and_then(|group| group.encrypted_network_secret.clone())
+        {
+            store.settings.mesh.encrypted_network_secret = Some(secret);
+        }
+    }
     if store.settings.mesh.encrypted_network_secret.is_none() {
         if store.settings.mesh.network_name == default_network_name() {
             store.settings.mesh.network_name = unique_network_name();
@@ -3958,6 +3976,23 @@ fn unique_network_name() -> String {
 }
 
 fn ensure_local_device_credential(store: &mut AppStore, key: &[u8; 32]) -> Result<String, String> {
+    if store
+        .settings
+        .mesh
+        .encrypted_local_device_credential
+        .is_none()
+    {
+        if let Some(credential) = store
+            .settings
+            .mesh
+            .groups
+            .iter()
+            .find(|group| group.group_id == MESH_GROUP_LEGACY_ID)
+            .and_then(|group| group.encrypted_local_device_credential.clone())
+        {
+            store.settings.mesh.encrypted_local_device_credential = Some(credential);
+        }
+    }
     if let Some(envelope) = store
         .settings
         .mesh
@@ -4290,9 +4325,46 @@ fn mesh_ipv4_for_device_id(device_id: &str) -> String {
 }
 
 fn local_device_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "CodexSwitcher Desktop".to_string())
+    let environment_name = [
+        std::env::var("COMPUTERNAME").ok(),
+        std::env::var("HOSTNAME").ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty())
+    .next();
+    if let Some(value) = environment_name {
+        return value;
+    }
+    macos_device_name().unwrap_or_else(|| "CodexSwitcher Desktop".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_device_name() -> Option<String> {
+    [
+        command_output("scutil", &["--get", "ComputerName"]),
+        command_output("hostname", &[]),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| value.trim().to_string())
+    .find(|value| !value.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_device_name() -> Option<String> {
+    None
 }
 
 fn hash_id(value: &str) -> String {
