@@ -43,6 +43,7 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 const STORE_FILE: &str = "store.json";
+const STORE_RECOVERY_FILE: &str = "store.json.recovery";
 const SWITCH_DIAGNOSTICS_FILE: &str = "switch-diagnostics.log";
 const APP_LOG_DIR: &str = "logs";
 const LOCAL_KEY_FILE: &str = "local-profile.key";
@@ -3330,7 +3331,13 @@ pub(crate) fn mutate_store<T>(
 fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
     let path = app_data_dir(app)?.join(STORE_FILE);
     if !path.exists() {
-        return Ok(AppStore::default());
+        let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
+        if recovery_path.exists() {
+            fs::copy(&recovery_path, &path).map_err(display_err)?;
+            append_app_log(app, "warn", "主存档缺失，已从本地恢复快照恢复账号与设置");
+        } else {
+            return Ok(AppStore::default());
+        }
     }
     let text = fs::read_to_string(path).map_err(display_err)?;
     let mut store: AppStore = serde_json::from_str(&text).map_err(display_err)?;
@@ -3342,6 +3349,20 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
 
 fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String> {
     let path = app_data_dir(app)?.join(STORE_FILE);
+    if path.exists() {
+        let current_text = fs::read_to_string(&path).map_err(display_err)?;
+        let current: AppStore = serde_json::from_str(&current_text).map_err(display_err)?;
+        if is_dangerous_store_regression(&current, store) {
+            append_app_log(
+                app,
+                "error",
+                "已阻止疑似空状态覆盖：保留现有账号、代理和多设备共享设置",
+            );
+            return Err(
+                "检测到异常状态回退，已阻止覆盖本地账号库；请重新打开 Switcher 后重试".to_string(),
+            );
+        }
+    }
     let tmp = path.with_extension("json.tmp");
     let mut store = store.clone();
     easytier_mesh::migrate_settings(&mut store.settings.mesh);
@@ -3351,7 +3372,37 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
     if path.exists() {
         let _ = fs::remove_file(&path);
     }
-    fs::rename(tmp, path).map_err(display_err)
+    fs::rename(tmp, &path).map_err(display_err)?;
+    fs::copy(&path, path.with_file_name(STORE_RECOVERY_FILE)).map_err(display_err)?;
+    Ok(())
+}
+
+/// A normal account deletion only changes the profile list.  A stale/default
+/// snapshot, on the other hand, clears profiles and every credential-bearing
+/// setting together.  Do not let a background worker overwrite real data with
+/// that shape of state.
+fn is_dangerous_store_regression(current: &AppStore, candidate: &AppStore) -> bool {
+    let lost_most_profiles = current.profiles.len() >= 2
+        && candidate.profiles.len() <= 1
+        && candidate.profiles.len() < current.profiles.len();
+    let lost_mesh_credentials = current.settings.mesh.encrypted_network_secret.is_some()
+        && candidate.settings.mesh.encrypted_network_secret.is_none()
+        && current
+            .settings
+            .mesh
+            .encrypted_local_device_credential
+            .is_some()
+        && candidate
+            .settings
+            .mesh
+            .encrypted_local_device_credential
+            .is_none();
+    let lost_proxy = current.settings.probe_proxy.enabled
+        && !candidate.settings.probe_proxy.enabled
+        && current.settings.probe_proxy.url.trim().len() > 0
+        && candidate.settings.probe_proxy.url.trim().is_empty();
+
+    lost_most_profiles && (lost_mesh_credentials || lost_proxy)
 }
 
 pub(crate) fn load_master_key(app: &AppHandle) -> Result<[u8; 32], String> {
