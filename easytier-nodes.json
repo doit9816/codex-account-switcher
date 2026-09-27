@@ -1,18 +1,8 @@
 {
   "format": "codex-switcher.easytier-nodes.v1",
   "source": "https://info.qtet.cn/uptime/easytier",
-  "updatedAt": "2026-09-27T01:29:12.524Z",
+  "updatedAt": "2026-09-27T08:14:01.450Z",
   "nodes": [
-    {
-      "id": "56",
-      "name": "https://et-public.lctn.site",
-      "address": "https://et-public.lctn.site",
-      "group": "社区公共节点",
-      "status": "up",
-      "uptime24": 100,
-      "pingMs": 28,
-      "tags": []
-    },
     {
       "id": "47",
       "name": "tcp://183.230.36.171:11010",
@@ -20,7 +10,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 36,
+      "pingMs": 39,
       "tags": []
     },
     {
@@ -41,8 +31,8 @@
       "address": "tcp://console.easytier.net:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 67,
+      "uptime24": 99.86096877629069,
+      "pingMs": 80,
       "tags": []
     },
     {
@@ -51,8 +41,8 @@
       "address": "tcp://easytier.cn:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 66,
+      "uptime24": 99.82626701241894,
+      "pingMs": 67,
       "tags": []
     },
     {
@@ -62,7 +52,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 20,
+      "pingMs": 19,
       "tags": []
     },
     {
@@ -71,8 +61,8 @@
       "address": "tcp://et-dash.lctn.site:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 24,
+      "uptime24": 99.82619488502814,
+      "pingMs": 28,
       "tags": [
         "web"
       ]
@@ -83,8 +73,8 @@
       "address": "tcp://etgen.myqfeng.top:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 221,
+      "uptime24": 99.78196324836615,
+      "pingMs": 253,
       "tags": []
     },
     {
@@ -94,7 +84,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 171,
+      "pingMs": 191,
       "tags": [
         "后端",
         "我的"
@@ -106,8 +96,8 @@
       "address": "tcp://net.qicwken.top:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.86068010305765,
-      "pingMs": 453,
+      "uptime24": 100,
+      "pingMs": 1468,
       "tags": [
         "web"
       ]
@@ -118,8 +108,8 @@
       "address": "tcp://qtet.cn:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 173,
+      "uptime24": 99.76122041220825,
+      "pingMs": 149,
       "tags": []
     },
     {
@@ -128,8 +118,8 @@
       "address": "tcp://ruixuan.online:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 99.85825060873526,
-      "pingMs": 1256,
+      "uptime24": 99.85940444536152,
+      "pingMs": 1110,
       "tags": [
         "我的"
       ]
@@ -140,8 +130,8 @@
       "address": "tcp://ruixuan.online:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.57356848742866,
-      "pingMs": 1183,
+      "uptime24": 100,
+      "pingMs": 1678,
       "tags": [
         "web",
         "我的"
@@ -153,8 +143,8 @@
       "address": "tcp://uptime.lctn.top:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 169,
+      "uptime24": 99.93017818158052,
+      "pingMs": 246,
       "tags": []
     },
     {
@@ -163,8 +153,8 @@
       "address": "udp://et.basd1.de:11010",
       "group": "社区公共节点",
       "status": "up",
-      "uptime24": 99.2069658728714,
-      "pingMs": 22,
+      "uptime24": 100,
+      "pingMs": 23,
       "tags": []
     },
     {
@@ -174,7 +164,7 @@
       "group": "社区公共节点[海外]",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 163,
+      "pingMs": 184,
       "tags": [
         "海外",
         "我的"
@@ -186,8 +176,8 @@
       "address": "wss://et-web.lctn.site:11010/",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 179,
+      "uptime24": 99.8260556788752,
+      "pingMs": 170,
       "tags": [
         "后端"
       ]
@@ -198,8 +188,8 @@
       "address": "wss://et.chinokou.cn:11010/",
       "group": "社区公共节点",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 125,
+      "uptime24": 99.82607100954223,
+      "pingMs": 123,
       "tags": []
     },
     {
@@ -208,8 +198,8 @@
       "address": "wss://et.xn--6kr850c.com:11010/",
       "group": "社区公共节点[海外]",
       "status": "up",
-      "uptime24": 99.86080407136015,
-      "pingMs": 264,
+      "uptime24": 100,
+      "pingMs": 1265,
       "tags": [
         "海外"
       ]
@@ -221,10 +211,20 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 409,
+      "pingMs": 1366,
       "tags": [
         "后端"
       ]
+    },
+    {
+      "id": "56",
+      "name": "https://et-public.lctn.site",
+      "address": "https://et-public.lctn.site",
+      "group": "社区公共节点",
+      "status": "down",
+      "uptime24": 29.774797106284762,
+      "pingMs": null,
+      "tags": []
     },
     {
       "id": "52",
