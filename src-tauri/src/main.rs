@@ -2975,6 +2975,18 @@ pub(crate) fn import_accounts_bundle_with_scope(
     let payload = read_bundle(&bundle_path, &password)?;
     let key = load_master_key(&app)?;
     let mut store = load_store(&app)?;
+    append_app_log(
+        &app,
+        "info",
+        &format!(
+            "migration_import_start source={} payload_profiles={} payload_files={} scope={:?} before={}",
+            bundle_path,
+            payload.profiles.len(),
+            payload.files.len(),
+            mesh_scope,
+            store_snapshot_summary(&store)
+        ),
+    );
     let target_codex_home = resolve_codex_home(&app, codex_home)?;
     fs::create_dir_all(&target_codex_home).map_err(|error| {
         format!(
@@ -3116,6 +3128,17 @@ pub(crate) fn import_accounts_bundle_with_scope(
         );
     }
     save_store(&app, &store)?;
+    append_app_log(
+        &app,
+        "info",
+        &format!(
+            "migration_import_complete imported_profiles={} skipped_expired={} restored_files={} after={}",
+            imported,
+            skipped_expired_profiles,
+            restored,
+            store_snapshot_summary(&store)
+        ),
+    );
 
     Ok(ImportResult {
         imported_profiles: imported,
@@ -3152,7 +3175,30 @@ fn restore_backup(
         latest_backup(&home).ok_or_else(|| "没有找到 auth.json 备份".to_string())?
     };
     let target = home.join("auth.json");
-    fs::copy(&backup, &target).map_err(display_err)?;
+    append_app_log(
+        &app,
+        "warn",
+        &format!(
+            "backup_restore_start scope=codex_auth_json_only profiles_unchanged=true source={} target={} source_metadata={} target_existed={}",
+            backup.display(),
+            target.display(),
+            file_metadata_summary(&backup),
+            target.exists()
+        ),
+    );
+    if let Err(error) = fs::copy(&backup, &target) {
+        append_app_log(
+            &app,
+            "error",
+            &format!("backup_restore_failed scope=codex_auth_json_only source={} target={} error={error}", backup.display(), target.display()),
+        );
+        return Err(display_err(error));
+    }
+    append_app_log(
+        &app,
+        "info",
+        &format!("backup_restore_complete scope=codex_auth_json_only profiles_unchanged=true target_metadata={}", file_metadata_summary(&target)),
+    );
     Ok(format!("已恢复备份 {}", backup.to_string_lossy()))
 }
 
@@ -3258,8 +3304,30 @@ fn delete_profile_from_store(store: &mut AppStore, profile_id: &str) -> Result<S
 
 pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(display_err)?;
-    migrate_legacy_app_data_dir(&dir)?;
+    let store_existed = dir.join(STORE_FILE).exists();
+    let legacy_dir = dir.parent().map(|parent| parent.join(LEGACY_APP_IDENTIFIER));
+    if !store_existed {
+        if let Some(legacy_dir) = legacy_dir.as_ref().filter(|path| path.exists()) {
+            append_app_log(
+                app,
+                "warn",
+                &format!("legacy_data_migration_start target={} source={} target_store_existed=false source_store_metadata={}", dir.display(), legacy_dir.display(), file_metadata_summary(&legacy_dir.join(STORE_FILE))),
+            );
+        }
+    }
+    if let Err(error) = migrate_legacy_app_data_dir(&dir) {
+        append_app_log(app, "error", &format!("legacy_data_migration_failed target={} source={} error={error}", dir.display(), legacy_dir.as_deref().unwrap_or(Path::new("<none>")).display()));
+        return Err(error);
+    }
     fs::create_dir_all(&dir).map_err(display_err)?;
+    if !store_existed && dir.join(STORE_FILE).exists() {
+        let migrated = fs::read_to_string(dir.join(STORE_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str::<AppStore>(&text).ok())
+            .map(|store| store_snapshot_summary(&store))
+            .unwrap_or_else(|| "unparseable_or_unavailable".to_string());
+        append_app_log(app, "info", &format!("legacy_data_migration_complete target={} resulting_store={migrated}", dir.display()));
+    }
     Ok(dir)
 }
 
@@ -3333,14 +3401,30 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
     if !path.exists() {
         let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
         if recovery_path.exists() {
-            fs::copy(&recovery_path, &path).map_err(display_err)?;
-            append_app_log(app, "warn", "主存档缺失，已从本地恢复快照恢复账号与设置");
+            let recovery_summary = fs::read_to_string(&recovery_path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<AppStore>(&text).ok())
+                .map(|store| store_snapshot_summary(&store))
+                .unwrap_or_else(|| "unparseable_or_unavailable".to_string());
+            append_app_log(app, "warn", &format!("store_recovery_start reason=primary_store_missing source={} target={} source_metadata={} recovery_candidate={recovery_summary}", recovery_path.display(), path.display(), file_metadata_summary(&recovery_path)));
+            if let Err(error) = fs::copy(&recovery_path, &path) {
+                append_app_log(app, "error", &format!("store_recovery_failed source={} target={} error={error}", recovery_path.display(), path.display()));
+                return Err(display_err(error));
+            }
+            append_app_log(app, "warn", &format!("store_recovery_complete reason=primary_store_missing restored={recovery_summary}"));
         } else {
+            append_app_log(app, "error", &format!("store_missing_without_recovery primary={} recovery={} action=return_default_store", path.display(), recovery_path.display()));
             return Ok(AppStore::default());
         }
     }
-    let text = fs::read_to_string(path).map_err(display_err)?;
-    let mut store: AppStore = serde_json::from_str(&text).map_err(display_err)?;
+    let text = fs::read_to_string(&path).map_err(|error| {
+        append_app_log(app, "error", &format!("store_read_failed path={} error={error}", path.display()));
+        display_err(error)
+    })?;
+    let mut store: AppStore = serde_json::from_str(&text).map_err(|error| {
+        append_app_log(app, "error", &format!("store_parse_failed path={} bytes={} error={error}", path.display(), text.len()));
+        display_err(error)
+    })?;
     if easytier_mesh::migrate_settings(&mut store.settings.mesh) {
         write_store_unlocked(app, &store)?;
     }
@@ -3349,10 +3433,38 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
 
 fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String> {
     let path = app_data_dir(app)?.join(STORE_FILE);
+    let candidate_summary = store_snapshot_summary(store);
+    let mut committed_delta = "initial_store".to_string();
+    append_app_log(
+        app,
+        "debug",
+        &format!("store_write_prepare candidate={candidate_summary}"),
+    );
     if path.exists() {
         let current_text = fs::read_to_string(&path).map_err(display_err)?;
         let current: AppStore = serde_json::from_str(&current_text).map_err(display_err)?;
+        committed_delta = store_profile_delta(&current, store);
+        append_app_log(
+            app,
+            "debug",
+            &format!(
+                "store_write_compare trigger={} profile_delta={} current={} candidate={}",
+                store_trigger_summary(store),
+                store_profile_delta(&current, store),
+                store_snapshot_summary(&current),
+                candidate_summary
+            ),
+        );
         if is_dangerous_store_regression(&current, store) {
+            append_app_log(
+                app,
+                "error",
+                &format!(
+                    "store_write_blocked reason=dangerous_regression current={} candidate={}",
+                    store_snapshot_summary(&current),
+                    candidate_summary
+                ),
+            );
             append_app_log(
                 app,
                 "error",
@@ -3368,13 +3480,72 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
     easytier_mesh::migrate_settings(&mut store.settings.mesh);
     easytier_mesh::sync_legacy_settings(&mut store.settings.mesh);
     let text = serde_json::to_string_pretty(&store).map_err(display_err)?;
-    fs::write(&tmp, text).map_err(display_err)?;
+    fs::write(&tmp, text).map_err(|error| {
+        append_app_log(app, "error", &format!("store_write_temp_failed path={} error={error}", tmp.display()));
+        display_err(error)
+    })?;
     if path.exists() {
-        let _ = fs::remove_file(&path);
+        if let Err(error) = fs::remove_file(&path) {
+            append_app_log(app, "error", &format!("store_write_primary_remove_failed path={} temp={} error={error}", path.display(), tmp.display()));
+            return Err(display_err(error));
+        }
     }
-    fs::rename(tmp, &path).map_err(display_err)?;
-    fs::copy(&path, path.with_file_name(STORE_RECOVERY_FILE)).map_err(display_err)?;
+    fs::rename(&tmp, &path).map_err(|error| {
+        append_app_log(app, "error", &format!("store_write_primary_rename_failed temp={} target={} error={error}", tmp.display(), path.display()));
+        display_err(error)
+    })?;
+    let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
+    fs::copy(&path, &recovery_path).map_err(|error| {
+        append_app_log(app, "error", &format!("store_write_recovery_snapshot_failed primary={} recovery={} error={error}", path.display(), recovery_path.display()));
+        display_err(error)
+    })?;
+    append_app_log(
+        app,
+        "info",
+        &format!("store_write_committed trigger={} profile_delta={} summary={candidate_summary}", store_trigger_summary(&store), committed_delta),
+    );
     Ok(())
+}
+
+fn store_trigger_summary(store: &AppStore) -> String {
+    store.events.first().map(|event| format!("{}:{}", event.level, event.message)).unwrap_or_else(|| "no_store_event".to_string())
+}
+
+fn store_profile_delta(current: &AppStore, candidate: &AppStore) -> String {
+    let old = current.profiles.iter().map(|profile| profile.id.as_str()).collect::<std::collections::HashSet<_>>();
+    let new = candidate.profiles.iter().map(|profile| profile.id.as_str()).collect::<std::collections::HashSet<_>>();
+    let added = candidate.profiles.iter().filter(|profile| !old.contains(profile.id.as_str())).map(|profile| profile.alias.as_str()).take(20).collect::<Vec<_>>();
+    let removed = current.profiles.iter().filter(|profile| !new.contains(profile.id.as_str())).map(|profile| profile.alias.as_str()).take(20).collect::<Vec<_>>();
+    format!("added={added:?} removed={removed:?}")
+}
+
+fn file_metadata_summary(path: &Path) -> String {
+    fs::metadata(path)
+        .map(|metadata| format!("exists=true bytes={} modified={:?}", metadata.len(), metadata.modified().ok()))
+        .unwrap_or_else(|_| "exists=false".to_string())
+}
+
+fn store_snapshot_summary(store: &AppStore) -> String {
+    let aliases = store
+        .profiles
+        .iter()
+        .map(|profile| profile.alias.as_str())
+        .filter(|alias| !alias.is_empty())
+        .take(12)
+        .collect::<Vec<_>>();
+    let mesh = &store.settings.mesh;
+    format!(
+        "profiles={} aliases={:?} proxy_enabled={} proxy_url={} mesh_secret={} local_credential={} devices={} groups={} current_profile={}",
+        store.profiles.len(),
+        aliases,
+        store.settings.probe_proxy.enabled,
+        if store.settings.probe_proxy.url.is_empty() { "<empty>" } else { "<set>" },
+        mesh.encrypted_network_secret.is_some(),
+        mesh.encrypted_local_device_credential.is_some(),
+        mesh.authorized_devices.len(),
+        mesh.groups.len(),
+        store.settings.current_profile_id.is_some(),
+    )
 }
 
 /// A normal account deletion only changes the profile list.  A stale/default
@@ -3965,15 +4136,28 @@ fn cleanup_non_api_config_with_timeout(
     let worker_switch_id = switch_id.clone();
     let worker_profile_id = profile_id.clone();
     thread::spawn(move || {
+        let backup_path = codex_home.join("config.toml.account-switcher.backup");
         append_switch_diagnostic(
             &worker_app,
             &worker_switch_id,
             &worker_profile_id,
             "config_restore_backup_start",
-            codex_home.to_string_lossy(),
+            format!(
+                "scope=codex_config_only profiles_unchanged=true codex_home={} backup={} backup_metadata={}",
+                codex_home.display(),
+                backup_path.display(),
+                file_metadata_summary(&backup_path)
+            ),
         );
         let result = restore_api_config_backup(&codex_home)
             .and_then(|_| {
+                append_switch_diagnostic(
+                    &worker_app,
+                    &worker_switch_id,
+                    &worker_profile_id,
+                    "config_restore_backup_complete",
+                    format!("scope=codex_config_only profiles_unchanged=true backup_exists_after={}", backup_path.exists()),
+                );
                 append_switch_diagnostic(
                     &worker_app,
                     &worker_switch_id,
@@ -3993,6 +4177,13 @@ fn cleanup_non_api_config_with_timeout(
                 );
             });
         if let Err(error) = &result {
+            append_switch_diagnostic(
+                &worker_app,
+                &worker_switch_id,
+                &worker_profile_id,
+                "config_restore_backup_failed",
+                format!("scope=codex_config_only profiles_unchanged=true error={error}"),
+            );
             append_switch_diagnostic(
                 &worker_app,
                 &worker_switch_id,
