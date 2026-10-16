@@ -8,7 +8,6 @@ import {
   Plus,
   Play,
   RefreshCcw,
-  Save,
   ShieldOff,
   Square,
   Trash2,
@@ -233,6 +232,15 @@ export function MeshSharePage(props: MeshSharePageProps) {
       return;
     }
     void runAction(() => props.onSaveDevice({ ...device, syncScope, autoAccountSync }));
+  }
+
+  function changeShareScope(syncScope: MeshSyncScope) {
+    props.onSyncScopeChange(syncScope);
+    if (activeGroup && canUseGroupCommands && props.onSaveGroupScope) {
+      void runAction(() => props.onSaveGroupScope!(activeGroup.id, syncScope));
+    } else if (activeIsLegacy) {
+      void runAction(props.onSaveSettings);
+    }
   }
 
   function submitCreateGroup() {
@@ -466,21 +474,8 @@ export function MeshSharePage(props: MeshSharePageProps) {
               <strong>{t.shareContents}</strong>
               <span>{t.defaultScopeHint}</span>
             </div>
-            <ScopeEditor value={props.syncScope} onChange={props.onSyncScopeChange} />
+            <ScopeEditor value={props.syncScope} onChange={changeShareScope} />
             <div className="action-row">
-              <button
-                className="icon-button"
-                onClick={() => {
-                  if (activeGroup && canUseGroupCommands && props.onSaveGroupScope) {
-                    void runAction(() => props.onSaveGroupScope!(activeGroup.id, props.syncScope));
-                  } else if (activeIsLegacy) {
-                    void runAction(props.onSaveSettings);
-                  }
-                }}
-                disabled={props.busy || (canUseGroupCommands ? !props.onSaveGroupScope : false)}
-              >
-                <Save size={17} /> {t.saveShareContents}
-              </button>
               <button
                 className="icon-button primary"
                 onClick={() => {
@@ -495,7 +490,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                 <KeyRound size={17} /> {t.createShareCode}
               </button>
               <button className="icon-button" onClick={() => void props.onCopyShare()} disabled={props.busy || !props.sharePayload.trim()}>
-                <Copy size={17} /> {t.copy}
+                <Copy size={17} /> {t.copyOriginalShareCode}
               </button>
             </div>
             <textarea

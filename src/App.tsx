@@ -81,6 +81,7 @@ import {
   normalizeNumber,
   planBadge,
   profileNeedsReauthorization,
+  profileUsageError,
   profileScore,
   quotaSummary,
   subscriptionExpiryState,
@@ -89,6 +90,32 @@ import {
 
 const UI_BUSY_TIMEOUT_MS = 90_000;
 const ACCOUNT_PAGE_SIZE = 12;
+const MESH_SHARE_PAYLOADS_STORAGE_KEY = "codex-account-switcher-mesh-share-payloads";
+
+function readSavedMeshSharePayloads(): Record<string, string> {
+  try {
+    const value = localStorage.getItem(MESH_SHARE_PAYLOADS_STORAGE_KEY);
+    const parsed: unknown = value ? JSON.parse(value) : {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return Object.fromEntries(
+        Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      );
+    }
+  } catch {
+    // Ignore unavailable or malformed browser storage; users can generate a new code.
+  }
+  return {};
+}
+
+function saveMeshSharePayload(groupId: string, payload: string) {
+  try {
+    const saved = readSavedMeshSharePayloads();
+    saved[groupId] = payload;
+    localStorage.setItem(MESH_SHARE_PAYLOADS_STORAGE_KEY, JSON.stringify(saved));
+  } catch {
+    // Keep the generated payload usable in memory when browser storage is unavailable.
+  }
+}
 
 type AccountViewMode = "cards" | "rows";
 type AccountExpiryFilter = "all" | "valid" | "expired";
@@ -326,6 +353,7 @@ export default function App() {
   const oauthCompletingRef = useRef(false);
   const storeRef = useRef<StoreView | null>(null);
   const proxyDraftDirtyRef = useRef(false);
+  const autoSettingsDirtyRef = useRef(false);
   const oauthReauthProfileIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -416,6 +444,11 @@ export default function App() {
   }, [meshStatus?.groups, meshSelectedGroupId]);
 
   useEffect(() => {
+    const saved = readSavedMeshSharePayloads();
+    setMeshSharePayload(saved[meshSelectedGroupId ?? "legacy"] ?? "");
+  }, [meshSelectedGroupId]);
+
+  useEffect(() => {
     if (!meshSelectedGroupId || activePage !== "mesh") return;
     void invoke<MeshGroupStatus>("mesh_group_status", { groupId: meshSelectedGroupId })
       .then((groupStatus) => {
@@ -447,11 +480,13 @@ export default function App() {
       setProxyEnabled(!!store.settings.probeProxy?.enabled);
       setProxyUrl(store.settings.probeProxy?.url || "");
     }
-    setBackgroundTokenRefreshEnabled(store.settings.backgroundTokenRefreshEnabled ?? false);
-    setBackgroundTokenRefreshIntervalSecs(store.settings.backgroundTokenRefreshIntervalSecs || 3600);
-    setTokenRefreshThresholdSecs(store.settings.tokenRefreshThresholdSecs ?? 0);
-    setAutoProbeEnabled(store.settings.autoProbeEnabled ?? true);
-    setAutoProbeIntervalSecs(store.settings.autoProbeIntervalSecs || 60);
+    if (!autoSettingsDirtyRef.current) {
+      setBackgroundTokenRefreshEnabled(store.settings.backgroundTokenRefreshEnabled ?? false);
+      setBackgroundTokenRefreshIntervalSecs(store.settings.backgroundTokenRefreshIntervalSecs || 3600);
+      setTokenRefreshThresholdSecs(store.settings.tokenRefreshThresholdSecs ?? 0);
+      setAutoProbeEnabled(store.settings.autoProbeEnabled ?? true);
+      setAutoProbeIntervalSecs(store.settings.autoProbeIntervalSecs || 60);
+    }
     const mesh = store.settings.mesh;
     if (mesh) {
       setMeshNetworkName(mesh.networkName || "codex-switcher");
@@ -908,6 +943,7 @@ export default function App() {
         autoProbeIntervalSecs
       });
       setStore(view);
+      autoSettingsDirtyRef.current = false;
       return view;
     }, t.savedAuto);
   }
@@ -1036,6 +1072,7 @@ export default function App() {
     return await run(async () => {
       const payload = await invoke<string>("mesh_group_create_share_payload", input);
       setMeshSharePayload(payload);
+      saveMeshSharePayload(input.groupId, payload);
       await reloadMeshGroupStatus(input.groupId);
       return payload;
     }, "分享码已生成");
@@ -1118,6 +1155,7 @@ export default function App() {
         mode: meshShareMode
       });
       setMeshSharePayload(payload);
+      saveMeshSharePayload("legacy", payload);
       await reloadMeshStatus();
       return payload;
     }, "共享码已生成");
@@ -2510,7 +2548,10 @@ export default function App() {
           <input
             type="checkbox"
             checked={backgroundTokenRefreshEnabled}
-            onChange={(event) => setBackgroundTokenRefreshEnabled(event.target.checked)}
+            onChange={(event) => {
+              autoSettingsDirtyRef.current = true;
+              setBackgroundTokenRefreshEnabled(event.target.checked);
+            }}
           />
           {t.backgroundTokenKeepalive}
         </label>
@@ -2521,7 +2562,10 @@ export default function App() {
             type="number"
             min={3600}
             value={backgroundTokenRefreshIntervalSecs}
-            onChange={(event) => setBackgroundTokenRefreshIntervalSecs(Number(event.target.value) || 3600)}
+            onChange={(event) => {
+              autoSettingsDirtyRef.current = true;
+              setBackgroundTokenRefreshIntervalSecs(Number(event.target.value) || 3600);
+            }}
             title={t.keepaliveInterval}
           />
         </label>
@@ -2532,7 +2576,10 @@ export default function App() {
             type="number"
             min={0}
             value={tokenRefreshThresholdSecs}
-            onChange={(event) => setTokenRefreshThresholdSecs(Number(event.target.value) || 0)}
+            onChange={(event) => {
+              autoSettingsDirtyRef.current = true;
+              setTokenRefreshThresholdSecs(Number(event.target.value) || 0);
+            }}
             title={t.refreshThreshold}
           />
         </label>
@@ -2540,7 +2587,10 @@ export default function App() {
           <input
             type="checkbox"
             checked={autoProbeEnabled}
-            onChange={(event) => setAutoProbeEnabled(event.target.checked)}
+            onChange={(event) => {
+              autoSettingsDirtyRef.current = true;
+              setAutoProbeEnabled(event.target.checked);
+            }}
           />
           {t.autoProbeQuota}
         </label>
@@ -2551,7 +2601,10 @@ export default function App() {
             type="number"
             min={30}
             value={autoProbeIntervalSecs}
-            onChange={(event) => setAutoProbeIntervalSecs(Number(event.target.value) || 60)}
+            onChange={(event) => {
+              autoSettingsDirtyRef.current = true;
+              setAutoProbeIntervalSecs(Number(event.target.value) || 60);
+            }}
             title={t.probeInterval}
           />
         </label>
@@ -2767,6 +2820,7 @@ export default function App() {
               const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
               const canCopyAccount = accountText !== t.unknownAccount;
               const needsReauthorization = profileNeedsReauthorization(profile);
+              const usageError = profileUsageError(profile);
               return (
                 <article
                   key={profile.id}
@@ -2803,8 +2857,11 @@ export default function App() {
                   {needsReauthorization && (
                     <div className="account-relogin-alert">
                       <KeyRound size={14} />
-                      <span>{t.reloginRequiredHint}</span>
+                      <span>{usageError || t.reloginRequiredHint}</span>
                     </div>
+                  )}
+                  {usageError && !needsReauthorization && (
+                    <div className="account-usage-error" title={usageError}>{usageError}</div>
                   )}
 
                   <div className="account-card-meta">
@@ -2834,9 +2891,6 @@ export default function App() {
                           <div className="account-limit-head">
                             <span title={localizedLimitLabel(item.label || item.window, t)}>{localizedLimitLabel(item.label || item.window, t)}</span>
                             <strong>{remainingPercent != null ? `${remainingPercent}%` : formatUsage(item.used, item.limit, t)}</strong>
-                          </div>
-                          <div className="account-limit-track">
-                            <i style={{ width: `${remainingPercent ?? 0}%` }} />
                           </div>
                           <small>{item.resetAt ? formatResetDateTime(item.resetAt) : t.notProbed}</small>
                         </div>
@@ -2879,6 +2933,7 @@ export default function App() {
               const isCurrent = currentGlobalProfileId === profile.id;
               const accountText = profile.summary.email || profile.summary.accountId || profile.apiConfig?.baseUrl || t.unknownAccount;
               const needsReauthorization = profileNeedsReauthorization(profile);
+              const usageError = profileUsageError(profile);
               return (
                 <article
                   className={`account-row ${selectedId === profile.id ? "selected" : ""} ${isCurrent ? "current" : ""}`}
@@ -2905,7 +2960,7 @@ export default function App() {
                   </span>
                   <span><StatusPill ok={profile.enabled && !isCooling(profile)} text={accountState(profile, t)} /></span>
                   <span>{tokenState(profile, t)}</span>
-                  <span className="quota-cell">{quotaSummary(profile, t)}</span>
+                  <span className={`quota-cell ${usageError ? "account-usage-error" : ""}`} title={usageError || undefined}>{usageError || quotaSummary(profile, t)}</span>
                   <span>{profile.usage.lastProbeAt ? formatReset(profile.usage.lastProbeAt) : t.notProbed}</span>
                   <span className="row-actions">{renderProfileActions(profile, needsReauthorization)}</span>
                 </article>

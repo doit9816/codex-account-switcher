@@ -1864,7 +1864,7 @@ input:focus {
 }
 
 .account-limit-head strong {
-  color: #13a65a;
+  color: #415269;
   font-size: 15px;
   flex: 0 0 auto;
 }
@@ -1898,6 +1898,13 @@ input:focus {
   display: flex;
   justify-content: center;
   min-height: 82px;
+}
+
+.account-usage-error {
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .account-validity {

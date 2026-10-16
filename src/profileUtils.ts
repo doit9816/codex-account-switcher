@@ -148,12 +148,24 @@ export function tokenState(profile: Profile, t: I18n) {
 export function profileNeedsReauthorization(profile: Profile) {
   if (profile.apiConfig) return false;
   const error = profile.usage.lastTokenRefreshError || profile.usage.lastError || "";
+  const normalizedError = error.toLowerCase();
   const accessTokenExpired = !!profile.summary.accessTokenExp && profile.summary.accessTokenExp * 1000 <= Date.now();
   return (
     profile.usage.lastTokenRefreshStatus === "relogin_required" ||
     (profile.usage.lastTokenRefreshStatus === "error" && accessTokenExpired) ||
-    refreshErrorRequiresRelogin(error)
+    refreshErrorRequiresRelogin(error) ||
+    profile.usage.lastProbeStatus === "401" ||
+    /\b401\b|unauthorized|authentication required/.test(normalizedError)
   );
+}
+
+export function profileUsageError(profile: Profile) {
+  const error = profile.usage.lastError || profile.usage.lastTokenRefreshError;
+  if (error) return error;
+  if (profile.usage.lastProbeStatus && /^[45]\d\d$/.test(profile.usage.lastProbeStatus)) {
+    return `HTTP ${profile.usage.lastProbeStatus}`;
+  }
+  return "";
 }
 
 export function authSummariesMatch(left: AuthSummary, right: AuthSummary) {

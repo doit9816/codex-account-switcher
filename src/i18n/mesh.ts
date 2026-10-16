@@ -42,8 +42,8 @@ export type MeshI18n = {
   sharingHint: string;
   shareContents: string;
   defaultScopeHint: string;
-  saveShareContents: string;
   createShareCode: string;
+  copyOriginalShareCode: string;
   copy: string;
   shareCodeLabel: string;
   shareCodePlaceholder: string;
@@ -118,9 +118,9 @@ const zhCN: MeshI18n = {
   sharingTitle: "当前组分享",
   sharingHint: "生成当前组的分享码，并设置允许同步的内容。",
   shareContents: "分享内容",
-  defaultScopeHint: "默认仅分享账号；规则、API 和会话均不分享。",
-  saveShareContents: "保存分享内容",
-  createShareCode: "生成分享码",
+  defaultScopeHint: "选择后自动保存；默认仅分享账号，规则、API 和会话均不分享。",
+  createShareCode: "重新生成分享码",
+  copyOriginalShareCode: "复制原分享码",
   copy: "复制",
   shareCodeLabel: "当前组分享码",
   shareCodePlaceholder: "生成后在此显示",
@@ -195,9 +195,9 @@ const en: MeshI18n = {
   sharingTitle: "Share current group",
   sharingHint: "Create a code for this group and choose what it may sync.",
   shareContents: "Shared content",
-  defaultScopeHint: "Accounts only by default; rules, API settings, and conversations stay off.",
-  saveShareContents: "Save shared content",
-  createShareCode: "Create share code",
+  defaultScopeHint: "Selections save automatically; accounts are shared by default, while rules, API settings, and conversations stay off.",
+  createShareCode: "Regenerate share code",
+  copyOriginalShareCode: "Copy existing share code",
   copy: "Copy",
   shareCodeLabel: "Current group share code",
   shareCodePlaceholder: "The generated code appears here",
