@@ -2883,7 +2883,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {!profile.apiConfig && <div className="account-limit-list">
+                  {!profile.apiConfig && !usageError && <div className="account-limit-list">
                     {limits.map((item, index) => {
                       const remainingPercent = limitRemainingPercent(item);
                       return (
@@ -2892,6 +2892,11 @@ export default function App() {
                             <span title={localizedLimitLabel(item.label || item.window, t)}>{localizedLimitLabel(item.label || item.window, t)}</span>
                             <strong>{remainingPercent != null ? `${remainingPercent}%` : formatUsage(item.used, item.limit, t)}</strong>
                           </div>
+                          {remainingPercent != null && (
+                            <div className="account-limit-track">
+                              <i style={{ width: `${remainingPercent}%` }} />
+                            </div>
+                          )}
                           <small>{item.resetAt ? formatResetDateTime(item.resetAt) : t.notProbed}</small>
                         </div>
                       );
