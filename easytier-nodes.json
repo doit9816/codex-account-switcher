@@ -1,7 +1,7 @@
 {
   "format": "codex-switcher.easytier-nodes.v1",
   "source": "https://info.qtet.cn/uptime/easytier",
-  "updatedAt": "2026-10-25T01:12:11.416Z",
+  "updatedAt": "2026-10-25T06:10:19.560Z",
   "nodes": [
     {
       "id": "56",
@@ -9,8 +9,8 @@
       "address": "https://et-public.lctn.site",
       "group": "社区公共节点",
       "status": "up",
-      "uptime24": 99.82631693096965,
-      "pingMs": 34,
+      "uptime24": 100,
+      "pingMs": 31,
       "tags": []
     },
     {
@@ -20,7 +20,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 33,
+      "pingMs": 34,
       "tags": []
     },
     {
@@ -42,7 +42,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 51,
+      "pingMs": 48,
       "tags": []
     },
     {
@@ -52,7 +52,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 97,
+      "pingMs": 63,
       "tags": []
     },
     {
@@ -62,7 +62,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 19,
+      "pingMs": 20,
       "tags": []
     },
     {
@@ -72,7 +72,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 179,
+      "pingMs": 150,
       "tags": [
         "web"
       ]
@@ -94,7 +94,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 268,
+      "pingMs": 175,
       "tags": []
     },
     {
@@ -104,7 +104,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 158,
+      "pingMs": 176,
       "tags": [
         "后端",
         "我的"
@@ -116,8 +116,8 @@
       "address": "tcp://net.qicwken.top:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 100,
-      "pingMs": 1133,
+      "uptime24": 99.8594624876711,
+      "pingMs": 1392,
       "tags": [
         "web"
       ]
@@ -129,7 +129,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 163,
+      "pingMs": 154,
       "tags": []
     },
     {
@@ -138,8 +138,8 @@
       "address": "tcp://ruixuan.online:11010",
       "group": "EasyTier相关网站",
       "status": "up",
-      "uptime24": 99.85941401787424,
-      "pingMs": 1372,
+      "uptime24": 100,
+      "pingMs": 799,
       "tags": [
         "我的"
       ]
@@ -150,8 +150,8 @@
       "address": "tcp://ruixuan.online:11010",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.71885706192798,
-      "pingMs": 1295,
+      "uptime24": 100,
+      "pingMs": 3239,
       "tags": [
         "web",
         "我的"
@@ -164,7 +164,7 @@
       "group": "EasyTier相关网站",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 248,
+      "pingMs": 186,
       "tags": []
     },
     {
@@ -174,7 +174,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 24,
+      "pingMs": 15,
       "tags": []
     },
     {
@@ -183,7 +183,7 @@
       "address": "udp://et.basd1.de:11010",
       "group": "社区公共节点",
       "status": "up",
-      "uptime24": 99.28218687936811,
+      "uptime24": 98.92325389075575,
       "pingMs": 21,
       "tags": []
     },
@@ -194,7 +194,7 @@
       "group": "社区公共节点[海外]",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 176,
+      "pingMs": 194,
       "tags": [
         "海外",
         "我的"
@@ -207,7 +207,7 @@
       "group": "社区公共web控制台",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 159,
+      "pingMs": 203,
       "tags": [
         "后端"
       ]
@@ -219,7 +219,7 @@
       "group": "社区公共节点",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 134,
+      "pingMs": 127,
       "tags": []
     },
     {
@@ -229,7 +229,7 @@
       "group": "社区公共节点[海外]",
       "status": "up",
       "uptime24": 100,
-      "pingMs": 250,
+      "pingMs": 239,
       "tags": [
         "海外"
       ]
@@ -240,8 +240,8 @@
       "address": "wss://net.qicwken.top:11010/",
       "group": "社区公共web控制台",
       "status": "up",
-      "uptime24": 99.71882705574322,
-      "pingMs": 1468,
+      "uptime24": 100,
+      "pingMs": 1324,
       "tags": [
         "后端"
       ]
