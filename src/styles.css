@@ -3198,6 +3198,13 @@ input:focus {
 .mesh-groups-page .mesh-group-card {
   appearance: none;
   font: inherit;
+  grid-template-columns: minmax(0, 1fr) auto;
+  cursor: default;
+}
+
+.mesh-groups-page .mesh-group-card > .icon-button {
+  width: auto;
+  white-space: nowrap;
 }
 
 .mesh-groups-page .mesh-group-card:disabled {
@@ -3221,7 +3228,110 @@ input:focus {
 }
 
 .mesh-group-content {
-  grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
+  align-items: start;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mesh-groups-page .mesh-files-panel {
+  border-color: #b9d5f3;
+  background: #fff;
+  display: grid;
+  gap: 0;
+}
+
+.mesh-groups-page .mesh-files-panel.mesh-share-panel .panel-header {
+  align-items: center;
+  gap: 16px;
+}
+
+.mesh-groups-page .mesh-files-panel .panel-header h2 {
+  font-size: 18px;
+}
+
+.mesh-groups-page .mesh-files-panel .panel-header p {
+  margin-bottom: 0;
+}
+
+.mesh-groups-page .mesh-files-panel .account-empty {
+  border: 1px dashed #c7d8eb;
+  border-radius: 10px;
+  background: #fff;
+  padding: 20px;
+}
+
+.mesh-groups-page .mesh-files-panel .mesh-shared-file-row,
+.mesh-groups-page .mesh-remote-files-panel .mesh-shared-file-row {
+  align-items: center;
+  border-bottom: 1px solid #edf1f5;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  padding: 11px 2px;
+}
+
+.mesh-shared-file-info,
+.mesh-shared-file-row > span {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mesh-shared-file-info strong,
+.mesh-shared-file-row > span strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-shared-file-info small,
+.mesh-shared-file-row > span small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.mesh-shared-file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.mesh-file-settings {
+  border-top: 1px solid #e7edf4;
+  margin-top: 10px;
+  padding-top: 12px;
+}
+
+.mesh-groups-page .mesh-files-panel .mesh-device-auto-sync {
+  border: 0;
+  padding: 4px 0;
+}
+
+.mesh-shared-file-list {
+  background: #f8fafc;
+  border: 1px solid #e5ebf2;
+  border-radius: 8px;
+  margin: 10px 0;
+  padding: 4px 12px;
+}
+
+.mesh-file-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.mesh-file-header-actions .icon-button:first-child {
+  background: #1769c2;
+  border-color: #1769c2;
+  color: #fff;
+}
+
+.mesh-groups-page .mesh-share-panel .panel-header {
+  align-items: flex-start;
 }
 
 .mesh-groups-page .mesh-device-panel,
@@ -3241,14 +3351,12 @@ input:focus {
 
 .mesh-groups-page .mesh-device-sync-options {
   align-items: stretch;
-  background: #f8fafc;
-  border: 1px solid #e5ebf2;
-  border-radius: 10px;
+  border-top: 1px solid #e5ebf2;
   display: grid;
-  gap: 9px;
+  gap: 8px;
   grid-column: 1 / -1;
   grid-template-columns: minmax(0, 1fr);
-  padding: 10px;
+  padding-top: 10px;
 }
 
 .mesh-groups-page .mesh-device-sync-options .mesh-scope-editor {
@@ -3345,11 +3453,11 @@ input:focus {
 
 .mesh-groups-page .mesh-share-panel .mesh-payload-box {
   margin-top: 12px;
-  min-height: 82px;
+  min-height: 48px;
 }
 
 .mesh-groups-page .mesh-migration-options {
-  grid-template-columns: minmax(220px, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .mesh-groups-page .mesh-migration-options > input[type="password"] {
@@ -3383,9 +3491,28 @@ input:focus {
   .mesh-group-content {
     grid-template-columns: 1fr;
   }
+
 }
 
 @media (max-width: 640px) {
+  .mesh-groups-page .mesh-group-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mesh-groups-page .mesh-group-card > .icon-button {
+    justify-self: start;
+  }
+
+  .mesh-groups-page .mesh-files-panel .mesh-shared-file-row,
+  .mesh-groups-page .mesh-remote-files-panel .mesh-shared-file-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .mesh-shared-file-actions {
+    width: 100%;
+  }
+
   .mesh-groups-page .mesh-groups-header,
   .mesh-groups-page .mesh-current-group-status {
     align-items: stretch;
@@ -3394,6 +3521,20 @@ input:focus {
 
   .mesh-group-header-actions {
     justify-content: flex-start;
+  }
+
+  .mesh-groups-page .mesh-files-panel.mesh-share-panel .panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mesh-file-header-actions {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  .mesh-groups-page .mesh-migration-options {
+    grid-template-columns: 1fr;
   }
 
   .mesh-groups-page .mesh-share-panel .mesh-scope-editor {

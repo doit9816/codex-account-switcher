@@ -3,7 +3,7 @@ use crate::routing_protocol::{
     chat_sse_reader, prepare_api_request, transform_chat_response, WireProtocol,
 };
 use crate::{
-    app_data_dir, build_probe_client, decrypt_secret, default_routing_log_retention_days,
+    app_data_dir, append_app_log, build_probe_client, decrypt_secret, default_routing_log_retention_days,
     display_err, encrypt_secret, load_master_key, load_store, mutate_store, now_string, parse_time,
     push_event, refresh_auth_json_with_client, refresh_error_requires_relogin,
     replace_file_with_rollback, resolve_codex_home, save_store, should_refresh_access_token,
@@ -932,7 +932,11 @@ fn handle_request(app: AppHandle, mut request: Request) {
     let started = Instant::now();
     let method = request.method().clone();
     let url = request.url().to_string();
-    let result = if method == Method::Get && url == "/health" {
+    // MCP URLs include the group identifier as a query parameter. Match the
+    // route path separately so `/mcp?groupId=...` reaches the MCP handler.
+    let route = request_route(&url);
+    let error_log_app = app.clone();
+    let result = if method == Method::Get && route == "/health" {
         respond_json(
             request,
             200,
@@ -941,16 +945,24 @@ fn handle_request(app: AppHandle, mut request: Request) {
                 "activeConnections": ACTIVE_CONNECTIONS.load(AtomicOrdering::Relaxed)
             }),
         )
-    } else if method == Method::Post && url == "/mesh/sync" {
+    } else if method == Method::Post && route == "/mesh/sync" {
         crate::easytier_mesh::handle_sync_request(app, request).map_err(|error| {
             Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
         })
-    } else if method == Method::Post && url == "/mesh/pull" {
+    } else if method == Method::Post && route == "/mesh/pull" {
         crate::easytier_mesh::handle_pull_request(app, request).map_err(|error| {
             Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
         })
-    } else if method == Method::Get && url == "/mesh/hello" {
+    } else if method == Method::Get && route == "/mesh/hello" {
         crate::easytier_mesh::handle_hello_request(app, request).map_err(|error| {
+            Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
+        })
+    } else if method == Method::Get && route.starts_with("/mesh/files") {
+        crate::easytier_mesh::handle_file_request(app, request).map_err(|error| {
+            Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
+        })
+    } else if is_mcp_endpoint(&method, &url) {
+        crate::easytier_mesh::handle_mcp_request(app, request).map_err(|error| {
             Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error + Send + Sync>
         })
     } else if method == Method::Post && url == "/v1/responses" {
@@ -969,7 +981,24 @@ fn handle_request(app: AppHandle, mut request: Request) {
             RouterError::new(404, "route not found"),
         )
     };
+    if let Err(error) = &result {
+        if route.starts_with("/mesh/files") || route == "/mcp" {
+            append_app_log(
+                &error_log_app,
+                "error",
+                &format!("mesh_api_handler_failed method={method} route={route} error={error}"),
+            );
+        }
+    }
     let _ = result;
+}
+
+fn request_route(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
+fn is_mcp_endpoint(method: &Method, url: &str) -> bool {
+    *method == Method::Post && request_route(url) == "/mcp"
 }
 
 fn proxy_responses(
@@ -2307,6 +2336,13 @@ fn drop_existing(handle: &mut Option<RouterHandle>) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn mcp_route_matches_when_group_id_is_in_query_string() {
+        assert!(is_mcp_endpoint(&Method::Post, "/mcp?groupId=group-a"));
+        assert!(!is_mcp_endpoint(&Method::Get, "/mcp?groupId=group-a"));
+        assert!(!is_mcp_endpoint(&Method::Post, "/mcp-extra?groupId=group-a"));
+    }
 
     fn profile(id: &str, priority: i32, expiry: Option<&str>, hourly_used: u32) -> AccountProfile {
         AccountProfile {

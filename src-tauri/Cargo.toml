@@ -1,9 +1,12 @@
 [package]
 name = "codex-account-switcher"
-version = "0.1.54"
+version = "0.1.55"
 description = "Desktop manager for multiple Codex ChatGPT accounts"
 authors = ["cmsCloud"]
 edition = "2021"
+
+[features]
+validation-data-dir = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

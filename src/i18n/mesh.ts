@@ -76,6 +76,23 @@ export type MeshI18n = {
   cancel: string;
   create: string;
   join: string;
+  filesTitle: string;
+  filesHint: string;
+  addFiles: string;
+  addFolder: string;
+  removeShare: string;
+  browseFiles: string;
+  downloadFile: string;
+  fileAccess: string;
+  aiFileAccess: string;
+  aiFileAccessHint: string;
+  aiCredentials: string;
+  aiCredentialWarning: string;
+  aiAccessInstructions: string;
+  fileAccessDenied: string;
+  noFileShares: string;
+  fileListFailed: string;
+  fileSize: string;
 };
 
 const zhCN: MeshI18n = {
@@ -153,6 +170,23 @@ const zhCN: MeshI18n = {
   cancel: "取消",
   create: "创建",
   join: "加入",
+  filesTitle: "共享文件",
+  filesHint: "添加单个文件或目录；其他设备手动浏览并下载。",
+  addFiles: "添加文件",
+  addFolder: "添加目录",
+  removeShare: "移除分享",
+  browseFiles: "浏览",
+  downloadFile: "下载",
+  fileAccess: "允许文件访问",
+  aiFileAccess: "外部 AI 文件访问",
+  aiFileAccessHint: "启用后生成独立令牌，可用于 MCP 和 HTTP，只能读取共享文件；需先启动当前组网才能连接。",
+  aiCredentials: "AI 接口",
+  aiCredentialWarning: "令牌只在启用时显示，请复制并妥善保管。",
+  aiAccessInstructions: "请求携带 Authorization: Bearer 令牌。HTTP GET 路径：/mesh/files/shares?groupId=组ID、/mesh/files?groupId=组ID&shareId=共享项ID&path=相对路径、/mesh/files/download?groupId=组ID&shareId=共享项ID&path=相对路径；MCP 可浏览、搜索并读取文本文件。",
+  fileAccessDenied: "未授权文件访问",
+  noFileShares: "当前组还没有共享文件。",
+  fileListFailed: "读取共享文件失败",
+  fileSize: "字节",
 };
 
 const en: MeshI18n = {
@@ -230,6 +264,23 @@ const en: MeshI18n = {
   cancel: "Cancel",
   create: "Create",
   join: "Join",
+  filesTitle: "Shared files",
+  filesHint: "Add files or folders. Other devices can browse and download manually.",
+  addFiles: "Add files",
+  addFolder: "Add folder",
+  removeShare: "Remove share",
+  browseFiles: "Browse",
+  downloadFile: "Download",
+  fileAccess: "Allow file access",
+  aiFileAccess: "External AI file access",
+  aiFileAccessHint: "Creates a separate read-only token for MCP and HTTP. Start this share group before connecting.",
+  aiCredentials: "AI endpoints",
+  aiCredentialWarning: "The token is shown only when enabled. Copy and store it securely.",
+  aiAccessInstructions: "Send Authorization: Bearer <token>. HTTP GET paths: /mesh/files/shares?groupId=<id>, /mesh/files?groupId=<id>&shareId=<id>&path=<relative-path>, and /mesh/files/download?groupId=<id>&shareId=<id>&path=<relative-path>. MCP can browse, search, and read text files.",
+  fileAccessDenied: "File access is not authorized",
+  noFileShares: "No files have been shared in this group.",
+  fileListFailed: "Could not load shared files",
+  fileSize: "bytes",
 };
 
 const zhTW: MeshI18n = {

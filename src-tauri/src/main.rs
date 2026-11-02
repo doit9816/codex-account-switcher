@@ -52,6 +52,8 @@ const EXPORT_VERSION: u32 = 1;
 const KEYRING_SERVICE: &str = "codex-account-switcher";
 const KEYRING_USER: &str = "profiles";
 const LEGACY_APP_IDENTIFIER: &str = "cn.cmscloud.codex-account-switcher";
+#[cfg(feature = "validation-data-dir")]
+const VALIDATION_DATA_DIR_ENV: &str = "CODEX_ACCOUNT_SWITCHER_VALIDATION_DATA_DIR";
 const CHATGPT_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 const OFFICIAL_CLIENT_DISPLAY_NAME: &str = "Codex/ChatGPT";
@@ -70,6 +72,7 @@ const CODEX_PROXY_ENV_KEYS: [&str; 8] = [
 ];
 pub(crate) const ROUTER_PROVIDER_ID: &str = "codex-switcher-router";
 static STORE_IO_MUTEX: Mutex<()> = Mutex::new(());
+static APP_LOG_WRITE_MUTEX: Mutex<()> = Mutex::new(());
 pub(crate) use proxy::{build_probe_client, normalize_proxy_url, ProxySettings, CHATGPT_USAGE_URL};
 
 #[cfg(windows)]
@@ -1523,6 +1526,69 @@ async fn mesh_group_status(
     group_id: String,
 ) -> Result<easytier_mesh::MeshGroupStatus, String> {
     run_mesh_blocking(move || easytier_mesh::group_status(app, group_id)).await
+}
+
+#[tauri::command]
+async fn mesh_group_add_file_share(
+    app: AppHandle,
+    group_id: String,
+    path: String,
+    kind: String,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::add_group_file_share(app, group_id, path, kind)).await
+}
+
+#[tauri::command]
+async fn mesh_group_remove_file_share(
+    app: AppHandle,
+    group_id: String,
+    share_id: String,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::remove_group_file_share(app, group_id, share_id)).await
+}
+
+#[tauri::command]
+async fn mesh_group_set_file_device_access(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+    allowed: bool,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::set_group_file_device_access(app, group_id, device_id, allowed)).await
+}
+
+#[tauri::command]
+async fn mesh_group_set_ai_file_access(
+    app: AppHandle,
+    group_id: String,
+    enabled: bool,
+) -> Result<easytier_mesh::MeshGroupStatus, String> {
+    run_mesh_blocking(move || easytier_mesh::set_group_ai_file_access(app, group_id, enabled)).await
+}
+
+#[tauri::command]
+async fn mesh_group_list_files(app: AppHandle, group_id: String, share_id: String, path: String) -> Result<Vec<easytier_mesh::MeshFileEntry>, String> {
+    run_mesh_blocking(move || easytier_mesh::list_group_files(app, group_id, share_id, path)).await
+}
+
+#[tauri::command]
+async fn mesh_group_download_file(app: AppHandle, group_id: String, share_id: String, path: String, destination: String) -> Result<u64, String> {
+    run_mesh_blocking(move || easytier_mesh::download_group_file(app, group_id, share_id, path, destination)).await
+}
+
+#[tauri::command]
+async fn mesh_group_remote_file_shares(app: AppHandle, group_id: String, device_id: String) -> Result<Vec<easytier_mesh::MeshFileShareView>, String> {
+    run_mesh_blocking(move || easytier_mesh::list_group_remote_shares(app, group_id, device_id)).await
+}
+
+#[tauri::command]
+async fn mesh_group_remote_files(app: AppHandle, group_id: String, device_id: String, share_id: String, path: String) -> Result<Vec<easytier_mesh::MeshFileEntry>, String> {
+    run_mesh_blocking(move || easytier_mesh::list_group_remote_files(app, group_id, device_id, share_id, path)).await
+}
+
+#[tauri::command]
+async fn mesh_group_download_remote_file(app: AppHandle, group_id: String, device_id: String, share_id: String, path: String, destination: String) -> Result<u64, String> {
+    run_mesh_blocking(move || easytier_mesh::download_group_remote_file(app, group_id, device_id, share_id, path, destination)).await
 }
 
 #[tauri::command]
@@ -3336,8 +3402,26 @@ fn delete_profile_from_store(store: &mut AppStore, profile_id: &str) -> Result<S
     Ok(alias)
 }
 
+fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(feature = "validation-data-dir")]
+    if let Some(path) = std::env::var_os(VALIDATION_DATA_DIR_ENV) {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(format!("{VALIDATION_DATA_DIR_ENV} must be an absolute path"));
+        }
+        return Ok(path);
+    }
+    app.path().app_data_dir().map_err(display_err)
+}
+
 pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(display_err)?;
+    let dir = app_data_root(app)?;
+    #[cfg(feature = "validation-data-dir")]
+    if std::env::var_os(VALIDATION_DATA_DIR_ENV).is_some() {
+        fs::create_dir_all(&dir).map_err(display_err)?;
+        append_app_log(app, "debug", "validation_data_dir_override_enabled=true");
+        return Ok(dir);
+    }
     let store_existed = dir.join(STORE_FILE).exists();
     let legacy_dir = dir.parent().map(|parent| parent.join(LEGACY_APP_IDENTIFIER));
     if !store_existed {
@@ -3447,8 +3531,28 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
             }
             append_app_log(app, "warn", &format!("store_recovery_complete reason=primary_store_missing restored={recovery_summary}"));
         } else {
-            append_app_log(app, "error", &format!("store_missing_without_recovery primary={} recovery={} action=return_default_store", path.display(), recovery_path.display()));
-            return Ok(AppStore::default());
+            let store = AppStore::default();
+            append_app_log(
+                app,
+                "info",
+                &format!(
+                    "store_initialize_first_run primary={} recovery={} action=persist_default_store",
+                    path.display(),
+                    recovery_path.display()
+                ),
+            );
+            initialize_default_store_files(&path, &store)?;
+            append_app_log(
+                app,
+                "info",
+                &format!(
+                    "store_initialized summary={} primary_metadata={} recovery_metadata={}",
+                    store_snapshot_summary(&store),
+                    file_metadata_summary(&path),
+                    file_metadata_summary(&recovery_path)
+                ),
+            );
+            return Ok(store);
         }
     }
     let text = fs::read_to_string(&path).map_err(|error| {
@@ -3463,6 +3567,19 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
         write_store_unlocked(app, &store)?;
     }
     Ok(store)
+}
+
+fn initialize_default_store_files(path: &Path, store: &AppStore) -> Result<(), String> {
+    let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
+    if path.exists() || recovery_path.exists() {
+        return Err("refusing to initialize store when primary or recovery file already exists".to_string());
+    }
+    let tmp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(store).map_err(display_err)?;
+    fs::write(&tmp, text).map_err(display_err)?;
+    fs::rename(&tmp, path).map_err(display_err)?;
+    fs::copy(path, &recovery_path).map_err(display_err)?;
+    Ok(())
 }
 
 fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String> {
@@ -5844,7 +5961,7 @@ fn frontend_log_error(app: AppHandle, operation: String, message: String) {
 }
 
 pub(crate) fn append_app_log(app: &AppHandle, level: &str, message: &str) {
-    let Ok(data_dir) = app.path().app_data_dir() else {
+    let Ok(data_dir) = app_data_root(app) else {
         return;
     };
     let path = app_log_path(&data_dir, Local::now());
@@ -5859,9 +5976,15 @@ pub(crate) fn append_app_log(app: &AppHandle, level: &str, message: &str) {
         "level": level,
         "message": redact_log_message(message),
     });
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{line}");
-    }
+    let _ = append_json_log_line(&path, &line);
+}
+
+fn append_json_log_line(path: &Path, line: &Value) -> std::io::Result<()> {
+    let _guard = APP_LOG_WRITE_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{line}")
 }
 
 fn append_switch_diagnostic(
@@ -5872,7 +5995,7 @@ fn append_switch_diagnostic(
     detail: impl AsRef<str>,
 ) {
     append_app_log(app, "debug", &format!("switch stage: {stage}"));
-    let Ok(dir) = app.path().app_data_dir() else {
+    let Ok(dir) = app_data_root(app) else {
         return;
     };
     let _ = fs::create_dir_all(&dir);
@@ -5971,6 +6094,15 @@ fn main() {
             mesh_status,
             mesh_group_list,
             mesh_group_status,
+            mesh_group_add_file_share,
+            mesh_group_remove_file_share,
+            mesh_group_set_file_device_access,
+            mesh_group_set_ai_file_access,
+            mesh_group_list_files,
+            mesh_group_download_file,
+            mesh_group_remote_file_shares,
+            mesh_group_remote_files,
+            mesh_group_download_remote_file,
             mesh_group_create,
             mesh_group_start,
             mesh_group_stop,
@@ -6089,6 +6221,56 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn app_logs_redact_bearer_credentials_and_single_line_messages() {
+        assert_eq!(
+            redact_log_message("mesh request Authorization: Bearer sensitive-token\nnext line"),
+            "mesh request [redacted]"
+        );
+        assert_eq!(
+            redact_log_message("request completed\nwith detail"),
+            "request completed with detail"
+        );
+    }
+
+    #[test]
+    fn concurrent_app_log_appends_keep_each_jsonl_record_intact() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("concurrent.jsonl");
+        let mut workers = Vec::new();
+        for worker in 0..12 {
+            let path = path.clone();
+            workers.push(std::thread::spawn(move || {
+                for sequence in 0..40 {
+                    let line = serde_json::json!({
+                        "worker": worker,
+                        "sequence": sequence,
+                        "message": format!("log-{worker}-{sequence}")
+                    });
+                    append_json_log_line(&path, &line).unwrap();
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let text = fs::read_to_string(path).unwrap();
+        let records = text
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 12 * 40);
+        let mut unique = std::collections::HashSet::new();
+        for record in records {
+            unique.insert((
+                record["worker"].as_u64().unwrap(),
+                record["sequence"].as_u64().unwrap(),
+            ));
+        }
+        assert_eq!(unique.len(), 12 * 40);
+    }
+
     fn fake_jwt(claims: Value) -> String {
         let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
         let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
@@ -6174,6 +6356,24 @@ mod tests {
         let path = dir.path().join(STORE_FILE);
         write_text(&path, r#"{"profiles":[],"settings":{}}"#);
         assert!(!store_contains_encrypted_data(&path));
+    }
+
+    #[test]
+    fn first_run_store_initialization_persists_primary_and_recovery_once() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(STORE_FILE);
+        let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
+        let store = AppStore::default();
+
+        initialize_default_store_files(&path, &store).unwrap();
+
+        let primary = fs::read_to_string(&path).unwrap();
+        let recovery = fs::read_to_string(&recovery_path).unwrap();
+        assert_eq!(primary, recovery);
+        let decoded: AppStore = serde_json::from_str(&primary).unwrap();
+        assert!(decoded.profiles.is_empty());
+        assert!(decoded.settings.mesh.groups.is_empty());
+        assert!(initialize_default_store_files(&path, &store).is_err());
     }
 
     #[test]

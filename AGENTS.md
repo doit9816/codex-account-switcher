@@ -82,6 +82,12 @@ src-tauri/src/
 - 提交前运行 `git diff --check`。
 - 涉及 UI 时，尽量启动应用检查桌面宽度和窄屏宽度下的关键流程。
 
+### 本地桌面验证的数据隔离
+
+- Windows 启动时，`app_data_dir` 会在目标 store 不存在时尝试从父目录下的 `LEGACY_APP_IDENTIFIER` 迁移旧数据；仅更换 Tauri `identifier` 并不能隔离用户数据。
+- 不要在日常 Windows 用户目录下启动“隔离标识”的验证副本。启动流程可能迁移旧账号，并触发自动用量刷新等网络请求。需要运行验证版时，应使用无旧数据的临时 Windows 用户配置；也可用 `--features validation-data-dir` 构建专用验证版，并将 `CODEX_ACCOUNT_SWITCHER_VALIDATION_DATA_DIR` 指向新的绝对临时目录。该 feature 不用于正式打包。
+- 运行验证后只清理本次创建且已核对绝对路径的临时数据；不得读取、复制或输出用户 store 中的账号凭据。
+
 ## Review Checklist
 
 - 新逻辑是否按领域拆分，避免继续扩大单个大文件。

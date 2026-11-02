@@ -15,11 +15,15 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { logAppError } from "../../api/appLog";
 import {
   DEFAULT_MESH_SYNC_SCOPE,
   type MeshDevice,
+  type MeshFileEntry,
+  type MeshFileShareView,
   type MeshGroup,
   type MeshGroupStatus,
   type MeshSyncScope,
@@ -101,6 +105,7 @@ export type MeshSharePageProps = {
   onSyncGroup?: (input: MeshGroupSyncInput) => void | Promise<unknown>;
   onCreateGroupShare?: (input: MeshGroupShareInput) => void | Promise<unknown>;
   onSaveGroupScope?: (groupId: string, scope: MeshSyncScope) => void | Promise<unknown>;
+  onGroupFilesChanged?: (status: MeshGroupStatus) => void;
 };
 
 const LEGACY_GROUP_ID = "legacy";
@@ -113,6 +118,14 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const [actionError, setActionError] = useState("");
   const [syncingDeviceId, setSyncingDeviceId] = useState<string | null>(null);
   const [removeConfirmDeviceId, setRemoveConfirmDeviceId] = useState<string | null>(null);
+  const [selectedShareId, setSelectedShareId] = useState<string>("");
+  const [localFiles, setLocalFiles] = useState<MeshFileEntry[]>([]);
+  const [remoteFiles, setRemoteFiles] = useState<MeshFileEntry[]>([]);
+  const [filePath, setFilePath] = useState("");
+  const [remoteDevice, setRemoteDevice] = useState<MeshDevice | null>(null);
+  const [remoteShares, setRemoteShares] = useState<MeshFileShareView[]>([]);
+  const [remoteShareId, setRemoteShareId] = useState("");
+  const [remoteFilePath, setRemoteFilePath] = useState("");
 
   const statusDevices = props.groupStatus?.devices ?? props.status?.devices ?? [];
   const localDeviceId = props.groupStatus?.localDeviceId ?? props.status?.localDeviceId;
@@ -144,6 +157,17 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const activeIsLegacy = usingLegacyGroup || activeGroup?.id === LEGACY_GROUP_ID;
   const canUseGroupCommands = !activeIsLegacy;
 
+  useEffect(() => {
+    setSelectedShareId("");
+    setFilePath("");
+    setLocalFiles([]);
+    setRemoteFiles([]);
+    setRemoteDevice(null);
+    setRemoteShares([]);
+    setRemoteShareId("");
+    setRemoteFilePath("");
+  }, [activeGroupId]);
+
   async function runAction(action: () => void | Promise<unknown>, onSuccess?: () => void) {
     setActionError("");
     try {
@@ -151,7 +175,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
       onSuccess?.();
     } catch (error) {
       void logAppError("mesh_share_action", error);
-      setActionError(error instanceof Error ? error.message : t.actionFailed);
+      setActionError(error instanceof Error ? error.message : typeof error === "string" ? error : t.actionFailed);
     }
   }
 
@@ -241,6 +265,72 @@ export function MeshSharePage(props: MeshSharePageProps) {
     } else if (activeIsLegacy) {
       void runAction(props.onSaveSettings);
     }
+  }
+
+  async function addFileShare(directory: boolean) {
+    if (!activeGroup) return;
+    await runAction(async () => {
+      const selected = await openDialog({ multiple: !directory, directory, title: directory ? t.addFolder : t.addFiles });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      for (const path of paths) {
+        const kind = directory ? "directory" : "file";
+        const status = await invoke<MeshGroupStatus>("mesh_group_add_file_share", { groupId: activeGroup.id, path, kind });
+        props.onGroupFilesChanged?.(status);
+      }
+    });
+  }
+
+  async function browseShare(shareId: string, relative = "") {
+    if (!activeGroup) return;
+    setSelectedShareId(shareId);
+    setFilePath(relative);
+    await runAction(async () => {
+      const files = await invoke<MeshFileEntry[]>("mesh_group_list_files", { groupId: activeGroup.id, shareId, path: relative });
+      setLocalFiles(files);
+    });
+  }
+
+  async function downloadSharedFile(file: MeshFileEntry) {
+    if (!activeGroup || !selectedShareId) return;
+    const destination = await saveDialog({ defaultPath: file.name, title: t.downloadFile });
+    if (!destination) return;
+    await runAction(() => invoke("mesh_group_download_file", {
+      groupId: activeGroup.id,
+      shareId: selectedShareId,
+      path: file.id,
+      destination,
+    }));
+  }
+
+  async function browseDeviceShares(device: MeshDevice) {
+    if (!activeGroup) return;
+    setRemoteDevice(device);
+    setRemoteShareId("");
+    setRemoteFiles([]);
+    await runAction(async () => {
+      const shares = await invoke<MeshFileShareView[]>("mesh_group_remote_file_shares", { groupId: activeGroup.id, deviceId: device.id });
+      setRemoteShares(shares);
+    });
+  }
+
+  async function browseRemoteFiles(shareId: string, path = "") {
+    if (!activeGroup || !remoteDevice) return;
+    setRemoteShareId(shareId);
+    setRemoteFilePath(path);
+    await runAction(async () => {
+      const files = await invoke<MeshFileEntry[]>("mesh_group_remote_files", { groupId: activeGroup.id, deviceId: remoteDevice.id, shareId, path });
+      setRemoteFiles(files);
+    });
+  }
+
+  async function downloadRemoteFile(file: MeshFileEntry) {
+    if (!activeGroup || !remoteDevice || !remoteShareId) return;
+    const destination = await saveDialog({ defaultPath: file.name, title: t.downloadFile });
+    if (!destination) return;
+    await runAction(() => invoke("mesh_group_download_remote_file", {
+      groupId: activeGroup.id, deviceId: remoteDevice.id, shareId: remoteShareId, path: file.id, destination,
+    }));
   }
 
   function submitCreateGroup() {
@@ -349,6 +439,54 @@ export function MeshSharePage(props: MeshSharePageProps) {
         <div className="mesh-warning">{actionError || activeGroup?.lastError || props.status?.lastError}</div>
       )}
 
+      {activeGroup && (
+        <section className="panel mesh-share-panel mesh-files-panel">
+          <div className="panel-header">
+            <div><h2>{t.filesTitle}</h2><p>{t.filesHint}</p></div>
+            <div className="mesh-file-header-actions">
+              <button className="icon-button" onClick={() => void addFileShare(false)} disabled={props.busy}><Plus size={16} /> {t.addFiles}</button>
+              <button className="icon-button" onClick={() => void addFileShare(true)} disabled={props.busy}><Plus size={16} /> {t.addFolder}</button>
+            </div>
+          </div>
+          {(props.groupStatus?.fileAccess?.shares ?? []).map((share) => (
+            <div className="mesh-shared-file-row" key={share.id}>
+              <span className="mesh-shared-file-info"><strong title={share.name}>{share.name}</strong><small>{share.kind === "directory" ? t.addFolder : t.addFiles}</small></span>
+              <div className="mesh-shared-file-actions"><button className="mini-button" onClick={() => void browseShare(share.id)}>{t.browseFiles}</button>
+              <button className="mini-button danger" onClick={() => void runAction(async () => {
+                const status = await invoke<MeshGroupStatus>("mesh_group_remove_file_share", { groupId: activeGroup.id, shareId: share.id });
+                props.onGroupFilesChanged?.(status);
+                if (selectedShareId === share.id) {
+                  setSelectedShareId("");
+                  setFilePath("");
+                  setLocalFiles([]);
+                }
+              })}>{t.removeShare}</button></div>
+            </div>
+          ))}
+          {(props.groupStatus?.fileAccess?.shares.length ?? 0) === 0 && <div className="account-empty">{t.noFileShares}</div>}
+          {selectedShareId && <div className="mesh-shared-file-list">
+            {filePath && <button className="mini-button" onClick={() => void browseShare(selectedShareId, filePath.split("/").slice(0, -1).join("/"))}>↑ ..</button>}
+            {localFiles.map((file) => <div className="mesh-shared-file-row" key={file.id}>
+              <span><strong>{file.name}</strong><small>{file.kind === "file" ? `${file.size} ${t.fileSize}` : file.kind}</small></span>
+              {file.kind === "directory" ? <button className="mini-button" onClick={() => void browseShare(selectedShareId, file.id)}>{t.browseFiles}</button> : <button className="mini-button" onClick={() => void downloadSharedFile(file)}><Download size={14} /> {t.downloadFile}</button>}
+            </div>)}
+          </div>}
+          <div className="mesh-file-settings"><label className="checkline mesh-device-auto-sync">
+            <input type="checkbox" checked={props.groupStatus?.fileAccess?.aiAccessEnabled === true} onChange={(event) => void runAction(async () => {
+              const status = await invoke<MeshGroupStatus>("mesh_group_set_ai_file_access", { groupId: activeGroup.id, enabled: event.target.checked });
+              props.onGroupFilesChanged?.(status);
+            })} />
+            <span><strong>{t.aiFileAccess}</strong><small>{t.aiFileAccessHint}</small></span>
+          </label>
+          {props.groupStatus?.fileAccess?.aiToken && <div className="mesh-ai-endpoints">
+            <strong>{t.aiCredentials}</strong><small>{t.aiCredentialWarning}</small><small>{t.aiAccessInstructions}</small>
+            <code>HTTP: {props.groupStatus.fileAccess.aiHttpUrl}?groupId={encodeURIComponent(activeGroup.id)}</code>
+            <code>MCP: {props.groupStatus.fileAccess.aiMcpUrl}</code>
+            <textarea className="mesh-payload-box" readOnly value={props.groupStatus.fileAccess.aiToken} aria-label={t.aiCredentials} />
+          </div>}</div>
+        </section>
+      )}
+
       <div className="mesh-columns mesh-group-content">
         <div className="mesh-column">
           <section className="panel mesh-device-panel">
@@ -402,8 +540,29 @@ export function MeshSharePage(props: MeshSharePageProps) {
                           </span>
                         </label>
                       )}
+                      <label className="checkline mesh-device-auto-sync">
+                        <input
+                          type="checkbox"
+                          checked={props.groupStatus?.fileAccessDeviceIds?.includes(device.id) === true}
+                          disabled={revoked || !device.trusted}
+                          onChange={(event) => void runAction(async () => {
+                            const status = await invoke<MeshGroupStatus>("mesh_group_set_file_device_access", { groupId: activeGroup!.id, deviceId: device.id, allowed: event.target.checked });
+                            props.onGroupFilesChanged?.(status);
+                          })}
+                        />
+                        <span><strong>{t.fileAccess}</strong></span>
+                      </label>
                     </div>
                     <div className="mesh-device-actions">
+                      <button
+                        type="button"
+                        className="mini-button"
+                        onClick={() => void browseDeviceShares(device)}
+                        disabled={props.busy || !device.online || revoked || !device.trusted}
+                        title={!device.online ? t.deviceStatusOffline : undefined}
+                      >
+                        <Download size={14} /> {t.browseFiles}
+                      </button>
                       <button
                         type="button"
                         className="mini-button"
@@ -459,10 +618,24 @@ export function MeshSharePage(props: MeshSharePageProps) {
               {syncingDeviceId === "__all__" ? <LoaderCircle className="button-spinner" size={17} /> : <RefreshCcw size={17} />} {syncingDeviceId === "__all__" ? t.processing : t.syncAllDevices}
             </button>
           </section>
+          {remoteDevice && <section className="panel mesh-share-panel mesh-remote-files-panel">
+            <div className="panel-header"><div><h2>{remoteDevice.name} · {t.filesTitle}</h2><p>{t.filesHint}</p></div></div>
+            {remoteShares.map((share) => <div className="mesh-shared-file-row" key={share.id}>
+              <span><strong>{share.name}</strong><small>{share.kind}</small><code>{share.id}</code></span>
+              <button className="mini-button" onClick={() => void browseRemoteFiles(share.id)}>{t.browseFiles}</button>
+            </div>)}
+            {remoteShareId && <div className="mesh-shared-file-list">
+              {remoteFilePath && <button className="mini-button" onClick={() => void browseRemoteFiles(remoteShareId, remoteFilePath.split("/").slice(0, -1).join("/"))}>↑ ..</button>}
+              {remoteFiles.map((file) => <div className="mesh-shared-file-row" key={file.id}>
+                <span><strong>{file.name}</strong><small>{file.kind === "file" ? `${file.size} ${t.fileSize}` : file.kind}</small></span>
+                {file.kind === "directory" ? <button className="mini-button" onClick={() => void browseRemoteFiles(remoteShareId, file.id)}>{t.browseFiles}</button> : <button className="mini-button" onClick={() => void downloadRemoteFile(file)}><Download size={14} /> {t.downloadFile}</button>}
+              </div>)}
+            </div>}
+          </section>}
         </div>
 
         <div className="mesh-column">
-          <section className="panel mesh-share-panel">
+          <section className="panel mesh-share-panel mesh-code-panel">
             <div className="panel-header">
               <div>
                 <h2>{t.sharingTitle}</h2>
@@ -495,6 +668,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
             </div>
             <textarea
               className="mesh-payload-box"
+              rows={props.sharePayload ? 3 : 1}
               value={props.sharePayload}
               readOnly
               placeholder={t.shareCodePlaceholder}

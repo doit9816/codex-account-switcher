@@ -15,9 +15,11 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use chrono::Utc;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::Read;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 #[cfg(target_os = "macos")]
@@ -47,8 +49,12 @@ const NODE_PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_MESH_SYNC_BYTES: usize = 256 * 1024 * 1024;
 const MESH_SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MESH_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MESH_FILE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const MESH_SYNC_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const MESH_HELLO_PATH: &str = "/mesh/hello";
+const MESH_FILES_PATH: &str = "/mesh/files";
+const MESH_FILE_DIRECTORY_ENTRY_LIMIT: usize = 5000;
+const MESH_FILE_SEARCH_ENTRY_LIMIT: usize = 10000;
 const MESH_HELLO_TOKEN_HEADER: &str = "X-Codex-Mesh-Token";
 const MESH_GROUP_ID_HEADER: &str = "X-Codex-Mesh-Group-Id";
 const MESH_HELLO_DEVICE_ID_HEADER: &str = "X-Codex-Mesh-Device-Id";
@@ -284,7 +290,54 @@ pub(crate) struct MeshShareGroup {
     #[serde(default)]
     pub(crate) encrypted_local_device_credential: Option<SecretEnvelope>,
     #[serde(default)]
+    pub(crate) file_shares: Vec<MeshFileShare>,
+    #[serde(default)]
+    pub(crate) file_access_devices: Vec<String>,
+    #[serde(default)]
+    pub(crate) encrypted_ai_file_token: Option<SecretEnvelope>,
+    #[serde(default)]
+    pub(crate) ai_file_token_revoked: bool,
+    #[serde(default)]
     pub(crate) legacy_compat: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeshFileShare {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeshFileShareView {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeshFileEntry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) size: u64,
+    pub(crate) modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeshFileAccessStatus {
+    pub(crate) shares: Vec<MeshFileShareView>,
+    pub(crate) ai_access_enabled: bool,
+    pub(crate) ai_http_url: String,
+    pub(crate) ai_mcp_url: String,
+    pub(crate) ai_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,6 +367,10 @@ pub(crate) struct MeshGroupStatus {
     pub(crate) local_device_name: String,
     #[serde(default)]
     pub(crate) routing_base_url: Option<String>,
+    #[serde(default)]
+    pub(crate) file_access: Option<MeshFileAccessStatus>,
+    #[serde(default)]
+    pub(crate) file_access_device_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -714,9 +771,18 @@ pub(crate) fn list_groups(app: AppHandle) -> Result<Vec<MeshGroupView>, String> 
 
 pub(crate) fn group_status(app: AppHandle, group_id: String) -> Result<MeshGroupStatus, String> {
     let store = load_store(&app)?;
-    build_group_status(&store, &group_id)
+    let key = load_master_key(&app)?;
+    build_group_status(&store, &group_id, &key)
 }
 
+#[path = "easytier_mesh/file_sharing.rs"]
+pub(crate) mod file_sharing;
+
+pub(crate) use file_sharing::{
+    add_group_file_share, download_group_file, download_group_remote_file,
+    handle_file_request, handle_mcp_request, list_group_files, list_group_remote_files, list_group_remote_shares,
+    remove_group_file_share, set_group_ai_file_access, set_group_file_device_access,
+};
 pub(crate) fn create_group(
     app: AppHandle,
     input: MeshSaveGroupInput,
@@ -808,6 +874,10 @@ pub(crate) fn create_group(
             runtime: MeshGroupRuntimeState::default(),
             credential_grants: Vec::new(),
             encrypted_local_device_credential: None,
+            file_shares: Vec::new(),
+            file_access_devices: Vec::new(),
+            encrypted_ai_file_token: None,
+            ai_file_token_revoked: false,
             legacy_compat: false,
         });
     group.name = name.to_string();
@@ -844,35 +914,95 @@ pub(crate) fn start_group(app: AppHandle, group_id: String) -> Result<MeshGroupS
         start(app.clone())?;
         return group_status(app, group_id);
     }
+    let started = Instant::now();
+    append_app_log(
+        &app,
+        "info",
+        &format!("mesh_group_start_started group_id={group_id}"),
+    );
     let _lifecycle_guard = mesh_lifecycle_guard();
-    crate::routing::start_for_mesh_share(app.clone())?;
+    crate::routing::start_for_mesh_share(app.clone()).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "start_routing_api", started, error)
+    })?;
     if group_runtime_snapshot(&group_id).running {
+        append_app_log(
+            &app,
+            "info",
+            &format!(
+                "mesh_group_start_skipped group_id={group_id} reason=already_running elapsed_ms={}",
+                started.elapsed().as_millis()
+            ),
+        );
         return group_status(app, group_id);
     }
-    let mut store = load_store(&app)?;
-    let key = load_master_key(&app)?;
+    let mut store = load_store(&app).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "load_store", started, error)
+    })?;
+    let key = load_master_key(&app).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "load_master_key", started, error)
+    })?;
     let group = store
         .settings
         .mesh
         .groups
         .iter_mut()
         .find(|group| group.group_id == group_id)
-        .ok_or_else(|| "mesh group not found".to_string())?;
-    let secret = decrypt_group_network_secret(group, &key)?;
-    let _ = ensure_group_local_device_credential(group, &key)?;
+        .ok_or_else(|| "mesh group not found".to_string())
+        .map_err(|error| {
+            log_group_lifecycle_failure(&app, &group_id, "start", "resolve_group", started, error)
+        })?;
+    let secret = decrypt_group_network_secret(group, &key).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "decrypt_network_secret", started, error)
+    })?;
+    ensure_group_local_device_credential(group, &key).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "ensure_device_credential", started, error)
+    })?;
     let peers = mesh_peer_urls(&group.nodes);
-    let runtime = start_embedded_group_runtime(&app, group, &secret, peers)?;
+    let runtime = start_embedded_group_runtime(&app, group, &secret, peers).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "start_easytier_runtime", started, error)
+    })?;
     group.enabled = true;
     group.runtime = runtime_state_from_runtime(&runtime);
-    set_runtime(runtime)?;
+    set_runtime(runtime).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "register_runtime", started, error)
+    })?;
     set_group_runtime_error(&group_id, None);
     push_event(
         &mut store,
         "info",
         &format!("mesh group started: {group_id}"),
     );
-    save_store(&app, &store)?;
-    group_status(app, group_id)
+    save_store(&app, &store).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "persist", started, error)
+    })?;
+    let status = group_status(app.clone(), group_id.clone()).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "start", "build_status", started, error)
+    })?;
+    append_app_log(
+        &app,
+        "info",
+        &format!(
+            "mesh_group_start_completed group_id={group_id} elapsed_ms={}",
+            started.elapsed().as_millis()
+        ),
+    );
+    Ok(status)
+}
+
+fn log_group_lifecycle_failure(
+    app: &AppHandle,
+    group_id: &str,
+    operation: &str,
+    stage: &str,
+    started: Instant,
+    error: String,
+) -> String {
+    append_app_log(
+        app,
+        "error",
+        &format!("mesh_group_lifecycle_failed group_id={group_id} operation={operation} stage={stage} elapsed_ms={} error={error}", started.elapsed().as_millis()),
+    );
+    error
 }
 
 pub(crate) fn stop_group(app: AppHandle, group_id: String) -> Result<MeshGroupStatus, String> {
@@ -880,15 +1010,26 @@ pub(crate) fn stop_group(app: AppHandle, group_id: String) -> Result<MeshGroupSt
         stop(app.clone())?;
         return group_status(app, group_id);
     }
+    let started = Instant::now();
+    append_app_log(
+        &app,
+        "info",
+        &format!("mesh_group_stop_started group_id={group_id}"),
+    );
     let _lifecycle_guard = mesh_lifecycle_guard();
-    let mut store = load_store(&app)?;
+    let mut store = load_store(&app).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "stop", "load_store", started, error)
+    })?;
     let group = store
         .settings
         .mesh
         .groups
         .iter_mut()
         .find(|group| group.group_id == group_id)
-        .ok_or_else(|| "mesh group not found".to_string())?;
+        .ok_or_else(|| "mesh group not found".to_string())
+        .map_err(|error| {
+            log_group_lifecycle_failure(&app, &group_id, "stop", "resolve_group", started, error)
+        })?;
     group.enabled = false;
     group.runtime = MeshGroupRuntimeState::default();
     stop_group_runtime(&group_id);
@@ -897,8 +1038,21 @@ pub(crate) fn stop_group(app: AppHandle, group_id: String) -> Result<MeshGroupSt
         "info",
         &format!("mesh group stopped: {group_id}"),
     );
-    save_store(&app, &store)?;
-    group_status(app, group_id)
+    save_store(&app, &store).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "stop", "persist", started, error)
+    })?;
+    let status = group_status(app.clone(), group_id.clone()).map_err(|error| {
+        log_group_lifecycle_failure(&app, &group_id, "stop", "build_status", started, error)
+    })?;
+    append_app_log(
+        &app,
+        "info",
+        &format!(
+            "mesh_group_stop_completed group_id={group_id} elapsed_ms={}",
+            started.elapsed().as_millis()
+        ),
+    );
+    Ok(status)
 }
 
 pub(crate) fn revoke_group_device(
@@ -907,12 +1061,39 @@ pub(crate) fn revoke_group_device(
     device_id: String,
     revoked: bool,
 ) -> Result<MeshGroupStatus, String> {
-    let mut store = load_store(&app)?;
-    let devices = group_devices_mut(&mut store, &group_id)?;
+    append_app_log(
+        &app,
+        "info",
+        &format!("mesh_device_trust_change_started group_id={group_id} device_id={device_id} revoked={revoked}"),
+    );
+    let mut store = load_store(&app).map_err(|error| {
+        append_app_log(
+            &app,
+            "error",
+            &format!("mesh_device_trust_change_failed group_id={group_id} device_id={device_id} stage=load_store error={error}"),
+        );
+        error
+    })?;
+    let devices = group_devices_mut(&mut store, &group_id).map_err(|error| {
+        append_app_log(
+            &app,
+            "error",
+            &format!("mesh_device_trust_change_failed group_id={group_id} device_id={device_id} stage=resolve_group error={error}"),
+        );
+        error
+    })?;
     let device = devices
         .iter_mut()
         .find(|device| device.id == device_id)
-        .ok_or_else(|| "device not found in mesh group".to_string())?;
+        .ok_or_else(|| "device not found in mesh group".to_string())
+        .map_err(|error| {
+            append_app_log(
+                &app,
+                "warn",
+                &format!("mesh_device_trust_change_failed group_id={group_id} device_id={device_id} stage=resolve_device error={error}"),
+            );
+            error
+        })?;
     device.trusted = !revoked;
     device.revoked_at = revoked.then(now_string);
     let fingerprint = device.credential_fingerprint.clone();
@@ -933,7 +1114,36 @@ pub(crate) fn revoke_group_device(
             }
         }
     }
-    save_store(&app, &store)?;
+    if revoked {
+        if let Some(group) = store
+            .settings
+            .mesh
+            .groups
+            .iter_mut()
+            .find(|group| group.group_id == group_id)
+        {
+            let permission_removed =
+                file_sharing::revoke_file_device_access(group, &device_id);
+            append_app_log(
+                &app,
+                "info",
+                &format!("mesh_device_file_access_revoked group_id={group_id} device_id={device_id} permission_removed={permission_removed}"),
+            );
+        }
+    }
+    save_store(&app, &store).map_err(|error| {
+        append_app_log(
+            &app,
+            "error",
+            &format!("mesh_device_trust_change_failed group_id={group_id} device_id={device_id} stage=persist error={error}"),
+        );
+        error
+    })?;
+    append_app_log(
+        &app,
+        "info",
+        &format!("mesh_device_trust_change_completed group_id={group_id} device_id={device_id} revoked={revoked}"),
+    );
     group_status(app, group_id)
 }
 
@@ -945,7 +1155,19 @@ pub(crate) fn remove_group_device(
     if group_id == MESH_GROUP_LEGACY_ID {
         return Err("legacy mesh group does not support removing devices".to_string());
     }
-    let mut store = load_store(&app)?;
+    append_app_log(
+        &app,
+        "info",
+        &format!("mesh_device_remove_started group_id={group_id} device_id={device_id}"),
+    );
+    let mut store = load_store(&app).map_err(|error| {
+        append_app_log(
+            &app,
+            "error",
+            &format!("mesh_device_remove_failed group_id={group_id} device_id={device_id} stage=load_store error={error}"),
+        );
+        error
+    })?;
     let removed_fingerprint = {
         let group = store
             .settings
@@ -953,12 +1175,28 @@ pub(crate) fn remove_group_device(
             .groups
             .iter_mut()
             .find(|group| group.group_id == group_id)
-            .ok_or_else(|| "mesh group not found".to_string())?;
+            .ok_or_else(|| "mesh group not found".to_string())
+            .map_err(|error| {
+                append_app_log(
+                    &app,
+                    "warn",
+                    &format!("mesh_device_remove_failed group_id={group_id} device_id={device_id} stage=resolve_group error={error}"),
+                );
+                error
+            })?;
         let index = group
             .authorized_devices
             .iter()
             .position(|device| device.id == device_id)
-            .ok_or_else(|| "device not found in mesh group".to_string())?;
+            .ok_or_else(|| "device not found in mesh group".to_string())
+            .map_err(|error| {
+                append_app_log(
+                    &app,
+                    "warn",
+                    &format!("mesh_device_remove_failed group_id={group_id} device_id={device_id} stage=resolve_device error={error}"),
+                );
+                error
+            })?;
         group
             .authorized_devices
             .remove(index)
@@ -971,6 +1209,8 @@ pub(crate) fn remove_group_device(
         .iter_mut()
         .find(|group| group.group_id == group_id)
     {
+        let permission_removed =
+            file_sharing::revoke_file_device_access(group, &device_id);
         group.credential_grants.retain(|grant| {
             grant.bound_device_id.as_deref() != Some(device_id.as_str())
                 && removed_fingerprint
@@ -978,13 +1218,30 @@ pub(crate) fn remove_group_device(
                     .map(|fingerprint| grant.fingerprint != fingerprint)
                     .unwrap_or(true)
         });
+        append_app_log(
+            &app,
+            "info",
+            &format!("mesh_device_file_access_removed group_id={group_id} device_id={device_id} permission_removed={permission_removed}"),
+        );
     }
     push_event(
         &mut store,
         "info",
         &format!("设备已从分享组移除：{group_id} / {device_id}"),
     );
-    save_store(&app, &store)?;
+    save_store(&app, &store).map_err(|error| {
+        append_app_log(
+            &app,
+            "error",
+            &format!("mesh_device_remove_failed group_id={group_id} device_id={device_id} stage=persist error={error}"),
+        );
+        error
+    })?;
+    append_app_log(
+        &app,
+        "info",
+        &format!("mesh_device_removed group_id={group_id} device_id={device_id}"),
+    );
     group_status(app, group_id)
 }
 
@@ -1279,6 +1536,10 @@ fn import_group_payload(
             runtime: MeshGroupRuntimeState::default(),
             credential_grants: Vec::new(),
             encrypted_local_device_credential: None,
+            file_shares: Vec::new(),
+            file_access_devices: Vec::new(),
+            encrypted_ai_file_token: None,
+            ai_file_token_revoked: false,
             legacy_compat: false,
         });
     }
@@ -1289,6 +1550,16 @@ fn import_group_payload(
         .iter_mut()
         .find(|group| group.group_id == group_id)
         .ok_or_else(|| "mesh group not found".to_string())?;
+    if reset_revoked_group_device_file_access(group, &payload.device_id) {
+        append_app_log(
+            &app,
+            "info",
+            &format!(
+                "mesh_device_reimport_file_access_cleared group_id={group_id} device_id={}",
+                payload.device_id
+            ),
+        );
+    }
     group.name = payload.network_name.clone();
     group.encrypted_network_secret = Some(encrypt_secret(payload.network_secret.as_bytes(), &key)?);
     group.enabled = true;
@@ -1359,6 +1630,15 @@ fn import_group_payload(
         imported_nodes,
         message: "mesh group share code imported".to_string(),
     })
+}
+
+fn reset_revoked_group_device_file_access(group: &mut MeshShareGroup, device_id: &str) -> bool {
+    let was_revoked = group
+        .authorized_devices
+        .iter()
+        .find(|device| device.id == device_id)
+        .is_some_and(|device| !device.trusted || device.revoked_at.is_some());
+    was_revoked && file_sharing::revoke_file_device_access(group, device_id)
 }
 
 pub(crate) fn list_devices(app: AppHandle) -> Result<Vec<MeshDeviceView>, String> {
@@ -1497,7 +1777,7 @@ pub(crate) fn sync_group_now(
     }
     let store = load_store(&app)?;
     let key = load_master_key(&app)?;
-    let online_device_ids = build_group_status(&store, &group_id)?
+    let online_device_ids = build_group_status(&store, &group_id, &key)?
         .devices
         .into_iter()
         .filter(|device| device.online)
@@ -2462,7 +2742,11 @@ fn mesh_group_views(store: &AppStore) -> Vec<MeshGroupView> {
         .collect()
 }
 
-fn build_group_status(store: &AppStore, group_id: &str) -> Result<MeshGroupStatus, String> {
+fn build_group_status(
+    store: &AppStore,
+    group_id: &str,
+    key: &[u8; 32],
+) -> Result<MeshGroupStatus, String> {
     let group = store
         .settings
         .mesh
@@ -2492,7 +2776,39 @@ fn build_group_status(store: &AppStore, group_id: &str) -> Result<MeshGroupStatu
         local_device_id: local_device_id(),
         local_device_name: local_device_name(),
         routing_base_url,
+        file_access: Some(group_file_access_status(
+            group_id,
+            group,
+            runtime.virtual_ipv4.as_deref(),
+            store.settings.routing.port,
+            key,
+        )),
+        file_access_device_ids: group.file_access_devices.clone(),
     })
+}
+
+fn group_file_access_status(
+    group_id: &str,
+    group: &MeshShareGroup,
+    virtual_ipv4: Option<&str>,
+    port: u16,
+    _key: &[u8; 32],
+) -> MeshFileAccessStatus {
+    let host = virtual_ipv4.unwrap_or("127.0.0.1");
+    let base_url = format!("http://{host}:{port}");
+    let ai_access_enabled = !group.ai_file_token_revoked && group.encrypted_ai_file_token.is_some();
+    MeshFileAccessStatus {
+        shares: group.file_shares.iter().map(|share| MeshFileShareView {
+            id: share.id.clone(),
+            name: share.name.clone(),
+            kind: share.kind.clone(),
+            added_at: share.added_at.clone(),
+        }).collect(),
+        ai_access_enabled,
+        ai_http_url: format!("{base_url}/mesh/files"),
+        ai_mcp_url: format!("{base_url}/mcp?groupId={}", urlencoding::encode(group_id)),
+        ai_token: None,
+    }
 }
 
 fn group_device_view(
@@ -4647,6 +4963,10 @@ pub(crate) fn migrate_settings(settings: &mut MeshSettings) -> bool {
         runtime: MeshGroupRuntimeState::default(),
         credential_grants: Vec::new(),
         encrypted_local_device_credential: settings.encrypted_local_device_credential.clone(),
+        file_shares: Vec::new(),
+        file_access_devices: Vec::new(),
+        encrypted_ai_file_token: None,
+        ai_file_token_revoked: false,
         legacy_compat: true,
     });
     true
@@ -4691,6 +5011,7 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::file_sharing::*;
 
     #[test]
     fn mesh_share_payload_round_trips() {
@@ -4740,6 +5061,10 @@ mod tests {
             runtime: MeshGroupRuntimeState::default(),
             credential_grants: Vec::new(),
             encrypted_local_device_credential: None,
+            file_shares: Vec::new(),
+            file_access_devices: Vec::new(),
+            encrypted_ai_file_token: None,
+            ai_file_token_revoked: false,
             legacy_compat: false,
         };
         let groups = vec![existing];
@@ -4881,5 +5206,599 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].status, "up");
         assert!(nodes[0].address.contains("node.example.com"));
+    }
+
+    #[test]
+    fn shared_file_listing_and_path_validation_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("shared");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("notes.txt"), "hello").unwrap();
+        let nested = folder.join("reports");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("quarterly.md"), "quarterly data").unwrap();
+        let key = [7u8; 32];
+        let group = MeshShareGroup {
+            group_id: "group-test".to_string(),
+            name: "test".to_string(),
+            encrypted_network_secret: None,
+            nodes: Vec::new(),
+            authorized_devices: Vec::new(),
+            enabled: true,
+            auto_start: false,
+            sync_scope: MeshSyncScope::default(),
+            virtual_cidr: "10.126.126.0/24".to_string(),
+            listen_port: EASYTIER_DEFAULT_PORT,
+            socks5_port: MESH_GROUP_SOCKS5_PORT_BASE,
+            runtime: MeshGroupRuntimeState::default(),
+            credential_grants: Vec::new(),
+            encrypted_local_device_credential: None,
+            file_shares: vec![MeshFileShare {
+                id: "share-test".to_string(),
+                name: "shared".to_string(),
+                kind: "directory".to_string(),
+                path: folder.to_string_lossy().into_owned(),
+                added_at: now_string(),
+            }],
+            file_access_devices: Vec::new(),
+            encrypted_ai_file_token: Some(encrypt_secret(b"test-token", &key).unwrap()),
+            ai_file_token_revoked: false,
+            legacy_compat: false,
+        };
+
+        let entries = list_shared_files(&group, "share-test", "").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry.name == "notes.txt" && entry.size == 5));
+        assert!(entries.iter().any(|entry| entry.name == "reports" && entry.kind == "directory"));
+        assert!(safe_shared_path(&group, "share-test", "../outside.txt").is_err());
+        assert!(safe_shared_path(&group, "share-test", "missing.txt").is_err());
+        assert!(safe_shared_path(&group, "unknown-share", "").is_err());
+        let local_download = temp.path().join("local-download.txt");
+        fs::write(&local_download, "previous complete file").unwrap();
+        assert_eq!(copy_shared_file_to(&folder.join("notes.txt"), &local_download).unwrap(), 5);
+        assert_eq!(fs::read_to_string(&local_download).unwrap(), "hello");
+        assert_eq!(
+            fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".local-download.txt."))
+                .count(),
+            0
+        );
+        let streamed_download = temp.path().join("streamed-download.txt");
+        let mut remote_body = std::io::Cursor::new(b"remote bytes".to_vec());
+        assert_eq!(stream_download_to(&mut remote_body, &streamed_download).unwrap(), 12);
+        assert_eq!(fs::read_to_string(&streamed_download).unwrap(), "remote bytes");
+        assert!(stream_download_to(&mut std::io::Cursor::new(Vec::<u8>::new()), Path::new("relative.txt")).is_err());
+        assert_eq!(call_mcp_file_tool(&group, "read_shared_file", &serde_json::json!({"shareId":"share-test","path":"notes.txt"})).unwrap(), "hello");
+        assert!(call_mcp_file_tool(&group, "read_shared_file", &serde_json::json!({"shareId":"share-test","path":"../outside.txt"})).is_err());
+        let search = call_mcp_file_tool(&group, "search_shared_files", &serde_json::json!({"shareId":"share-test","query":"quarterly"})).unwrap();
+        assert!(search.contains("quarterly.md"));
+        let listed = call_mcp_file_tool(&group, "list_shared_items", &serde_json::json!({})).unwrap();
+        assert!(listed.contains("share-test"));
+        assert!(!listed.contains(&folder.to_string_lossy().to_string()));
+        assert!(call_mcp_file_tool(&group, "unknown", &serde_json::json!({})).is_err());
+        let oversized_text = folder.join("oversized.txt");
+        fs::write(&oversized_text, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        let oversized_relative = oversized_text
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let oversized_error = call_mcp_file_tool(
+            &group,
+            "read_shared_file",
+            &serde_json::json!({"shareId":"share-test","path":oversized_relative}),
+        )
+        .unwrap_err();
+        assert!(oversized_error.contains("1 MiB MCP read limit"));
+        assert!(ai_file_token_matches(&group, &key, "Bearer test-token"));
+        assert!(!ai_file_token_matches(&group, &key, "Bearer wrong-token"));
+        let mut revoked_group = group.clone();
+        revoked_group.ai_file_token_revoked = true;
+        assert!(!ai_file_token_matches(&revoked_group, &key, "Bearer test-token"));
+        let status = group_file_access_status("group-test", &group, Some("10.126.126.1"), 15722, &key);
+        assert!(status.ai_mcp_url.contains("groupId=group-test"));
+        assert!(status.ai_http_url.ends_with("/mesh/files"));
+        assert!(!serde_json::to_string(&status).unwrap().contains(&folder.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn old_mesh_group_data_defaults_new_file_sharing_fields() {
+        let group: MeshShareGroup = serde_json::from_value(serde_json::json!({
+            "groupId": "old-group",
+            "name": "Old group"
+        })).unwrap();
+        assert!(group.file_shares.is_empty());
+        assert!(group.file_access_devices.is_empty());
+        assert!(group.encrypted_ai_file_token.is_none());
+        assert!(!group.ai_file_token_revoked);
+    }
+
+    #[test]
+    fn reimporting_a_revoked_group_device_does_not_restore_its_file_permission() {
+        let mut group: MeshShareGroup = serde_json::from_value(serde_json::json!({
+            "groupId": "group-test",
+            "name": "test",
+            "authorizedDevices": [{
+                "id": "device-test",
+                "name": "device",
+                "trusted": false,
+                "revokedAt": "2026-11-02T00:00:00Z"
+            }],
+            "fileAccessDevices": ["device-test"]
+        }))
+        .unwrap();
+
+        assert!(reset_revoked_group_device_file_access(
+            &mut group,
+            "device-test"
+        ));
+        assert!(group.file_access_devices.is_empty());
+        assert!(!reset_revoked_group_device_file_access(
+            &mut group,
+            "device-test"
+        ));
+    }
+
+    #[test]
+    fn remote_file_requests_encode_paths_and_include_device_credentials() {
+        let client = Client::new();
+        let request = remote_file_request(
+            &client,
+            "http://10.126.126.2:15722",
+            "group-a",
+            "device-secret",
+            "device-a",
+            MESH_FILES_PATH,
+            Some("share-a"),
+            Some("folder/report #1.txt"),
+        ).build().unwrap();
+        let query = request.url().query_pairs().collect::<BTreeMap<_, _>>();
+        assert_eq!(query.get("groupId").map(|value| value.as_ref()), Some("group-a"));
+        assert_eq!(query.get("shareId").map(|value| value.as_ref()), Some("share-a"));
+        assert_eq!(query.get("path").map(|value| value.as_ref()), Some("folder/report #1.txt"));
+        assert_eq!(request.headers().get(MESH_HELLO_DEVICE_ID_HEADER).unwrap(), "device-a");
+        assert_eq!(request.headers().get(MESH_DEVICE_CREDENTIAL_HEADER).unwrap(), "device-secret");
+    }
+
+    #[test]
+    fn mesh_file_api_source_is_limited_to_loopback_or_group_cidr() {
+        assert!(ip_is_local_or_in_group("127.0.0.1".parse().unwrap(), "10.126.126.0/24"));
+        assert!(ip_is_local_or_in_group("10.126.126.42".parse().unwrap(), "10.126.126.0/24"));
+        assert!(!ip_is_local_or_in_group("10.126.127.42".parse().unwrap(), "10.126.126.0/24"));
+        assert!(ip_is_local_or_in_group("::1".parse().unwrap(), "10.126.126.0/24"));
+        assert!(!ip_is_local_or_in_group("10.126.126.42".parse().unwrap(), "bad-cidr"));
+    }
+
+    fn call_file_http_api(group: MeshShareGroup, key: [u8; 32], target: &str, token: Option<&str>) -> (u16, Vec<u8>) {
+        call_file_http_api_with_group_header(group, key, target, token, None)
+    }
+
+    fn call_file_http_api_with_group_header(
+        group: MeshShareGroup,
+        key: [u8; 32],
+        target: &str,
+        token: Option<&str>,
+        group_header: Option<&str>,
+    ) -> (u16, Vec<u8>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = tiny_http::Server::from_listener(listener, None).unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let target = target.to_string();
+        let server_thread = std::thread::spawn(move || {
+            let request = server.recv().unwrap();
+            let bearer = request_header(&request, "Authorization").unwrap_or_default();
+            let authorized = ai_file_token_matches(&group, &key, &bearer);
+            handle_file_request_with_auth(None, request, "group-test", &group, authorized, false).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(address).unwrap();
+        let auth_header = token.map(|token| format!("Authorization: Bearer {token}\r\n")).unwrap_or_default();
+        let group_header = group_header
+            .map(|group_id| format!("{MESH_GROUP_ID_HEADER}: {group_id}\r\n"))
+            .unwrap_or_default();
+        write!(stream, "GET {target} HTTP/1.1\r\nHost: localhost\r\n{auth_header}{group_header}Connection: close\r\n\r\n").unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        server_thread.join().unwrap();
+
+        let header_end = response.windows(4).position(|window| window == b"\r\n\r\n").unwrap();
+        let headers = std::str::from_utf8(&response[..header_end]).unwrap();
+        let status = headers.lines().next().unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, response[header_end + 4..].to_vec())
+    }
+
+    fn call_mcp_http_api(group: MeshShareGroup, key: [u8; 32], body: &Value, token: Option<&str>) -> (u16, Vec<u8>) {
+        let body = serde_json::to_vec(body).unwrap();
+        call_mcp_http_api_payload(group, key, &body, token)
+    }
+
+    fn call_mcp_http_api_payload(
+        group: MeshShareGroup,
+        key: [u8; 32],
+        body: &[u8],
+        token: Option<&str>,
+    ) -> (u16, Vec<u8>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = tiny_http::Server::from_listener(listener, None).unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let request = server.recv().unwrap();
+            let bearer = request_header(&request, "Authorization").unwrap_or_default();
+            let authorized = ai_file_token_matches(&group, &key, &bearer);
+            handle_mcp_request_with_auth(None, request, "group-test", &group, authorized).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(address).unwrap();
+        let auth_header = token.map(|token| format!("Authorization: Bearer {token}\r\n")).unwrap_or_default();
+        write!(stream, "POST /mcp?groupId=group-test HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{auth_header}Connection: close\r\n\r\n", body.len()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        server_thread.join().unwrap();
+
+        let header_end = response.windows(4).position(|window| window == b"\r\n\r\n").unwrap();
+        let headers = std::str::from_utf8(&response[..header_end]).unwrap();
+        let status = headers.lines().next().unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, response[header_end + 4..].to_vec())
+    }
+
+    fn spawn_mock_socks5_proxy(target: std::net::SocketAddr) -> (String, std::thread::JoinHandle<(String, u16)>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut greeting = [0u8; 2];
+            client.read_exact(&mut greeting).unwrap();
+            let mut methods = vec![0u8; greeting[1] as usize];
+            client.read_exact(&mut methods).unwrap();
+            assert_eq!(greeting[0], 5);
+            assert!(methods.contains(&0));
+            client.write_all(&[5, 0]).unwrap();
+
+            let mut header = [0u8; 4];
+            client.read_exact(&mut header).unwrap();
+            assert_eq!(header[0], 5);
+            assert_eq!(header[1], 1);
+            let host = match header[3] {
+                1 => {
+                    let mut address = [0u8; 4];
+                    client.read_exact(&mut address).unwrap();
+                    std::net::Ipv4Addr::from(address).to_string()
+                }
+                3 => {
+                    let mut length = [0u8; 1];
+                    client.read_exact(&mut length).unwrap();
+                    let mut address = vec![0u8; length[0] as usize];
+                    client.read_exact(&mut address).unwrap();
+                    String::from_utf8(address).unwrap()
+                }
+                4 => {
+                    let mut address = [0u8; 16];
+                    client.read_exact(&mut address).unwrap();
+                    std::net::Ipv6Addr::from(address).to_string()
+                }
+                other => panic!("unexpected SOCKS5 address type {other}"),
+            };
+            let mut port = [0u8; 2];
+            client.read_exact(&mut port).unwrap();
+            let requested_port = u16::from_be_bytes(port);
+            let mut upstream = TcpStream::connect(target).unwrap();
+            client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+
+            let mut client_reader = client.try_clone().unwrap();
+            let mut upstream_writer = upstream.try_clone().unwrap();
+            let upload = std::thread::spawn(move || std::io::copy(&mut client_reader, &mut upstream_writer));
+            let _ = std::io::copy(&mut upstream, &mut client);
+            let _ = upload.join();
+            (host, requested_port)
+        });
+        (format!("socks5h://{proxy_address}"), worker)
+    }
+
+    #[test]
+    fn file_http_api_lists_downloads_and_rejects_unauthorized_requests() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("http-share");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("report.txt"), b"HTTP file payload").unwrap();
+        let key = [9u8; 32];
+        let group = MeshShareGroup {
+            group_id: "group-test".to_string(),
+            name: "HTTP integration".to_string(),
+            encrypted_network_secret: None,
+            nodes: Vec::new(),
+            authorized_devices: Vec::new(),
+            enabled: true,
+            auto_start: false,
+            sync_scope: MeshSyncScope::default(),
+            virtual_cidr: "10.126.126.0/24".to_string(),
+            listen_port: EASYTIER_DEFAULT_PORT,
+            socks5_port: MESH_GROUP_SOCKS5_PORT_BASE,
+            runtime: MeshGroupRuntimeState::default(),
+            credential_grants: Vec::new(),
+            encrypted_local_device_credential: None,
+            file_shares: vec![MeshFileShare {
+                id: "share-test".to_string(),
+                name: "http-share".to_string(),
+                kind: "directory".to_string(),
+                path: folder.to_string_lossy().into_owned(),
+                added_at: now_string(),
+            }],
+            file_access_devices: Vec::new(),
+            encrypted_ai_file_token: Some(encrypt_secret(b"http-test-token", &key).unwrap()),
+            ai_file_token_revoked: false,
+            legacy_compat: false,
+        };
+
+        let (status, body) = call_file_http_api(group.clone(), key, "/mesh/files/shares?groupId=group-test", Some("http-test-token"));
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("share-test"));
+        let (status, body) = call_file_http_api(group.clone(), key, "/mesh/files?groupId=group-test&shareId=share-test", Some("http-test-token"));
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("report.txt"));
+        let (status, body) = call_file_http_api(group.clone(), key, "/mesh/files/download?groupId=group-test&shareId=share-test&path=report.txt", Some("http-test-token"));
+        assert_eq!(status, 200);
+        assert_eq!(body, b"HTTP file payload");
+        let (status, _) = call_file_http_api(group.clone(), key, "/mesh/files/shares?groupId=group-test", None);
+        assert_eq!(status, 403);
+        let (status, _) = call_file_http_api(group.clone(), key, "/mesh/files/shares?groupId=group-test", Some("wrong-token"));
+        assert_eq!(status, 403);
+        let (status, _) = call_file_http_api_with_group_header(
+            group.clone(),
+            key,
+            "/mesh/files/shares?groupId=group-test",
+            Some("http-test-token"),
+            Some("another-group"),
+        );
+        assert_eq!(status, 403);
+        let (status, _) = call_file_http_api(group.clone(), key, "/mesh/files/download?groupId=group-test&shareId=share-test", Some("http-test-token"));
+        assert_eq!(status, 400);
+        let (status, _) = call_file_http_api(group.clone(), key, "/mesh/files/unknown?groupId=group-test", Some("http-test-token"));
+        assert_eq!(status, 404);
+        let (status, _) = call_file_http_api(group, key, "/mesh/files/download?groupId=group-test&shareId=share-test&path=..%2Fsecret.txt", Some("http-test-token"));
+        assert_eq!(status, 422);
+    }
+
+    #[test]
+    fn mcp_http_api_initializes_lists_tools_and_calls_file_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("mcp-share");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("brief.txt"), b"MCP content").unwrap();
+        let key = [11u8; 32];
+        let group = MeshShareGroup {
+            group_id: "group-test".to_string(),
+            name: "MCP integration".to_string(),
+            encrypted_network_secret: None,
+            nodes: Vec::new(),
+            authorized_devices: Vec::new(),
+            enabled: true,
+            auto_start: false,
+            sync_scope: MeshSyncScope::default(),
+            virtual_cidr: "10.126.126.0/24".to_string(),
+            listen_port: EASYTIER_DEFAULT_PORT,
+            socks5_port: MESH_GROUP_SOCKS5_PORT_BASE,
+            runtime: MeshGroupRuntimeState::default(),
+            credential_grants: Vec::new(),
+            encrypted_local_device_credential: None,
+            file_shares: vec![MeshFileShare {
+                id: "share-test".to_string(),
+                name: "mcp-share".to_string(),
+                kind: "directory".to_string(),
+                path: folder.to_string_lossy().into_owned(),
+                added_at: now_string(),
+            }],
+            file_access_devices: Vec::new(),
+            encrypted_ai_file_token: Some(encrypt_secret(b"mcp-test-token", &key).unwrap()),
+            ai_file_token_revoked: false,
+            legacy_compat: false,
+        };
+
+        let (status, body) = call_mcp_http_api(group.clone(), key, &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"}), Some("mcp-test-token"));
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("2025-03-26"));
+        let (status, body) = call_mcp_http_api(group.clone(), key, &serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}), Some("mcp-test-token"));
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("read_shared_file"));
+        let (status, body) = call_mcp_http_api(group.clone(), key, &serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_shared_file","arguments":{"shareId":"share-test","path":"brief.txt"}}}), Some("mcp-test-token"));
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("MCP content"));
+        let (status, body) = call_mcp_http_api(group.clone(), key, &serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_shared_items","arguments":{"groupId":"another-group"}}}), Some("mcp-test-token"));
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("isError"));
+        let (status, _) = call_mcp_http_api(group.clone(), key, &serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/list"}), None);
+        assert_eq!(status, 401);
+        let (status, body) = call_mcp_http_api(
+            group.clone(),
+            key,
+            &serde_json::json!({"jsonrpc":"2.0","id":6,"method":"unknown/method"}),
+            Some("mcp-test-token"),
+        );
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("-32601"));
+        let (status, _) = call_mcp_http_api(
+            group.clone(),
+            key,
+            &serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            Some("mcp-test-token"),
+        );
+        assert_eq!(status, 202);
+        let (status, body) = call_mcp_http_api(
+            group.clone(),
+            key,
+            &serde_json::json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unknown_tool","arguments":{}}}),
+            Some("mcp-test-token"),
+        );
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().contains("isError"));
+        let (status, body) = call_mcp_http_api_payload(
+            group.clone(),
+            key,
+            b"{invalid json",
+            Some("mcp-test-token"),
+        );
+        assert_eq!(status, 400);
+        assert!(String::from_utf8(body).unwrap().contains("-32700"));
+        let oversized_request = vec![b'x'; 64 * 1024 + 1];
+        let (status, _) = call_mcp_http_api_payload(
+            group,
+            key,
+            &oversized_request,
+            Some("mcp-test-token"),
+        );
+        assert_eq!(status, 413);
+    }
+
+    #[test]
+    fn remote_mesh_file_client_lists_and_pulls_with_device_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("remote-share");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("payload.bin"), b"remote mesh payload").unwrap();
+        let key = [13u8; 32];
+        let group = MeshShareGroup {
+            group_id: "group-test".to_string(),
+            name: "Remote pull integration".to_string(),
+            encrypted_network_secret: None,
+            nodes: Vec::new(),
+            authorized_devices: vec![MeshDevice {
+                id: "requesting-device".to_string(),
+                name: "requesting device".to_string(),
+                address: None,
+                last_seen_at: None,
+                trusted: true,
+                sync_scope: MeshSyncScope::default(),
+                allowed_sync_scope: None,
+                auto_account_sync: false,
+                encrypted_routing_api_key: None,
+                encrypted_mesh_credential: Some(encrypt_secret(b"device-credential", &key).unwrap()),
+                credential_fingerprint: None,
+                revoked_at: None,
+            }],
+            enabled: true,
+            auto_start: false,
+            sync_scope: MeshSyncScope::default(),
+            virtual_cidr: "10.126.126.0/24".to_string(),
+            listen_port: EASYTIER_DEFAULT_PORT,
+            socks5_port: MESH_GROUP_SOCKS5_PORT_BASE,
+            runtime: MeshGroupRuntimeState::default(),
+            credential_grants: Vec::new(),
+            encrypted_local_device_credential: None,
+            file_shares: vec![MeshFileShare {
+                id: "share-test".to_string(),
+                name: "remote-share".to_string(),
+                kind: "directory".to_string(),
+                path: folder.to_string_lossy().into_owned(),
+                added_at: now_string(),
+            }],
+            file_access_devices: vec!["requesting-device".to_string()],
+            encrypted_ai_file_token: None,
+            ai_file_token_revoked: false,
+            legacy_compat: false,
+        };
+        let mut server_store = AppStore::default();
+        server_store.settings.mesh.groups.push(group.clone());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = tiny_http::Server::from_listener(listener, None).unwrap();
+        let base_url = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let server_group = group.clone();
+        let server_thread = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let request = server.recv().unwrap();
+                let authorized = group_file_device_request_authorized(
+                    &request,
+                    &server_store,
+                    &server_group,
+                    &key,
+                );
+                handle_file_request_with_auth(None, request, "group-test", &server_group, false, authorized).unwrap();
+            }
+        });
+
+        let client = Client::new();
+        let shares_url = format!("{MESH_FILES_PATH}/shares");
+        let response = remote_file_request(&client, &base_url, "group-test", "device-credential", "requesting-device", &shares_url, None, None).send().unwrap();
+        assert!(response.status().is_success());
+        #[derive(Deserialize)]
+        struct Shares { shares: Vec<MeshFileShareView> }
+        let shares = response.json::<Shares>().unwrap().shares;
+        assert_eq!(shares.len(), 1);
+        let share_id = shares[0].id.clone();
+        assert_eq!(share_id, "share-test");
+        let relative = "payload.bin";
+        let response = remote_file_request(&client, &base_url, "group-test", "device-credential", "requesting-device", MESH_FILES_PATH, Some(&share_id), Some("")).send().unwrap();
+        assert!(response.status().is_success());
+        #[derive(Deserialize)]
+        struct Files { files: Vec<MeshFileEntry> }
+        let files = response.json::<Files>().unwrap().files;
+        assert_eq!(files[0].name, relative);
+
+        let mut response = remote_file_request(&client, &base_url, "group-test", "device-credential", "requesting-device", &format!("{MESH_FILES_PATH}/download"), Some(&share_id), Some(&relative)).send().unwrap();
+        assert!(response.status().is_success());
+        let destination = temp.path().join("received.bin");
+        assert_eq!(stream_download_to(&mut response, &destination).unwrap(), b"remote mesh payload".len() as u64);
+        assert_eq!(fs::read(destination).unwrap(), b"remote mesh payload");
+
+        let denied = remote_file_request(&client, &base_url, "group-test", "wrong-credential", "requesting-device", &shares_url, None, None).send().unwrap();
+        assert_eq!(denied.status().as_u16(), 403);
+        let mut mismatched_group_request = remote_file_request(
+            &client,
+            &base_url,
+            "group-test",
+            "device-credential",
+            "requesting-device",
+            &shares_url,
+            None,
+            None,
+        )
+        .build()
+        .unwrap();
+        mismatched_group_request.headers_mut().insert(
+            MESH_GROUP_ID_HEADER,
+            "another-group".parse().unwrap(),
+        );
+        let mismatched_group = client.execute(mismatched_group_request).unwrap();
+        assert_eq!(mismatched_group.status().as_u16(), 403);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn remote_mesh_http_client_routes_virtual_host_through_socks5() {
+        let target_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_address = target_listener.local_addr().unwrap();
+        let target_server = tiny_http::Server::from_listener(target_listener, None).unwrap();
+        let target_thread = std::thread::spawn(move || {
+            let request = target_server.recv().unwrap();
+            assert_eq!(request.url().split('?').next(), Some("/mesh/files/shares"));
+            assert!(request.url().contains("groupId=group-test"));
+            request.respond(Response::from_string(r#"{"shares":[]}"#)).unwrap();
+        });
+        let (proxy_url, proxy_thread) = spawn_mock_socks5_proxy(target_address);
+        let client = build_remote_file_http_client(Some(&proxy_url)).unwrap();
+        let base_url = format!("http://mesh-device.local:{}", target_address.port());
+        let mut request = remote_file_request(
+            &client,
+            &base_url,
+            "group-test",
+            "device-credential",
+            "requesting-device",
+            &format!("{MESH_FILES_PATH}/shares"),
+            None,
+            None,
+        ).build().unwrap();
+        request.headers_mut().insert("connection", "close".parse().unwrap());
+        let response = client.execute(request).unwrap();
+        assert!(response.status().is_success());
+        #[derive(Deserialize)]
+        struct Shares { shares: Vec<MeshFileShareView> }
+        assert!(response.json::<Shares>().unwrap().shares.is_empty());
+        drop(client);
+        assert_eq!(proxy_thread.join().unwrap(), ("mesh-device.local".to_string(), target_address.port()));
+        target_thread.join().unwrap();
     }
 }

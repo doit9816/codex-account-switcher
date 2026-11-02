@@ -232,6 +232,19 @@ export type MeshGroupStatus = {
   localDeviceId: string;
   localDeviceName: string;
   routingBaseUrl?: string;
+  fileAccess?: MeshFileAccessStatus;
+  fileAccessDeviceIds: string[];
+};
+
+export type MeshFileShare = { id: string; name: string; kind: "file" | "directory"; addedAt: string };
+export type MeshFileShareView = { id: string; name: string; kind: "file" | "directory"; addedAt: string };
+export type MeshFileEntry = { id: string; name: string; kind: "file" | "directory"; size: number; modifiedAt?: string };
+export type MeshFileAccessStatus = {
+  shares: MeshFileShareView[];
+  aiAccessEnabled: boolean;
+  aiHttpUrl: string;
+  aiMcpUrl: string;
+  aiToken?: string | null;
 };
 
 export type MeshSettings = {

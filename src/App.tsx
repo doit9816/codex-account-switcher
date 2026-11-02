@@ -2489,6 +2489,7 @@ export default function App() {
           onSyncGroup={syncMeshGroup}
           onCreateGroupShare={createMeshGroupShare}
           onSaveGroupScope={saveMeshGroupScope}
+          onGroupFilesChanged={setMeshGroupStatus}
         />
       ) : activePage === "settings" ? (
         <>
