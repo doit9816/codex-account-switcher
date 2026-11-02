@@ -2394,6 +2394,40 @@ async fn switch_profile(
     }
     append_switch_diagnostic(&app, &switch_id, &profile_id, "final_store_save_start", "");
     save_store(&app, &store)?;
+    if !codex_running {
+        append_switch_diagnostic(
+            &app,
+            &switch_id,
+            &profile_id,
+            "codex_launch_after_switch_start",
+            "client was not running before switch",
+        );
+        let launch_snapshot = detect_codex_launch_target(&path);
+        match relaunch_codex_processes(&launch_snapshot, Some(&store.settings.probe_proxy)) {
+            Ok(()) => {
+                append_switch_diagnostic(
+                    &app,
+                    &switch_id,
+                    &profile_id,
+                    "codex_launch_after_switch_done",
+                    format!("launch_kind={:?}", launch_snapshot.launch_kind()),
+                );
+                restart_message = Some("账号已切换并打开 Codex/ChatGPT".to_string());
+            }
+            Err(error) => {
+                append_switch_diagnostic(
+                    &app,
+                    &switch_id,
+                    &profile_id,
+                    "codex_launch_after_switch_failed",
+                    &error,
+                );
+                restart_message = Some(format!(
+                    "账号已切换，但无法自动打开 Codex/ChatGPT：{error}。请手动启动应用。"
+                ));
+            }
+        }
+    }
     append_switch_diagnostic(&app, &switch_id, &profile_id, "done", "");
 
     Ok(SwitchResult {
@@ -4556,6 +4590,97 @@ impl CodexProcessSnapshot {
         self.processes
             .iter()
             .find_map(|process| process.executable_path.as_deref())
+    }
+}
+
+#[cfg(windows)]
+fn detect_codex_launch_target(_codex_home: &Path) -> CodexProcessSnapshot {
+    let desktop_paths = [
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Programs\\Codex\\Codex.exe")),
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("Programs\\ChatGPT\\ChatGPT.exe")),
+    ];
+    if let Some(path) = desktop_paths
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file())
+    {
+        return CodexProcessSnapshot {
+            processes: vec![CodexProcessInfo {
+                pid: 0,
+                executable_path: Some(path),
+                launch_kind: CodexLaunchKind::Desktop,
+            }],
+        };
+    }
+    CodexProcessSnapshot {
+        processes: vec![CodexProcessInfo {
+            pid: 0,
+            executable_path: None,
+            launch_kind: CodexLaunchKind::Desktop,
+        }],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_codex_launch_target(_codex_home: &Path) -> CodexProcessSnapshot {
+    for path in [
+        PathBuf::from("/Applications/Codex.app"),
+        PathBuf::from("/Applications/ChatGPT.app"),
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Applications/Codex.app"))
+            .unwrap_or_default(),
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Applications/ChatGPT.app"))
+            .unwrap_or_default(),
+    ] {
+        if path.is_dir() {
+            return CodexProcessSnapshot {
+                processes: vec![CodexProcessInfo {
+                    pid: 0,
+                    executable_path: Some(path),
+                    launch_kind: CodexLaunchKind::Desktop,
+                }],
+            };
+        }
+    }
+    CodexProcessSnapshot {
+        processes: vec![CodexProcessInfo {
+            pid: 0,
+            executable_path: None,
+            launch_kind: CodexLaunchKind::Desktop,
+        }],
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn detect_codex_launch_target(codex_home: &Path) -> CodexProcessSnapshot {
+    for candidate in [
+        PathBuf::from("/usr/bin/codex"),
+        PathBuf::from("/usr/local/bin/codex"),
+        codex_home.join("bin/codex"),
+    ] {
+        if candidate.is_file() {
+            return CodexProcessSnapshot {
+                processes: vec![CodexProcessInfo {
+                    pid: 0,
+                    executable_path: Some(candidate),
+                    launch_kind: CodexLaunchKind::Cli,
+                }],
+            };
+        }
+    }
+    CodexProcessSnapshot {
+        processes: vec![CodexProcessInfo {
+            pid: 0,
+            executable_path: None,
+            launch_kind: CodexLaunchKind::Cli,
+        }],
     }
 }
 
