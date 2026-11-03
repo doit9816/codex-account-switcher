@@ -2,6 +2,9 @@ import {
   CheckCircle2,
   Copy,
   Download,
+  MoreHorizontal,
+  File,
+  Folder,
   KeyRound,
   LoaderCircle,
   Link2,
@@ -17,6 +20,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Button, Card, Checkbox, Input, Switch, Collapse, Dropdown, Tree, Breadcrumb, Modal, Alert, type TreeDataNode } from "antd";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { logAppError } from "../../api/appLog";
 import {
@@ -31,7 +36,12 @@ import {
   type Profile,
 } from "../../types";
 import { getMeshI18n, meshText } from "../../i18n/mesh";
+
+function isTauriRuntime() {
+  return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+}
 import { StatusPill } from "../StatusPill";
+import { RemoteFilesPanel } from "./RemoteFilesPanel";
 import {
   buildMeshGroupRevokeDeviceInput,
   buildMeshRevokeDeviceInput,
@@ -119,6 +129,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const [syncingDeviceId, setSyncingDeviceId] = useState<string | null>(null);
   const [removeConfirmDeviceId, setRemoveConfirmDeviceId] = useState<string | null>(null);
   const [selectedShareId, setSelectedShareId] = useState<string>("");
+  const [expandedLocalKeys, setExpandedLocalKeys] = useState<string[]>([]);
   const [localFiles, setLocalFiles] = useState<MeshFileEntry[]>([]);
   const [remoteFiles, setRemoteFiles] = useState<MeshFileEntry[]>([]);
   const [filePath, setFilePath] = useState("");
@@ -126,6 +137,37 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const [remoteShares, setRemoteShares] = useState<MeshFileShareView[]>([]);
   const [remoteShareId, setRemoteShareId] = useState("");
   const [remoteFilePath, setRemoteFilePath] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, { bytes: number; total?: number }>>({});
+  const [localDirectoryNodes, setLocalDirectoryNodes] = useState<Record<string, MeshFileEntry[]>>({});
+  const [remoteDirectoryNodes, setRemoteDirectoryNodes] = useState<Record<string, MeshFileEntry[]>>({});
+  const [expandedRemoteKeys, setExpandedRemoteKeys] = useState<string[]>([]);
+  const createLocalTreeNodes = (files: MeshFileEntry[]): TreeDataNode[] => files.map((file) => ({
+    key: file.id,
+    title: <Dropdown trigger={["click", "contextMenu"]} menu={{ items: file.kind === "directory"
+      ? [{ key: "browse", label: t.browseFiles, onClick: () => void browseShare(selectedShareId, file.id) }]
+      : [{ key: "download", label: t.downloadFile, icon: <Download size={14} />, onClick: () => void downloadSharedFile(file) }] }}>
+      <span className="mesh-file-tree-title">{file.name}{file.kind === "file" && <small>{formatFileSize(file.size)}</small>}</span>
+    </Dropdown>,
+    isLeaf: file.kind !== "directory",
+    icon: file.kind === "directory" ? <Folder size={16} /> : <File size={16} />,
+    children: localDirectoryNodes[file.id] ? createLocalTreeNodes(localDirectoryNodes[file.id]) : undefined,
+  }));
+  function formatFileSize(bytes: number) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  }
+
+  const localDirectoryTree = useMemo(() => createLocalTreeNodes(localFiles), [localFiles, localDirectoryNodes, selectedShareId, t]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<{ transferId: string; bytes: number; total?: number }>("mesh-file-download-progress", (event) => {
+      setDownloadProgress((current) => ({ ...current, [event.payload.transferId]: event.payload }));
+    }).then((stop) => { unlisten = stop; });
+    return () => unlisten?.();
+  }, []);
 
   const statusDevices = props.groupStatus?.devices ?? props.status?.devices ?? [];
   const localDeviceId = props.groupStatus?.localDeviceId ?? props.status?.localDeviceId;
@@ -285,10 +327,22 @@ export function MeshSharePage(props: MeshSharePageProps) {
     if (!activeGroup) return;
     setSelectedShareId(shareId);
     setFilePath(relative);
+    setLocalDirectoryNodes({});
+    setExpandedLocalKeys([]);
     await runAction(async () => {
       const files = await invoke<MeshFileEntry[]>("mesh_group_list_files", { groupId: activeGroup.id, shareId, path: relative });
       setLocalFiles(files);
     });
+  }
+
+  async function loadLocalDirectory(shareId: string, directoryId: string) {
+    if (localDirectoryNodes[directoryId] || !activeGroup) return;
+    const files = await invoke<MeshFileEntry[]>("mesh_group_list_files", {
+      groupId: activeGroup.id,
+      shareId,
+      path: directoryId,
+    });
+    setLocalDirectoryNodes((current) => ({ ...current, [directoryId]: files }));
   }
 
   async function downloadSharedFile(file: MeshFileEntry) {
@@ -318,9 +372,21 @@ export function MeshSharePage(props: MeshSharePageProps) {
     if (!activeGroup || !remoteDevice) return;
     setRemoteShareId(shareId);
     setRemoteFilePath(path);
+    setRemoteDirectoryNodes({});
+    setExpandedRemoteKeys([]);
     await runAction(async () => {
       const files = await invoke<MeshFileEntry[]>("mesh_group_remote_files", { groupId: activeGroup.id, deviceId: remoteDevice.id, shareId, path });
       setRemoteFiles(files);
+    });
+  }
+
+  async function loadRemoteDirectory(shareId: string, path: string) {
+    if (!activeGroup || !remoteDevice) return [];
+    return invoke<MeshFileEntry[]>("mesh_group_remote_files", {
+      groupId: activeGroup.id,
+      deviceId: remoteDevice.id,
+      shareId,
+      path,
     });
   }
 
@@ -328,9 +394,12 @@ export function MeshSharePage(props: MeshSharePageProps) {
     if (!activeGroup || !remoteDevice || !remoteShareId) return;
     const destination = await saveDialog({ defaultPath: file.name, title: t.downloadFile });
     if (!destination) return;
+    const transferId = `${activeGroup.id}:${remoteDevice.id}:${remoteShareId}:${file.id}`;
+    setDownloadProgress((current) => ({ ...current, [transferId]: { bytes: 0, total: file.size } }));
     await runAction(() => invoke("mesh_group_download_remote_file", {
       groupId: activeGroup.id, deviceId: remoteDevice.id, shareId: remoteShareId, path: file.id, destination,
     }));
+    setDownloadProgress((current) => { const next = { ...current }; delete next[transferId]; return next; });
   }
 
   function submitCreateGroup() {
@@ -370,7 +439,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
 
   return (
     <section className="mesh-page mesh-groups-page">
-      <section className="panel mesh-groups-panel">
+      <Card className="mesh-groups-panel" size="small">
         <div className="panel-header mesh-groups-header">
           <div>
             <span className="section-kicker">{t.pageKicker}</span>
@@ -378,21 +447,22 @@ export function MeshSharePage(props: MeshSharePageProps) {
             <p>{t.groupsHint}</p>
           </div>
           <div className="action-row mesh-group-header-actions">
-            <button
-              className="icon-button"
+            <Button
+              icon={<Plus size={17} />}
               onClick={() => { setActionError(""); setGroupName(""); setDialog("create"); }}
               disabled={props.busy || !props.onCreateGroup}
               title={!props.onCreateGroup ? t.waitingForGroupCommands : undefined}
             >
-              <Plus size={17} /> {t.createGroup}
-            </button>
-            <button
-              className="icon-button primary"
+              {t.createGroup}
+            </Button>
+            <Button
+              type="primary"
+              icon={<Link2 size={17} />}
               onClick={() => { setActionError(""); setGroupName(""); setShareCode(""); setDialog("join"); }}
               disabled={props.busy}
             >
-              <Link2 size={17} /> {t.joinGroup}
-            </button>
+              {t.joinGroup}
+            </Button>
           </div>
         </div>
 
@@ -405,8 +475,8 @@ export function MeshSharePage(props: MeshSharePageProps) {
                 className={`mesh-group-card ${selected ? "active" : ""}`}
                 key={group.id}
               >
-                <button
-                  type="button"
+                <Button
+                  htmlType="button"
                   className="mesh-group-card-select"
                   onClick={() => selectGroup(group)}
                   disabled={props.busy || (!selected && !props.onSelectGroup)}
@@ -423,73 +493,87 @@ export function MeshSharePage(props: MeshSharePageProps) {
                   </span>
                   </span>
                   {selected && <CheckCircle2 className="mesh-group-card-check" size={18} />}
-                </button>
-                {selected && <button className={`icon-button ${groupRunning ? "" : "primary"}`} onClick={toggleGroupRuntime} disabled={props.busy || runtimePending || !groupActionAvailable}>
+                </Button>
+                {selected && <Button className={`icon-button ${groupRunning ? "" : "primary"}`} onClick={toggleGroupRuntime} disabled={props.busy || runtimePending || !groupActionAvailable}>
                   {groupRunning ? <Square size={16} /> : <Play size={16} />}
                   {runtimePending ? t.processing : groupRunning ? t.stopGroup : t.startGroup}
-                </button>}
+                </Button>}
               </div>
             );
           })}
         </div>
 
-      </section>
+      </Card>
 
       {(actionError || activeGroup?.lastError || props.status?.lastError) && (
         <div className="mesh-warning">{actionError || activeGroup?.lastError || props.status?.lastError}</div>
       )}
 
       {activeGroup && (
-        <section className="panel mesh-share-panel mesh-files-panel">
+        <Card className="panel mesh-share-panel mesh-files-panel">
           <div className="panel-header">
             <div><h2>{t.filesTitle}</h2><p>{t.filesHint}</p></div>
             <div className="mesh-file-header-actions">
-              <button className="icon-button" onClick={() => void addFileShare(false)} disabled={props.busy}><Plus size={16} /> {t.addFiles}</button>
-              <button className="icon-button" onClick={() => void addFileShare(true)} disabled={props.busy}><Plus size={16} /> {t.addFolder}</button>
+              <Button icon={<Plus size={16} />} onClick={() => void addFileShare(false)} disabled={props.busy}>{t.addFiles}</Button>
+              <Button type="primary" icon={<Plus size={16} />} onClick={() => void addFileShare(true)} disabled={props.busy}>{t.addFolder}</Button>
             </div>
           </div>
           {(props.groupStatus?.fileAccess?.shares ?? []).map((share) => (
-            <div className="mesh-shared-file-row" key={share.id}>
-              <span className="mesh-shared-file-info"><strong title={share.name}>{share.name}</strong><small>{share.kind === "directory" ? t.addFolder : t.addFiles}</small></span>
-              <div className="mesh-shared-file-actions"><button className="mini-button" onClick={() => void browseShare(share.id)}>{t.browseFiles}</button>
-              <button className="mini-button danger" onClick={() => void runAction(async () => {
-                const status = await invoke<MeshGroupStatus>("mesh_group_remove_file_share", { groupId: activeGroup.id, shareId: share.id });
-                props.onGroupFilesChanged?.(status);
-                if (selectedShareId === share.id) {
-                  setSelectedShareId("");
-                  setFilePath("");
-                  setLocalFiles([]);
-                }
-              })}>{t.removeShare}</button></div>
+            <div className="mesh-share-entry" key={share.id}>
+              <div className="mesh-shared-file-row">
+                <span className="mesh-shared-file-info"><span className="mesh-share-name"><span className="mesh-file-type-icon">{share.kind === "directory" ? <Folder size={17} /> : <File size={17} />}</span><strong title={share.name}>{share.name}</strong></span></span>
+                <div className="mesh-shared-file-actions"><Dropdown trigger={["click", "contextMenu"]} menu={{ items: [
+                  { key: "browse", label: t.browseFiles, onClick: () => void browseShare(share.id) },
+                  { key: "remove", label: t.removeShare, danger: true, onClick: () => void runAction(async () => {
+                    const status = await invoke<MeshGroupStatus>("mesh_group_remove_file_share", { groupId: activeGroup.id, shareId: share.id });
+                    props.onGroupFilesChanged?.(status);
+                    if (selectedShareId === share.id) {
+                      setSelectedShareId("");
+                      setFilePath("");
+                      setLocalFiles([]);
+                      setLocalDirectoryNodes({});
+                    }
+                  }) },
+                ] }}><Button aria-label={t.filesTitle} title={t.filesTitle} icon={<MoreHorizontal size={16} />} /></Dropdown>
+                <Button className="mini-button" onClick={() => void browseShare(share.id)}>{t.browseFiles}</Button></div>
+              </div>
+              {selectedShareId === share.id && <div className="mesh-shared-file-list">
+                {filePath && <Breadcrumb className="mesh-file-breadcrumb" items={filePath.split("/").filter(Boolean).map((segment, index, segments) => ({ title: <Button type="link" onClick={() => void browseShare(share.id, segments.slice(0, index + 1).join("/"))}>{segment}</Button> }))} />}
+                <Tree.DirectoryTree
+                  className="mesh-local-directory-tree"
+                  showLine={{ showLeafIcon: false }}
+                  showIcon
+                  expandedKeys={expandedLocalKeys}
+                  onExpand={(keys) => setExpandedLocalKeys(keys.map(String))}
+                  treeData={localDirectoryTree}
+                  loadData={(node) => loadLocalDirectory(share.id, String(node.key))}
+                />
+              </div>}
             </div>
           ))}
           {(props.groupStatus?.fileAccess?.shares.length ?? 0) === 0 && <div className="account-empty">{t.noFileShares}</div>}
-          {selectedShareId && <div className="mesh-shared-file-list">
-            {filePath && <button className="mini-button" onClick={() => void browseShare(selectedShareId, filePath.split("/").slice(0, -1).join("/"))}>↑ ..</button>}
-            {localFiles.map((file) => <div className="mesh-shared-file-row" key={file.id}>
-              <span><strong>{file.name}</strong><small>{file.kind === "file" ? `${file.size} ${t.fileSize}` : file.kind}</small></span>
-              {file.kind === "directory" ? <button className="mini-button" onClick={() => void browseShare(selectedShareId, file.id)}>{t.browseFiles}</button> : <button className="mini-button" onClick={() => void downloadSharedFile(file)}><Download size={14} /> {t.downloadFile}</button>}
-            </div>)}
-          </div>}
-          <div className="mesh-file-settings"><label className="checkline mesh-device-auto-sync">
-            <input type="checkbox" checked={props.groupStatus?.fileAccess?.aiAccessEnabled === true} onChange={(event) => void runAction(async () => {
-              const status = await invoke<MeshGroupStatus>("mesh_group_set_ai_file_access", { groupId: activeGroup.id, enabled: event.target.checked });
+              <div className="mesh-file-settings"><label className="checkline mesh-device-auto-sync">
+            <Switch checked={props.groupStatus?.fileAccess?.aiAccessEnabled === true} onChange={(checked) => void runAction(async () => {
+              const status = await invoke<MeshGroupStatus>("mesh_group_set_ai_file_access", { groupId: activeGroup.id, enabled: checked });
               props.onGroupFilesChanged?.(status);
             })} />
             <span><strong>{t.aiFileAccess}</strong><small>{t.aiFileAccessHint}</small></span>
           </label>
-          {props.groupStatus?.fileAccess?.aiToken && <div className="mesh-ai-endpoints">
-            <strong>{t.aiCredentials}</strong><small>{t.aiCredentialWarning}</small><small>{t.aiAccessInstructions}</small>
+          {props.groupStatus?.fileAccess?.aiAccessEnabled && <div className="mesh-ai-endpoints">
+            <Alert type="info" showIcon message={t.aiAccessInstructions} description={t.aiCredentialWarning} />
+            {props.groupStatus.fileAccess.aiToken && <>
+            <strong>{t.aiCredentials}</strong>
             <code>HTTP: {props.groupStatus.fileAccess.aiHttpUrl}?groupId={encodeURIComponent(activeGroup.id)}</code>
             <code>MCP: {props.groupStatus.fileAccess.aiMcpUrl}</code>
-            <textarea className="mesh-payload-box" readOnly value={props.groupStatus.fileAccess.aiToken} aria-label={t.aiCredentials} />
+            <Input.TextArea className="mesh-payload-box" readOnly value={props.groupStatus.fileAccess.aiToken} aria-label={t.aiCredentials} autoSize={{ minRows: 2, maxRows: 4 }} />
+            </>}
           </div>}</div>
-        </section>
+        </Card>
       )}
 
       <div className="mesh-columns mesh-group-content">
         <div className="mesh-column">
-          <section className="panel mesh-device-panel">
+          <Card className="panel mesh-device-panel">
             <div className="panel-header">
               <div>
                 <h2>{t.deviceListTitle}</h2>
@@ -528,8 +612,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                       />
                       {device.allowedSyncScope.accounts && (
                         <label className="checkline mesh-device-auto-sync">
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={device.autoAccountSync === true}
                             disabled={revoked || !device.trusted}
                             onChange={(event) => saveDeviceSelection(device, device.syncScope, event.target.checked)}
@@ -541,8 +624,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         </label>
                       )}
                       <label className="checkline mesh-device-auto-sync">
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={props.groupStatus?.fileAccessDeviceIds?.includes(device.id) === true}
                           disabled={revoked || !device.trusted}
                           onChange={(event) => void runAction(async () => {
@@ -554,54 +636,54 @@ export function MeshSharePage(props: MeshSharePageProps) {
                       </label>
                     </div>
                     <div className="mesh-device-actions">
-                      <button
-                        type="button"
+                      <Button
+                        htmlType="button"
                         className="mini-button"
                         onClick={() => void browseDeviceShares(device)}
                         disabled={props.busy || !device.online || revoked || !device.trusted}
                         title={!device.online ? t.deviceStatusOffline : undefined}
                       >
                         <Download size={14} /> {t.browseFiles}
-                      </button>
-                      <button
-                        type="button"
+                      </Button>
+                      <Button
+                        htmlType="button"
                         className="mini-button"
                         onClick={() => syncDevice(device.id)}
                         disabled={props.busy || syncingDeviceId !== null || !device.online || revoked || !device.trusted || !syncAvailable}
                         title={!device.online ? t.deviceStatusOffline : undefined}
                       >
                         {syncingDeviceId === device.id ? <LoaderCircle className="button-spinner" size={14} /> : <RefreshCcw size={14} />} {syncingDeviceId === device.id ? t.processing : t.syncDevice}
-                      </button>
-                      <button
-                        type="button"
+                      </Button>
+                      <Button
+                        htmlType="button"
                         className={`mini-button ${revoked ? "" : "danger"}`}
                         onClick={() => toggleDeviceRevocation(device)}
                         disabled={props.busy || !revokeAvailable}
                       >
                         {revoked ? <CheckCircle2 size={14} /> : <ShieldOff size={14} />}
                         {revoked ? t.restoreDevice : t.revokeDevice}
-                      </button>
+                      </Button>
                       {removeAvailable && (
                         <>
                           {removing && (
-                            <button
-                              type="button"
+                            <Button
+                              htmlType="button"
                               className="mini-button"
                               onClick={() => setRemoveConfirmDeviceId(null)}
                               disabled={props.busy}
                             >
                               <X size={14} /> {t.cancel}
-                            </button>
+                            </Button>
                           )}
-                          <button
-                            type="button"
+                          <Button
+                            htmlType="button"
                             className="mini-button danger"
                             onClick={() => removeDevice(device)}
                             disabled={props.busy}
                             title={removing ? t.removeDeviceConfirm : t.removeDevice}
                           >
                             <Trash2 size={14} /> {removing ? t.confirmRemoveDevice : t.removeDevice}
-                          </button>
+                          </Button>
                         </>
                       )}
                     </div>
@@ -610,32 +692,19 @@ export function MeshSharePage(props: MeshSharePageProps) {
               })}
               {groupDevices.length === 0 && <div className="account-empty">{t.noGroupDevices}</div>}
             </div>
-            <button
+            <Button
               className="icon-button"
               onClick={() => syncDevice()}
               disabled={props.busy || syncingDeviceId !== null || !syncAvailable || !groupDevices.some((device) => device.online && device.trusted && !deviceIsRevoked(device))}
             >
               {syncingDeviceId === "__all__" ? <LoaderCircle className="button-spinner" size={17} /> : <RefreshCcw size={17} />} {syncingDeviceId === "__all__" ? t.processing : t.syncAllDevices}
-            </button>
-          </section>
-          {remoteDevice && <section className="panel mesh-share-panel mesh-remote-files-panel">
-            <div className="panel-header"><div><h2>{remoteDevice.name} · {t.filesTitle}</h2><p>{t.filesHint}</p></div></div>
-            {remoteShares.map((share) => <div className="mesh-shared-file-row" key={share.id}>
-              <span><strong>{share.name}</strong><small>{share.kind}</small><code>{share.id}</code></span>
-              <button className="mini-button" onClick={() => void browseRemoteFiles(share.id)}>{t.browseFiles}</button>
-            </div>)}
-            {remoteShareId && <div className="mesh-shared-file-list">
-              {remoteFilePath && <button className="mini-button" onClick={() => void browseRemoteFiles(remoteShareId, remoteFilePath.split("/").slice(0, -1).join("/"))}>↑ ..</button>}
-              {remoteFiles.map((file) => <div className="mesh-shared-file-row" key={file.id}>
-                <span><strong>{file.name}</strong><small>{file.kind === "file" ? `${file.size} ${t.fileSize}` : file.kind}</small></span>
-                {file.kind === "directory" ? <button className="mini-button" onClick={() => void browseRemoteFiles(remoteShareId, file.id)}>{t.browseFiles}</button> : <button className="mini-button" onClick={() => void downloadRemoteFile(file)}><Download size={14} /> {t.downloadFile}</button>}
-              </div>)}
-            </div>}
-          </section>}
+            </Button>
+          </Card>
+          {remoteDevice && activeGroup && <RemoteFilesPanel device={remoteDevice} groupId={activeGroup.id} shares={remoteShares} shareId={remoteShareId} path={remoteFilePath} files={remoteFiles} directoryNodes={remoteDirectoryNodes} expandedKeys={expandedRemoteKeys} progress={downloadProgress} onBrowse={(shareId, path) => void browseRemoteFiles(shareId, path)} onLoadDirectory={loadRemoteDirectory} onDirectoryLoaded={(key, children) => setRemoteDirectoryNodes((current) => ({ ...current, [key]: children }))} onExpandedKeysChange={setExpandedRemoteKeys} onDownload={(file) => void downloadRemoteFile(file)} />}
         </div>
 
         <div className="mesh-column">
-          <section className="panel mesh-share-panel mesh-code-panel">
+          <Card className="panel mesh-share-panel mesh-code-panel">
             <div className="panel-header">
               <div>
                 <h2>{t.sharingTitle}</h2>
@@ -649,7 +718,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
             </div>
             <ScopeEditor value={props.syncScope} onChange={changeShareScope} />
             <div className="action-row">
-              <button
+              <Button
                 className="icon-button primary"
                 onClick={() => {
                   if (activeGroup && canUseGroupCommands && props.onCreateGroupShare) {
@@ -661,23 +730,23 @@ export function MeshSharePage(props: MeshSharePageProps) {
                 disabled={props.busy || (canUseGroupCommands ? !props.onCreateGroupShare : false)}
               >
                 <KeyRound size={17} /> {t.createShareCode}
-              </button>
-              <button className="icon-button" onClick={() => void props.onCopyShare()} disabled={props.busy || !props.sharePayload.trim()}>
+              </Button>
+              <Button className="icon-button" onClick={() => void props.onCopyShare()} disabled={props.busy || !props.sharePayload.trim()}>
                 <Copy size={17} /> {t.copyOriginalShareCode}
-              </button>
+              </Button>
             </div>
-            <textarea
+            <Input.TextArea
               className="mesh-payload-box"
-              rows={props.sharePayload ? 3 : 1}
+              autoSize={{ minRows: props.sharePayload ? 3 : 1, maxRows: 6 }}
               value={props.sharePayload}
               readOnly
               placeholder={t.shareCodePlaceholder}
               aria-label={t.shareCodeLabel}
               spellCheck={false}
             />
-          </section>
+          </Card>
 
-          <section className="panel mesh-migration-panel">
+          <Card className="panel mesh-migration-panel">
             <div className="panel-header">
               <div>
                 <h2>{t.migrationTitle}</h2>
@@ -686,49 +755,43 @@ export function MeshSharePage(props: MeshSharePageProps) {
               <Download size={22} />
             </div>
             <div className="mesh-migration-options">
-              <input
-                type="password"
+              <Input.Password
                 value={props.migrationPassword}
                 onChange={(event) => props.onMigrationPasswordChange(event.target.value)}
                 placeholder={props.migrationUseMeshSecret ? t.groupCredentialPlaceholder : t.passwordPlaceholder}
                 disabled={props.migrationUseMeshSecret}
               />
               <label className="checkline">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={props.migrationUseMeshSecret}
                   onChange={(event) => props.onMigrationUseMeshSecretChange(event.target.checked)}
                 />
                 {t.useGroupCredential}
               </label>
               <label className="checkline">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={props.includeConversations}
                   onChange={(event) => props.onIncludeConversationsChange(event.target.checked)}
                 />
                 {t.includeConversations}
               </label>
               <label className="checkline">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={props.restoreConversations}
                   onChange={(event) => props.onRestoreConversationsChange(event.target.checked)}
                 />
                 {t.restoreConversations}
               </label>
             </div>
-            <details className="export-selector mesh-export-selector">
-              <summary><span>{t.migrationAccounts}</span><strong>{selectedProfiles.length}/{props.profiles.length}</strong></summary>
+            <Collapse className="export-selector mesh-export-selector" items={[{ key: "accounts", label: <><span>{t.migrationAccounts}</span><strong>{selectedProfiles.length}/{props.profiles.length}</strong></>, children: <>
               <div className="export-selector-actions">
-                <button type="button" className="mini-button" onClick={props.onSelectAllProfiles}>{t.selectAll}</button>
-                <button type="button" className="mini-button" onClick={props.onClearProfiles}>{t.clear}</button>
+                <Button size="small" onClick={props.onSelectAllProfiles}>{t.selectAll}</Button>
+                <Button size="small" onClick={props.onClearProfiles}>{t.clear}</Button>
               </div>
               <div className="export-account-list">
                 {props.profiles.map((profile) => (
                   <label className="export-account-row" key={profile.id}>
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={props.exportProfileIds.includes(profile.id)}
                       onChange={() => props.onToggleExportProfile(profile.id)}
                     />
@@ -739,53 +802,53 @@ export function MeshSharePage(props: MeshSharePageProps) {
                   </label>
                 ))}
               </div>
-            </details>
+            </> }]} />
             <div className="action-row">
-              <button className="icon-button primary" onClick={() => void props.onExportMigration()} disabled={props.busy || selectedProfiles.length === 0}>
+              <Button className="icon-button primary" onClick={() => void props.onExportMigration()} disabled={props.busy || selectedProfiles.length === 0}>
                 <Download size={17} /> {t.exportMigration}
-              </button>
-              <button className="icon-button" onClick={() => void props.onImportMigration()} disabled={props.busy}>
+              </Button>
+              <Button className="icon-button" onClick={() => void props.onImportMigration()} disabled={props.busy}>
                 <Upload size={17} /> {t.importMigration}
-              </button>
+              </Button>
             </div>
-          </section>
+          </Card>
         </div>
       </div>
 
       {dialog && (
-        <div className="update-dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}>
-          <section className="mesh-add-device-dialog mesh-join-group-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="update-dialog-head">
-              <div><span>{t.groupsTitle}</span><h2>{dialog === "create" ? t.createGroupTitle : t.joinGroupTitle}</h2></div>
-              <button className="notice-close" onClick={() => setDialog(null)} title={t.close}><X size={18} /></button>
-            </div>
+        <Modal
+          open
+          onCancel={() => setDialog(null)}
+          title={dialog === "create" ? t.createGroupTitle : t.joinGroupTitle}
+          width={560}
+          footer={null}
+        >
             <p className="mesh-add-device-hint">{dialog === "create" ? t.createGroupHint : t.joinGroupHint}</p>
             {dialog === "create" && (
               <label className="mesh-group-dialog-field">
                 <span>{t.groupNameLabel}</span>
-                <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder={t.groupNamePlaceholder} autoFocus />
+                <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder={t.groupNamePlaceholder} autoFocus />
               </label>
             )}
             {dialog === "join" && (
               <label className="mesh-group-dialog-field">
                 <span>{t.groupShareCodeLabel}</span>
-                <textarea className="mesh-payload-box" value={shareCode} onChange={(event) => setShareCode(event.target.value)} placeholder={t.groupShareCodePlaceholder} spellCheck={false} autoFocus />
+                <Input.TextArea className="mesh-payload-box" value={shareCode} onChange={(event) => setShareCode(event.target.value)} placeholder={t.groupShareCodePlaceholder} spellCheck={false} autoFocus rows={5} />
               </label>
             )}
             {actionError && <div className="mesh-warning">{actionError}</div>}
             <div className="update-dialog-actions">
-              <button className="icon-button" onClick={() => setDialog(null)}>{t.cancel}</button>
-              <button
+              <Button className="icon-button" onClick={() => setDialog(null)}>{t.cancel}</Button>
+              <Button
                 className="icon-button primary"
                 onClick={dialog === "create" ? submitCreateGroup : submitJoinGroup}
                 disabled={props.busy || (dialog === "create" ? !groupName.trim() : !shareCode.trim())}
               >
                 {dialog === "create" ? <Plus size={17} /> : <Link2 size={17} />}
                 {dialog === "create" ? t.create : t.join}
-              </button>
+              </Button>
             </div>
-          </section>
-        </div>
+        </Modal>
       )}
     </section>
   );
@@ -815,8 +878,7 @@ function ScopeEditor({
     <div className={`mesh-scope-editor ${compact ? "compact" : ""}`}>
       {options.map((option) => (
         <label className="checkline" key={option.key}>
-          <input
-            type="checkbox"
+          <Checkbox
             checked={value[option.key]}
             disabled={disabled || (allowed != null && !allowed[option.key])}
             onChange={(event) => onChange({ ...value, [option.key]: event.target.checked })}

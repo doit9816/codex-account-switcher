@@ -61,6 +61,9 @@ src-tauri/src/
 ## UI 规范
 
 - 这是桌面工具，不是营销页面；界面应紧凑、稳定、面向高频操作。
+- 新增或改造界面统一优先使用 Ant Design 的现成组件（如 Button、Card、Tree、Breadcrumb、Progress、Typography、Alert、Checkbox、Modal、Form）。先查组件库是否已有对应能力，尽量不要自建基础组件或重复实现交互与样式。
+- 按功能拆分页面、文件浏览、下载进度、设备管理等模块；页面只负责组合和必要状态，不把新业务逻辑继续堆进单个大组件或 `src/styles.css`。
+- 保留现有功能与多语言文案；逐步迁移旧界面，避免一次性替换造成回归。Ant Design 主题在应用级统一配置，局部样式只处理确有必要的布局。
 - 工具按钮优先使用 `lucide-react` 图标。
 - 卡片、弹窗、按钮中的文字不能溢出；必要时使用 `min-width: 0`、`text-overflow`、`overflow-wrap`。
 - 不要嵌套卡片，不要引入与现有风格割裂的一次性视觉主题。

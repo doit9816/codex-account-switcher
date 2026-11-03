@@ -13,6 +13,7 @@ import {
   Zap
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Button, Input, InputNumber, Select, Card } from "antd";
 import type { I18n } from "../../i18n";
 import { accountState, formatDate, formatSubscriptionValidity } from "../../profileUtils";
 import type { Profile, RoutingLogEntry, RoutingStatus } from "../../types";
@@ -179,31 +180,31 @@ export function RoutingPage({
     <>
       {selectedLog && <RoutingLogDialog log={selectedLog} onClose={() => setSelectedLog(null)} />}
       <section className="routing-page">
-        <div className="routing-hero panel">
+        <Card className="panel routing-hero">
           <div>
             <h2>路由 API</h2>
             <p>单一转发 API，按规则在本地账号池中选择上游账号。</p>
           </div>
           <StatusPill ok={!!status?.running} text={routingBusy ? "处理中..." : status?.running ? "运行中" : "已停止"} />
-        </div>
+        </Card>
 
         <section className="routing-columns">
           <div className="routing-column">
-            <div className="panel routing-settings-panel">
+            <Card className="panel routing-settings-panel">
             <div className="panel-header">
               <div>
                 <h2>服务设置</h2>
                 <p>{status?.baseUrl || `http://${host}:${port}/v1`}</p>
               </div>
-              <button
-                className="icon-button primary"
+              <Button
+                type="primary"
+                icon={<Power size={17} />}
                 onClick={() => void onToggleService()}
                 disabled={busy || routingBusy || fixedModeIncomplete}
                 title={t.routingServiceToggleHint}
               >
-                <Power size={17} />
                 {routingBusy ? "处理中..." : status?.running ? "停止" : "启动"}
-              </button>
+              </Button>
             </div>
 
             <div className="form-grid">
@@ -212,31 +213,28 @@ export function RoutingPage({
                   监听地址
                   <InfoTip text={t.routingListenHostHint} />
                 </span>
-                <input value={host} onChange={(event) => onHostChange(event.target.value)} />
+                <Input value={host} onChange={(event) => onHostChange(event.target.value)} />
               </label>
               <label>
                 <span className="field-label-with-tip">
                   端口
                   <InfoTip text={t.routingPortHint} />
                 </span>
-                <input type="number" min={1} max={65535} value={port} onChange={(event) => onPortChange(Number(event.target.value) || 15722)} />
+                <InputNumber min={1} max={65535} value={port} onChange={(value) => onPortChange(value || 15722)} style={{ width: "100%" }} />
               </label>
               <label>
                 <span className="field-label-with-tip">
                   粘性 TTL 秒
                   <InfoTip text={t.routingStickyTtlHint} />
                 </span>
-                <input type="number" min={60} value={stickyTtlSecs} onChange={(event) => onStickyTtlSecsChange(Number(event.target.value) || 3600)} />
+                <InputNumber min={60} value={stickyTtlSecs} onChange={(value) => onStickyTtlSecsChange(value || 3600)} style={{ width: "100%" }} />
               </label>
               <label className="routing-mode-field">
                 <span className="field-label-with-tip">
                   路由模式
                   <InfoTip text={t.routingModeHint} />
                 </span>
-                <select value={mode} onChange={(event) => onModeChange(event.target.value as "auto" | "fixed")}>
-                  <option value="auto">自动会话粘性</option>
-                  <option value="fixed">固定账号并兜底</option>
-                </select>
+                <Select value={mode} onChange={onModeChange} options={[{ value: "auto", label: "自动会话粘性" }, { value: "fixed", label: "固定账号并兜底" }]} />
               </label>
               {mode === "fixed" && (
                 <label>
@@ -244,12 +242,7 @@ export function RoutingPage({
                     固定账号
                     <InfoTip text={t.routingFixedAccountHint} />
                   </span>
-                  <select value={fixedProfileId} onChange={(event) => onFixedProfileIdChange(event.target.value)}>
-                    <option value="">未指定</option>
-                    {profiles.map((profile) => (
-                      <option value={profile.id} key={profile.id}>{profile.alias}</option>
-                    ))}
-                  </select>
+                  <Select value={fixedProfileId} onChange={onFixedProfileIdChange} options={[{ value: "", label: "未指定" }, ...profiles.map((profile) => ({ value: profile.id, label: profile.alias }))]} />
                 </label>
               )}
             </div>
@@ -258,26 +251,26 @@ export function RoutingPage({
             )}
 
             <div className="action-row">
-              <button
+              <Button
                 className="icon-button"
                 onClick={() => void onSaveSettings()}
                 disabled={busy || fixedModeIncomplete}
                 title={t.routingSaveSettingsHint}
               >
                 <ShieldCheck size={17} /> 保存设置
-              </button>
-              <button
+              </Button>
+              <Button
                 className="icon-button"
                 onClick={() => void onReloadStatus()}
                 disabled={busy}
                 title={t.routingRefreshStatusHint}
               >
                 <RefreshCcw size={17} /> 刷新状态
-              </button>
+              </Button>
             </div>
-            </div>
+            </Card>
 
-            <div className="panel">
+            <Card className="panel">
               <div className="panel-header">
                 <div>
                   <h2>账号池</h2>
@@ -285,13 +278,10 @@ export function RoutingPage({
                 </div>
                 <div className="routing-pool-tools">
                   <Gauge size={22} />
-                  <select value={poolSort} onChange={(event) => setPoolSort(event.target.value as RoutingPoolSort)}>
-                    <option value="route">路由顺序</option>
-                    <option value="priority">优先级</option>
-                    <option value="expiry">到期时间</option>
-                    <option value="connections">连接数</option>
-                    <option value="status">状态</option>
-                  </select>
+                  <Select value={poolSort} onChange={(value) => setPoolSort(value as RoutingPoolSort)} options={[
+                    { value: "route", label: "路由顺序" }, { value: "priority", label: "优先级" },
+                    { value: "expiry", label: "到期时间" }, { value: "connections", label: "连接数" }, { value: "status", label: "状态" },
+                  ]} />
                 </div>
               </div>
               <div className="routing-account-list">
@@ -309,35 +299,34 @@ export function RoutingPage({
                     </div>
                     <label className="routing-priority-control">
                       <span>优先级</span>
-                      <input
-                        type="number"
-                        value={priorityDrafts[profile.id] ?? String(profile.priority)}
-                        onChange={(event) => setPriorityDrafts((current) => ({ ...current, [profile.id]: event.target.value }))}
+                      <InputNumber
+                        value={Number(priorityDrafts[profile.id] ?? profile.priority)}
+                        onChange={(value) => setPriorityDrafts((current) => ({ ...current, [profile.id]: String(value ?? profile.priority) }))}
                       />
-                      <button
+                      <Button
                         className="mini-button"
                         onClick={() => void savePriority(profile)}
                         disabled={busy || Number(priorityDrafts[profile.id] ?? profile.priority) === profile.priority}
                       >
                         保存
-                      </button>
+                      </Button>
                     </label>
-                    <button
+                    <Button
                       className="mini-button primary"
                       onClick={() => void onFixProfile(profile.id)}
                       disabled={busy}
                       title={t.routingFixAccountHint}
                     >
                       固定
-                    </button>
+                    </Button>
                   </article>
                 ))}
               </div>
-            </div>
+            </Card>
           </div>
 
           <div className="routing-column">
-            <div className="panel routing-key-panel">
+            <Card className="panel routing-key-panel">
             <div className="panel-header">
               <div>
                 <h2>客户端配置</h2>
@@ -393,74 +382,74 @@ export function RoutingPage({
             <div className="routing-secret">
               <div className="routing-secret-head">
                 <span>API Key</span>
-                <button
+                <Button
                   className="mini-button icon-only"
-                  type="button"
+                  htmlType="button"
                   onClick={() => setShowAccessKey((current) => !current)}
                   disabled={!status?.accessKey}
                   title={showAccessKey ? t.hideApiKey : t.showApiKey}
                   aria-label={showAccessKey ? t.hideApiKey : t.showApiKey}
                 >
                   {showAccessKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
+                </Button>
               </div>
               <strong>{status?.accessKey ? (showAccessKey ? status.accessKey : "••••••••••••••••••••••••") : "未生成"}</strong>
             </div>
             <div className="action-row">
-              <button
+              <Button
                 className="icon-button"
                 onClick={() => void onCopyConfig()}
                 disabled={!status?.accessKey}
                 title={t.routingCopyConfigHint}
               >
                 <Copy size={17} /> 复制配置
-              </button>
-              <button
+              </Button>
+              <Button
                 className="icon-button"
                 onClick={() => void onRegenerateKey()}
                 disabled={busy}
                 title={t.routingRegenerateKeyHint}
               >
                 <KeyRound size={17} /> 重生成 Key
-              </button>
-              <button
+              </Button>
+              <Button
                 className="icon-button"
                 onClick={() => void onReloadStatus()}
                 disabled={busy}
                 title={t.routingSelfCheckHint}
               >
                 <RefreshCcw size={17} /> 自检接管
-              </button>
+              </Button>
             </div>
             <div className="action-row">
-              <button
+              <Button
                 className="icon-button primary"
                 onClick={() => void onApplyCodexConfig()}
                 disabled={busy || !status?.accessKey || fixedModeIncomplete}
                 title={t.routingTakeoverHint}
               >
                 <Zap size={17} /> {takeoverExpected && !takeoverConfigured ? "重新接管 Codex" : "一键接管 Codex"}
-              </button>
-              <button
+              </Button>
+              <Button
                 className="icon-button"
                 onClick={() => void onRestoreCodexConfig()}
                 disabled={busy || (!takeoverExpected && !takeoverConfigured)}
                 title={t.routingRestoreConfigHint}
               >
                 <RotateCcw size={17} /> 恢复配置
-              </button>
+              </Button>
             </div>
             <p className="routing-help-text">自动模式会按账号池排序选择新会话；同一会话在 TTL 内保持粘性。实际用了谁，看“最近实际命中”和下方请求日志。</p>
-            </div>
+            </Card>
 
-            <div className="panel">
+            <Card className="panel">
             <div className="panel-header">
               <div>
                 <h2>最近请求</h2>
                 <p>仅记录路由元数据，不记录提示词或响应正文。</p>
               </div>
               <div className="panel-header-actions">
-                <button
+                <Button
                   className="mini-button primary"
                   onClick={() => void testRequest()}
                   disabled={probeBusy || routingBusy || fixedModeIncomplete}
@@ -468,14 +457,14 @@ export function RoutingPage({
                 >
                   {probeBusy ? <LoaderCircle className="button-spinner" size={15} /> : <Zap size={15} />}
                   {probeBusy ? "测试中..." : "测试请求"}
-                </button>
+                </Button>
                 <FileText size={22} />
               </div>
             </div>
             <div className="routing-log-list">
               {pagedLogs.map((log, index) => (
-                <button
-                  type="button"
+                <Button
+                  htmlType="button"
                   className="routing-log-row"
                   key={`${log.ts}-${index}`}
                   onClick={() => setSelectedLog(log)}
@@ -494,7 +483,7 @@ export function RoutingPage({
                     {log.wireProtocol && <span>{log.wireProtocol}</span>}
                   </div>
                   <small className="routing-log-summary">{log.error || log.fallback || log.requestId || log.sessionHash || "点击查看详情"}</small>
-                </button>
+                </Button>
               ))}
               {recentLogs.length === 0 && (
                 <div className="routing-log-empty">
@@ -508,26 +497,26 @@ export function RoutingPage({
               <div className="routing-log-pagination">
                 <span>共 {recentLogs.length} 条 · 第 {logPage} / {logPageCount} 页</span>
                 <div>
-                  <button
+                  <Button
                     className="mini-button"
-                    type="button"
+                    htmlType="button"
                     disabled={logPage <= 1}
                     onClick={() => setLogPage((current) => Math.max(1, current - 1))}
                   >
                     上一页
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     className="mini-button"
-                    type="button"
+                    htmlType="button"
                     disabled={logPage >= logPageCount}
                     onClick={() => setLogPage((current) => Math.min(logPageCount, current + 1))}
                   >
                     下一页
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
-            </div>
+            </Card>
           </div>
         </section>
       </section>

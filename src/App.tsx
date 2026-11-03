@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { Button, Input, Switch, Select, Tabs, Alert, Modal, InputNumber, Collapse, Checkbox, Card } from "antd";
+
+function isTauriRuntime() {
+  return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+}
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { confirm as confirmDialog, open, save } from "@tauri-apps/plugin-dialog";
@@ -36,6 +41,7 @@ import { logAppError } from "./api/appLog";
 import { RoutingPage } from "./components/routing/RoutingPage";
 import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
 import { MeshSharePage } from "./components/mesh/MeshSharePage";
+import { AppNavigation } from "./components/AppNavigation";
 import { OpenCodeZenPreset, OPENCODE_ZEN_BASE_URL, OPENCODE_ZEN_FREE_MODELS } from "./components/OpenCodeZenPreset";
 import { ProfileRuleFields } from "./components/ProfileRuleFields";
 import { StatusPill } from "./components/StatusPill";
@@ -385,6 +391,7 @@ export default function App() {
   }, [oauthReauthProfileId]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     let unlistenCompleted: (() => void) | undefined;
     let unlistenTimeout: (() => void) | undefined;
     void listen<OAuthEvent>("codex-oauth-login-completed", (event) => {
@@ -589,6 +596,7 @@ export default function App() {
   }, [notice]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     void listen<string>("tray-action", (event) => {
       if (event.payload === "settings") {
@@ -1892,7 +1900,7 @@ export default function App() {
   function renderProfileActions(profile: Profile, needsReauthorization: boolean) {
     return (
       <>
-        <button
+        <Button
           className="mini-button icon-only"
           onClick={(event) => {
             event.stopPropagation();
@@ -1903,9 +1911,9 @@ export default function App() {
           aria-label={t.editAccount}
         >
           <Pencil size={14} />
-        </button>
+        </Button>
         {(profile.usage.availableResetCount || 0) > 0 && (
-          <button
+          <Button
             className="mini-button icon-only"
             onClick={(event) => {
               event.stopPropagation();
@@ -1916,10 +1924,10 @@ export default function App() {
             aria-label={t.useReset}
           >
             <RotateCcw size={14} />
-          </button>
+          </Button>
         )}
         {needsReauthorization && (
-          <button
+          <Button
             className="mini-button icon-only"
             onClick={(event) => {
               event.stopPropagation();
@@ -1930,9 +1938,9 @@ export default function App() {
             aria-label={t.reauthorize}
           >
             <KeyRound size={14} />
-          </button>
+          </Button>
         )}
-        <button
+        <Button
           className="mini-button icon-only"
           onClick={(event) => {
             event.stopPropagation();
@@ -1943,8 +1951,8 @@ export default function App() {
           aria-label={t.probeQuota}
         >
           <RefreshCcw size={14} />
-        </button>
-        <button
+        </Button>
+        <Button
           className="mini-button primary icon-only"
           onClick={(event) => {
             event.stopPropagation();
@@ -1955,9 +1963,9 @@ export default function App() {
           aria-label={profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? "固定到路由" : t.switch}
         >
           {profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? <Network size={14} /> : <Zap size={14} />}
-        </button>
+        </Button>
         {store?.settings.routing.appliedToCodex && (
-          <button
+          <Button
             className="mini-button icon-only"
             onClick={(event) => {
               event.stopPropagation();
@@ -1968,9 +1976,9 @@ export default function App() {
             aria-label="固定到路由"
           >
             <Network size={14} />
-          </button>
+          </Button>
         )}
-        <button
+        <Button
           className="mini-button danger icon-only"
           onClick={(event) => {
             event.stopPropagation();
@@ -1981,7 +1989,7 @@ export default function App() {
           aria-label={t.deleteAccount}
         >
           <Trash2 size={15} />
-        </button>
+        </Button>
       </>
     );
   }
@@ -2000,101 +2008,28 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <h1>CodexSwitcher</h1>
-          <p>{t.appSubtitle}</p>
-        </div>
-        <div className="topbar-actions">
-          <label className="language-select">
-            <span>{t.language}</span>
-            <select
-              value={languageSetting}
-              onChange={(event) => setLanguageSetting(event.target.value as LanguageSetting)}
-              title={t.language}
-            >
-              <option value="system">{t.followSystem}</option>
-              <option value="zh-CN">{languageLabels["zh-CN"]}</option>
-              <option value="en">{languageLabels.en}</option>
-              <option value="zh-TW">{languageLabels["zh-TW"]}</option>
-            </select>
-          </label>
-          <div className="page-tabs" role="tablist">
-            <button
-              className={`tab-button ${activePage === "dashboard" ? "active" : ""}`}
-              onClick={() => setActivePage("dashboard")}
-              role="tab"
-              aria-selected={activePage === "dashboard"}
-            >
-              <LayoutDashboard size={17} />
-              {t.dashboard}
-            </button>
-            <button
-              className={`tab-button ${activePage === "settings" ? "active" : ""}`}
-              onClick={() => setActivePage("settings")}
-              role="tab"
-              aria-selected={activePage === "settings"}
-            >
-              <Settings size={17} />
-              {t.settings}
-            </button>
-            <button
-              className={`tab-button ${activePage === "mesh" ? "active" : ""}`}
-              onClick={() => setActivePage("mesh")}
-              role="tab"
-              aria-selected={activePage === "mesh"}
-            >
-              <Share2 size={17} />
-              多设备共享
-            </button>
-            <button
-              className={`tab-button ${activePage === "routing" ? "active" : ""}`}
-              onClick={() => setActivePage("routing")}
-              role="tab"
-              aria-selected={activePage === "routing"}
-            >
-              <Network size={17} />
-              路由
-            </button>
-          </div>
-          <button className="icon-button primary" onClick={() => void refresh()} disabled={busy} title={t.refresh}>
-            <RefreshCcw size={18} />
-            {t.refresh}
-          </button>
-        </div>
-      </header>
+      <AppNavigation page={activePage} onPageChange={setActivePage} language={languageSetting} onLanguageChange={setLanguageSetting} labels={{ language: t.language, followSystem: t.followSystem, dashboard: t.dashboard, settings: t.settings, refresh: t.refresh, subtitle: t.appSubtitle }} languageLabels={languageLabels} busy={busy} onRefresh={() => void refresh()} />
 
       {notice && (
         <div className={`notice ${notice.kind}`} role="status" aria-live="polite">
           <span>{notice.text}</span>
-          <button className="notice-close" onClick={() => setNotice(null)} title={t.closeNotice}>
+          <Button className="notice-close" onClick={() => setNotice(null)} title={t.closeNotice}>
             <X size={15} />
-          </button>
+          </Button>
         </div>
       )}
 
       {showUpdateDialog && availableUpdate && (
-        <div className="update-dialog-backdrop" role="presentation">
-          <section
-            className="update-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="update-dialog-title"
-          >
-            <div className="update-dialog-head">
-              <div>
-                <span>{t.softwareUpdate}</span>
-                <h2 id="update-dialog-title">{t.updateAvailable}: {availableUpdate.version}</h2>
-              </div>
-              <button
-                className="notice-close"
-                onClick={() => setShowUpdateDialog(false)}
-                disabled={updateInstalling}
-                title={t.closeNotice}
-              >
-                <X size={18} />
-              </button>
-            </div>
+        <Modal
+          open
+          onCancel={() => { if (!updateInstalling) setShowUpdateDialog(false); }}
+          title={`${t.updateAvailable}: ${availableUpdate.version}`}
+          width={560}
+          footer={null}
+          closable={!updateInstalling}
+          maskClosable={!updateInstalling}
+          className="update-dialog"
+        >
             <div className="update-dialog-versions">
               <div><span>{t.currentVersion}</span><strong>{appVersion || "-"}</strong></div>
               <div><span>{t.updateAvailable}</span><strong>{availableUpdate.version}</strong></div>
@@ -2109,49 +2044,32 @@ export default function App() {
             )}
             <div className="update-dialog-actions">
               {!updateInstalled && (
-                <button className="icon-button" onClick={() => setShowUpdateDialog(false)} disabled={updateInstalling}>
+                <Button className="icon-button" onClick={() => setShowUpdateDialog(false)} disabled={updateInstalling}>
                   {t.closeNotice}
-                </button>
+                </Button>
               )}
               {!updateInstalled ? (
-                <button className="icon-button primary" onClick={() => void installAvailableUpdate()} disabled={updateInstalling}>
+                <Button className="icon-button primary" onClick={() => void installAvailableUpdate()} disabled={updateInstalling}>
                   <Download size={17} /> {t.downloadAndInstall}
-                </button>
+                </Button>
               ) : (
-                <button className="icon-button primary" onClick={() => void relaunch()}>
+                <Button className="icon-button primary" onClick={() => void relaunch()}>
                   <RotateCcw size={17} /> {t.relaunchNow}
-                </button>
+                </Button>
               )}
             </div>
-          </section>
-        </div>
+        </Modal>
       )}
 
       {showAddAccountDialog && (
-        <div className="update-dialog-backdrop" role="presentation">
-          <section className="add-account-dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
-            <div className="update-dialog-head">
-              <h2 id="add-account-title">{t.addAccount}</h2>
-              <button className="notice-close" onClick={closeAddAccountDialog} disabled={busy || oauthStatus === "exchanging"} title={t.closeNotice}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="add-account-tabs" role="tablist">
-              {([
-                ["oauth", t.oauthLogin],
-                ["json", t.tokenJson],
-                ["api", t.apiKeyAccount],
-                ["import", t.importAccount]
-              ] as const).map(([id, label]) => (
-                <button key={id} className={addAccountTab === id ? "active" : ""} onClick={() => selectAddAccountTab(id)} role="tab" aria-selected={addAccountTab === id} disabled={oauthStatus === "exchanging"}>
-                  {label}
-                </button>
-              ))}
-            </div>
+        <Modal title={t.addAccount} open={showAddAccountDialog} onCancel={closeAddAccountDialog} footer={null} width={760} closable={!busy && oauthStatus !== "exchanging"} maskClosable={!busy && oauthStatus !== "exchanging"}>
+            <Tabs activeKey={addAccountTab} onChange={(key) => selectAddAccountTab(key as typeof addAccountTab)} items={([
+              ["oauth", t.oauthLogin], ["json", t.tokenJson], ["api", t.apiKeyAccount], ["import", t.importAccount]
+            ] as const).map(([key, label]) => ({ key, label, disabled: oauthStatus === "exchanging" }))} />
             {addAccountTab !== "api" && (
               <label className="add-account-field">
                 {t.importAlias}
-                <input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder={t.importAlias} />
+                <Input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder={t.importAlias} />
               </label>
             )}
             {addAccountTab === "oauth" && (
@@ -2172,50 +2090,49 @@ export default function App() {
                     <label className="add-account-field">
                       {t.authorizationUrl}
                       <div className="oauth-url-row">
-                        <input value={oauthSession.authUrl} readOnly />
-                        <button className="mini-button" onClick={() => void copyOAuthUrl()}>{t.copyLink}</button>
-                        <button className="mini-button" onClick={() => void reopenOAuthUrl()}>{t.openAgain}</button>
+                        <Input value={oauthSession.authUrl} readOnly />
+                        <Button onClick={() => void copyOAuthUrl()}>{t.copyLink}</Button>
+                        <Button onClick={() => void reopenOAuthUrl()}>{t.openAgain}</Button>
                       </div>
                     </label>
                     <div className="oauth-callback-row">
-                      <input value={oauthCallbackInput} onChange={(event) => setOauthCallbackInput(event.target.value)} placeholder={t.manualCallback} disabled={oauthStatus === "exchanging"} />
-                      <button className="icon-button" onClick={() => void submitOAuthCallback()} disabled={!oauthCallbackInput.trim() || oauthStatus === "exchanging"}>{t.submitCallback}</button>
+                      <Input value={oauthCallbackInput} onChange={(event) => setOauthCallbackInput(event.target.value)} placeholder={t.manualCallback} disabled={oauthStatus === "exchanging"} />
+                      <Button className="icon-button" onClick={() => void submitOAuthCallback()} disabled={!oauthCallbackInput.trim() || oauthStatus === "exchanging"}>{t.submitCallback}</Button>
                     </div>
                     {oauthError && <div className="oauth-error">{oauthError}</div>}
                     <div className="oauth-action-row">
-                      {oauthStatus === "error" && <button className="icon-button primary" onClick={() => void completeNativeOAuth(oauthSession.loginId)}>{t.retryExchange}</button>}
-                      <button className="icon-button" onClick={() => void cancelNativeOAuth()} disabled={oauthStatus === "exchanging"}>{t.cancelOAuth}</button>
+                      {oauthStatus === "error" && <Button className="icon-button primary" onClick={() => void completeNativeOAuth(oauthSession.loginId)}>{t.retryExchange}</Button>}
+                      <Button className="icon-button" onClick={() => void cancelNativeOAuth()} disabled={oauthStatus === "exchanging"}>{t.cancelOAuth}</Button>
                     </div>
                   </>
                 ) : (
                   <>
                     {oauthError && <div className="oauth-error">{oauthError}</div>}
-                    <button className="icon-button primary wide-button" onClick={() => {
+                    <Button className="icon-button primary wide-button" onClick={() => {
                       setOauthReauthProfileId(null);
                       void beginNativeOAuth();
                     }} disabled={oauthStatus === "starting" || oauthStatus === "exchanging"}>
                       <KeyRound size={17} /> {t.startOAuthLogin}
-                    </button>
+                    </Button>
                   </>
                 )}
-                <details className="oauth-cli-fallback">
-                  <summary>{t.cliFallback}</summary>
+                <Collapse className="oauth-cli-fallback" items={[{ key: "cli", label: t.cliFallback, children: <>
                   <p>{t.cliFallbackHint}</p>
-                  <button className="icon-button wide-button" onClick={() => void startCliOAuthLogin()} disabled={busy}>
+                  <Button className="icon-button wide-button" onClick={() => void startCliOAuthLogin()} disabled={busy}>
                     <KeyRound size={17} /> {t.startCliLogin}
-                  </button>
-                  <button className="icon-button wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
+                  </Button>
+                  <Button className="icon-button wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
                     <CheckCircle2 size={17} /> {t.oauthImportDone}
-                  </button>
-                </details>
+                  </Button>
+                </> }]} />
               </div>
             )}
             {addAccountTab === "json" && (
               <div className="add-account-content">
-                <textarea className="auth-json-input" spellCheck={false} value={authJsonInput} onChange={(event) => setAuthJsonInput(event.target.value)} placeholder={t.authJsonPlaceholder} />
-                <button className="icon-button primary wide-button" onClick={() => void addAuthJsonAccount()} disabled={busy || !authJsonInput.trim()}>
+                <Input.TextArea className="auth-json-input" spellCheck={false} value={authJsonInput} onChange={(event) => setAuthJsonInput(event.target.value)} placeholder={t.authJsonPlaceholder} rows={9} />
+                <Button className="icon-button primary wide-button" onClick={() => void addAuthJsonAccount()} disabled={busy || !authJsonInput.trim()}>
                   <FileText size={17} /> {t.addFromJson}
-                </button>
+                </Button>
               </div>
             )}
             {addAccountTab === "api" && (
@@ -2232,115 +2149,91 @@ export default function App() {
                     setApiKey(preset.apiKey);
                   }}
                 />
-                <label>{t.apiModel}<input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" /></label>
-                <label>{t.apiKey}<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
-                <label>{t.importAlias}<input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="可空，默认使用模型名" /></label>
-                <details className="api-advanced-settings">
-                  <summary>高级设置（可选）</summary>
-                  <div className="api-advanced-grid">
-                    <label>{t.providerId}<input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="自动生成" /></label>
-                    <label>{t.apiBaseUrl}<input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="默认 https://api.openai.com/v1" /></label>
+                <label>{t.apiModel}<Input value={apiModel} onChange={(event) => setApiModel(event.target.value)} placeholder="gpt-5.4" /></label>
+                <label>{t.apiKey}<Input.Password value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label>
+                <label>{t.importAlias}<Input value={apiProviderName} onChange={(event) => setApiProviderName(event.target.value)} placeholder="可空，默认使用模型名" /></label>
+                <Collapse className="api-advanced-settings" items={[{ key: "advanced", label: "高级设置（可选）", children: <div className="api-advanced-grid">
+                    <label>{t.providerId}<Input value={apiProviderId} onChange={(event) => setApiProviderId(event.target.value)} placeholder="自动生成" /></label>
+                    <label>{t.apiBaseUrl}<Input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} placeholder="默认 https://api.openai.com/v1" /></label>
                     <label>
                       {t.apiProtocol}
-                      <select value={apiWireApi} onChange={(event) => setApiWireApi(event.target.value)}>
-                        <option value="responses">{t.apiProtocolResponses}</option>
-                        <option value="chat_completions">{t.apiProtocolChat}</option>
-                        <option value="anthropic_messages">{t.apiProtocolAnthropic}</option>
-                      </select>
+                      <Select value={apiWireApi} onChange={setApiWireApi} options={[
+                        { value: "responses", label: t.apiProtocolResponses }, { value: "chat_completions", label: t.apiProtocolChat }, { value: "anthropic_messages", label: t.apiProtocolAnthropic },
+                      ]} />
                     </label>
                   </div>
-                </details>
-                <button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiModel.trim() || !apiKey.trim()}>
+                }]} />
+                <Button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiModel.trim() || !apiKey.trim()}>
                   <KeyRound size={17} /> {t.addApiProvider}
-                </button>
+                </Button>
               </div>
             )}
             {addAccountTab === "import" && (
               <div className="add-account-content">
                 <p>{t.codexConfigHint}</p>
-                <button className="icon-button primary wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
+                <Button className="icon-button primary wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
                   <Download size={17} /> {t.importCurrent}
-                </button>
+                </Button>
               </div>
             )}
-          </section>
-        </div>
+        </Modal>
       )}
 
       {editingProfile && (
-        <div className="update-dialog-backdrop" role="presentation">
-          <section className="add-account-dialog edit-account-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-account-title">
-            <div className="update-dialog-head">
-              <div>
-                <h2 id="edit-account-title">{t.editAccountInfo}</h2>
-                <span className="edit-account-type">
-                  {editingProfile.apiConfig ? t.apiKeyAccount : t.oauthLogin}
-                </span>
-              </div>
-              <button className="notice-close" onClick={closeEditProfile} disabled={busy} title={t.closeNotice}>
-                <X size={18} />
-              </button>
-            </div>
+        <Modal title={<>{t.editAccountInfo} <small>{editingProfile.apiConfig ? t.apiKeyAccount : t.oauthLogin}</small></>} open onCancel={closeEditProfile} footer={null} width={760} closable={!busy}>
             {editingProfile.apiConfig ? (
               <div className="api-provider-form edit-api-provider-form add-account-content">
                 <label>
                   {t.accountAlias}
-                  <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} placeholder={t.accountAlias} />
+                  <Input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} placeholder={t.accountAlias} />
                 </label>
                 <label>
                   {t.openCodeZenFreeModel}
-                  <select
+                  <Select
                     value={OPENCODE_ZEN_FREE_MODELS.some((item) => item.id === editModelDraft) ? editModelDraft : ""}
-                    onChange={(event) => {
-                      const model = event.target.value;
+                    onChange={(model) => {
                       if (!model) return;
                       setEditModelDraft(model);
                       setEditBaseUrlDraft(OPENCODE_ZEN_BASE_URL);
                       setEditWireApiDraft("chat_completions");
                     }}
-                  >
-                    <option value="">手动输入模型…</option>
-                    {OPENCODE_ZEN_FREE_MODELS.map((item) => (
-                      <option value={item.id} key={item.id}>{item.name} ({item.id})</option>
-                    ))}
-                  </select>
+                    options={[{ value: "", label: "手动输入模型…" }, ...OPENCODE_ZEN_FREE_MODELS.map((item) => ({ value: item.id, label: `${item.name} (${item.id})` }))]}
+                  />
                 </label>
                 <label>
                   {t.apiModel}
-                  <input value={editModelDraft} onChange={(event) => setEditModelDraft(event.target.value)} placeholder="gpt-5.4" />
+                  <Input value={editModelDraft} onChange={(event) => setEditModelDraft(event.target.value)} placeholder="gpt-5.4" />
                 </label>
                 <label>
                   {t.apiKeyOptional}
-                  <input type="password" value={editApiKeyDraft} onChange={(event) => setEditApiKeyDraft(event.target.value)} />
+                  <Input.Password value={editApiKeyDraft} onChange={(event) => setEditApiKeyDraft(event.target.value)} />
                 </label>
-                <details className="api-advanced-settings form-span-all">
-                  <summary>高级设置（可选）</summary>
-                  <div className="api-advanced-grid">
+                <Collapse className="api-advanced-settings form-span-all" items={[{ key: "advanced", label: "高级设置（可选）", children: <div className="api-advanced-grid">
                     <label>
                       {t.providerId}
-                      <input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} placeholder="自动生成" />
+                      <Input value={editProviderIdDraft} onChange={(event) => setEditProviderIdDraft(event.target.value)} placeholder="自动生成" />
                     </label>
                     <label>
                       {t.apiBaseUrl}
-                      <input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="默认 https://api.openai.com/v1" />
+                      <Input value={editBaseUrlDraft} onChange={(event) => setEditBaseUrlDraft(event.target.value)} placeholder="默认 https://api.openai.com/v1" />
                     </label>
                     <label>
                       {t.apiProtocol}
-                      <select value={editWireApiDraft} onChange={(event) => setEditWireApiDraft(event.target.value)}>
-                        <option value="responses">{t.apiProtocolResponses}</option>
-                        <option value="chat_completions">{t.apiProtocolChat}</option>
-                        <option value="anthropic_messages">{t.apiProtocolAnthropic}</option>
-                      </select>
+                      <Select value={editWireApiDraft} onChange={setEditWireApiDraft} options={[
+                        { value: "responses", label: t.apiProtocolResponses },
+                        { value: "chat_completions", label: t.apiProtocolChat },
+                        { value: "anthropic_messages", label: t.apiProtocolAnthropic },
+                      ]} />
                     </label>
-                  </div>
-                </details>
+                  </div> }]} />
                 <label className="form-span-all">
                   {t.accountNote}
-                  <textarea
+                  <Input.TextArea
                     className="profile-note-input compact"
                     value={editNoteDraft}
                     onChange={(event) => setEditNoteDraft(event.target.value)}
                     placeholder={t.notePlaceholder}
+                    rows={4}
                   />
                 </label>
                 <ProfileRuleFields
@@ -2353,29 +2246,30 @@ export default function App() {
                   onEnabledChange={setEditEnabledDraft}
                 />
                 <div className="edit-form-actions">
-                  <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
-                  <button
+                  <Button onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</Button>
+                  <Button
                     className="icon-button primary"
                     onClick={() => void saveProfileDetails()}
                     disabled={busy || !editAliasDraft.trim() || !editModelDraft.trim()}
                   >
                     <ShieldCheck size={17} /> {t.saveRules}
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
               <div className="edit-oauth-form add-account-content">
                 <label className="add-account-field">
                   {t.accountAlias}
-                  <input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} />
+                  <Input value={editAliasDraft} onChange={(event) => setEditAliasDraft(event.target.value)} />
                 </label>
                 <label className="add-account-field">
                   {t.accountNote}
-                  <textarea
+                  <Input.TextArea
                     className="profile-note-input"
                     value={editNoteDraft}
                     onChange={(event) => setEditNoteDraft(event.target.value)}
                     placeholder={t.notePlaceholder}
+                    rows={4}
                   />
                 </label>
                 <ProfileRuleFields
@@ -2388,19 +2282,18 @@ export default function App() {
                   onEnabledChange={setEditEnabledDraft}
                 />
                 <div className="edit-form-actions">
-                  <button className="icon-button" onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</button>
-                  <button
+                  <Button onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</Button>
+                  <Button
                     className="icon-button primary"
                     onClick={() => void saveProfileDetails()}
                     disabled={busy || !editAliasDraft.trim()}
                   >
                     <ShieldCheck size={17} /> {t.saveRules}
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
-          </section>
-        </div>
+        </Modal>
       )}
 
       {activePage === "routing" ? (
@@ -2493,38 +2386,31 @@ export default function App() {
         />
       ) : activePage === "settings" ? (
         <>
-      <section className="toolbar-band">
+      <Card className="settings-band toolbar-band">
         <div className="path-control">
           <label>{t.codexDir}</label>
-          <input value={codexHome} onChange={(event) => setCodexHome(event.target.value)} />
-          <button className="icon-button" onClick={() => void scanHome()} disabled={busy} title={t.scan}>
-            <FileSearch size={17} />
-            {t.scan}
-          </button>
-          <button className="icon-button" onClick={() => void openCodexHome()} disabled={busy} title={t.openDir}>
-            <FolderOpen size={17} />
-            {t.openDir}
-          </button>
+          <Input value={codexHome} onChange={(event) => setCodexHome(event.target.value)} />
+          <Button icon={<FileSearch size={17} />} onClick={() => void scanHome()} disabled={busy} title={t.scan}>{t.scan}</Button>
+          <Button icon={<FolderOpen size={17} />} onClick={() => void openCodexHome()} disabled={busy} title={t.openDir}>{t.openDir}</Button>
         </div>
         <div className="scan-state">
           <StatusPill ok={!!scan?.exists} text={scan?.exists ? t.dirExists : t.notScanned} />
           <StatusPill ok={!!scan?.hasAuth} text={scan?.hasAuth ? t.authFound : t.authMissing} />
         </div>
-      </section>
+      </Card>
 
-      <section className="proxy-band">
+      <Card className="settings-band proxy-band">
         <label className="checkline" title={t.proxyEnabled}>
-          <input
-            type="checkbox"
+          <Switch
             checked={proxyEnabled}
-            onChange={(event) => {
+            onChange={(checked) => {
               proxyDraftDirtyRef.current = true;
-              setProxyEnabled(event.target.checked);
+              setProxyEnabled(checked);
             }}
           />
           {t.proxyEnabled}
         </label>
-        <input
+        <Input
           className="proxy-input"
           placeholder={t.proxyPlaceholder}
           value={proxyUrl}
@@ -2533,92 +2419,75 @@ export default function App() {
             setProxyUrl(event.target.value);
           }}
         />
-        <button className="icon-button" onClick={() => void saveProxySettings()} disabled={busy} title={t.saveProxy}>
-          <ShieldCheck size={17} />
-          {t.saveProxy}
-        </button>
-        <button className="icon-button" onClick={() => void testProxySettings()} disabled={busy} title={t.testProxy}>
-          <Wifi size={17} />
-          {t.testProxy}
-        </button>
+        <Button icon={<ShieldCheck size={17} />} onClick={() => void saveProxySettings()} disabled={busy} title={t.saveProxy}>{t.saveProxy}</Button>
+        <Button icon={<Wifi size={17} />} onClick={() => void testProxySettings()} disabled={busy} title={t.testProxy}>{t.testProxy}</Button>
         <span className="proxy-hint">{t.proxyHint}</span>
-      </section>
+      </Card>
 
-      <section className="auto-band">
+      <Card className="settings-band auto-band">
         <label className="checkline" title={t.backgroundTokenKeepalive}>
-          <input
-            type="checkbox"
+          <Switch
             checked={backgroundTokenRefreshEnabled}
-            onChange={(event) => {
+            onChange={(checked) => {
               autoSettingsDirtyRef.current = true;
-              setBackgroundTokenRefreshEnabled(event.target.checked);
+              setBackgroundTokenRefreshEnabled(checked);
             }}
           />
           {t.backgroundTokenKeepalive}
         </label>
         <label>
           {t.keepaliveInterval}
-          <input
-            className="small-number"
-            type="number"
+          <InputNumber
             min={3600}
             value={backgroundTokenRefreshIntervalSecs}
-            onChange={(event) => {
+            onChange={(value) => {
               autoSettingsDirtyRef.current = true;
-              setBackgroundTokenRefreshIntervalSecs(Number(event.target.value) || 3600);
+              setBackgroundTokenRefreshIntervalSecs(value || 3600);
             }}
             title={t.keepaliveInterval}
+            style={{ width: 100 }}
           />
         </label>
         <label>
           {t.refreshThreshold}
-          <input
-            className="small-number"
-            type="number"
+          <InputNumber
             min={0}
             value={tokenRefreshThresholdSecs}
-            onChange={(event) => {
+            onChange={(value) => {
               autoSettingsDirtyRef.current = true;
-              setTokenRefreshThresholdSecs(Number(event.target.value) || 0);
+              setTokenRefreshThresholdSecs(value || 0);
             }}
             title={t.refreshThreshold}
+            style={{ width: 100 }}
           />
         </label>
         <label className="checkline" title={t.autoProbeQuota}>
-          <input
-            type="checkbox"
+          <Switch
             checked={autoProbeEnabled}
-            onChange={(event) => {
+            onChange={(checked) => {
               autoSettingsDirtyRef.current = true;
-              setAutoProbeEnabled(event.target.checked);
+              setAutoProbeEnabled(checked);
             }}
           />
           {t.autoProbeQuota}
         </label>
         <label>
           {t.probeInterval}
-          <input
-            className="small-number"
-            type="number"
+          <InputNumber
             min={30}
             value={autoProbeIntervalSecs}
-            onChange={(event) => {
+            onChange={(value) => {
               autoSettingsDirtyRef.current = true;
-              setAutoProbeIntervalSecs(Number(event.target.value) || 60);
+              setAutoProbeIntervalSecs(value || 60);
             }}
             title={t.probeInterval}
+            style={{ width: 100 }}
           />
         </label>
-        <button className="icon-button" onClick={() => void saveAutoSettings()} disabled={busy || autoProbeRunning} title={t.saveAutoRefresh}>
-          <RefreshCcw size={17} />
-          {autoProbeRunning ? "探测中..." : t.saveAutoRefresh}
-        </button>
-        <button className="icon-button" onClick={() => void refreshOtherProfileTokensNow()} disabled={busy} title={t.keepaliveNow}>
-          <KeyRound size={17} />
-          {t.keepaliveNow}
-        </button>
+        <Button icon={<RefreshCcw size={17} />} onClick={() => void saveAutoSettings()} disabled={busy || autoProbeRunning} title={t.saveAutoRefresh}>{autoProbeRunning ? "探测中..." : t.saveAutoRefresh}</Button>
+        <Button icon={<KeyRound size={17} />} onClick={() => void refreshOtherProfileTokensNow()} disabled={busy} title={t.keepaliveNow}>{t.keepaliveNow}</Button>
         <span className="proxy-hint">{t.autoHint}</span>
-      </section>
+      </Card>
 
       <RoutingLogSettings
         t={t}
@@ -2629,7 +2498,7 @@ export default function App() {
         onOpenLogs={openLogsDirectory}
       />
 
-      <section className="update-band">
+      <Card className="settings-band update-band">
         <div className="update-copy">
           <h2>{t.softwareUpdate}</h2>
           <p>{t.updateHint}</p>
@@ -2663,11 +2532,11 @@ export default function App() {
           </div>
         )}
         <div className="action-row">
-          <button className="icon-button" onClick={() => void checkForUpdate(true)} disabled={updateChecking || updateInstalling} title={t.checkUpdate}>
+          <Button className="icon-button" onClick={() => void checkForUpdate(true)} disabled={updateChecking || updateInstalling} title={t.checkUpdate}>
             <RefreshCcw size={17} />
             {updateChecking ? t.checkUpdate : t.checkUpdate}
-          </button>
-          <button
+          </Button>
+          <Button
             className="icon-button primary"
             onClick={() => void installAvailableUpdate()}
             disabled={!availableUpdate || updateInstalling || updateInstalled}
@@ -2675,92 +2544,71 @@ export default function App() {
           >
             <Download size={17} />
             {t.downloadAndInstall}
-          </button>
-          <button className="icon-button" onClick={() => void relaunch()} disabled={!updateInstalled} title={t.relaunchNow}>
+          </Button>
+          <Button className="icon-button" onClick={() => void relaunch()} disabled={!updateInstalled} title={t.relaunchNow}>
             <RotateCcw size={17} />
             {t.relaunchNow}
-          </button>
+          </Button>
         </div>
-      </section>
+      </Card>
         </>
       ) : (
         <>
 
       <section className="main-grid account-only-grid">
-        <div className="panel account-panel">
-          <div className="panel-header">
+        <Card className="panel account-panel">
+          <div className="panel-header account-panel-header">
             <div>
               <h2>{t.accounts}</h2>
               <p>{filteredProfiles.length}/{store?.profiles.length || 0} {t.profiles}</p>
             </div>
-            <div className="compact-actions">
+            <div className="compact-actions account-toolbar">
               <label className="checkline compact-checkline" title={t.forceSwitch}>
-                <input type="checkbox" checked={forceSwitch} onChange={(event) => setForceSwitch(event.target.checked)} />
+                <Checkbox checked={forceSwitch} onChange={(event) => setForceSwitch(event.target.checked)} />
                 {t.forceSwitch}
               </label>
-              <select
-                value={accountExpiryFilter}
-                onChange={(event) => setAccountExpiryFilter(event.target.value as AccountExpiryFilter)}
-                title={t.expiryFilter}
-                aria-label={t.expiryFilter}
-              >
-                <option value="all">{t.allExpiry}</option>
-                <option value="valid">{t.validOnly}</option>
-                <option value="expired">{t.expiredOnly}</option>
-              </select>
-              <select
-                value={accountStatusFilter}
-                onChange={(event) => setAccountStatusFilter(event.target.value as AccountStatusFilter)}
-                title={t.loginStatusFilter}
-                aria-label={t.loginStatusFilter}
-              >
-                <option value="all">{t.allLoginStatuses}</option>
-                <option value="available">{t.available}</option>
-                <option value="relogin">{t.reloginRequired}</option>
-                <option value="disabled">{t.disabled}</option>
-                <option value="cooling">{t.cooling}</option>
-                <option value="expired">{t.expired}</option>
-                <option value="error">{t.probeFailed}</option>
-              </select>
+              <Select value={accountExpiryFilter} onChange={(value) => setAccountExpiryFilter(value as AccountExpiryFilter)} title={t.expiryFilter} aria-label={t.expiryFilter} options={[
+                { value: "all", label: t.allExpiry }, { value: "valid", label: t.validOnly }, { value: "expired", label: t.expiredOnly },
+              ]} />
+              <Select value={accountStatusFilter} onChange={(value) => setAccountStatusFilter(value as AccountStatusFilter)} title={t.loginStatusFilter} aria-label={t.loginStatusFilter} options={[
+                { value: "all", label: t.allLoginStatuses }, { value: "available", label: t.available }, { value: "relogin", label: t.reloginRequired }, { value: "disabled", label: t.disabled }, { value: "cooling", label: t.cooling }, { value: "expired", label: t.expired }, { value: "error", label: t.probeFailed },
+              ]} />
               <div className="view-toggle" role="group" aria-label={t.accountViewMode}>
-                <button
+                <Button
                   className={accountViewMode === "cards" ? "active" : ""}
                   onClick={() => setAccountViewMode("cards")}
                   title={t.cardView}
                   aria-label={t.cardView}
                 >
-                  <Grid2X2 size={16} />
-                </button>
-                <button
+                  <Grid2X2 size={15} /> <span className="view-toggle-label">{t.cardView}</span>
+                </Button>
+                <Button
                   className={accountViewMode === "rows" ? "active" : ""}
                   onClick={() => setAccountViewMode("rows")}
                   title={t.rowView}
                   aria-label={t.rowView}
                 >
-                  <Rows3 size={16} />
-                </button>
+                  <Rows3 size={15} /> <span className="view-toggle-label">{t.rowView}</span>
+                </Button>
               </div>
-              <input
-                className="alias-input"
-                placeholder={t.searchPlaceholder}
-                value={accountFilter}
-                onChange={(event) => setAccountFilter(event.target.value)}
-                title={t.searchPlaceholder}
-              />
-              <button className="icon-button primary" onClick={() => setShowAddAccountDialog(true)} disabled={busy} title={t.addAccount}>
-                <KeyRound size={17} />
-                {t.addAccount}
-              </button>
+              <div className="account-search-row">
+                <Input
+                  placeholder={t.searchPlaceholder}
+                  value={accountFilter}
+                  onChange={(event) => setAccountFilter(event.target.value)}
+                  title={t.searchPlaceholder}
+                />
+                <Button type="primary" icon={<KeyRound size={17} />} onClick={() => setShowAddAccountDialog(true)} disabled={busy} title={t.addAccount}>{t.addAccount}</Button>
+              </div>
             </div>
           </div>
 
-          <details className="codex-config-panel">
-            <summary>{t.codexConfig}</summary>
+          <Collapse className="codex-config-panel" items={[{ key: "config", label: t.codexConfig, children: <>
             <p>{t.codexConfigHint}</p>
             <div className="config-toolbar">
-              <button className="icon-button" onClick={() => void loadCodexConfigFiles()} disabled={busy}>
+              <Button className="icon-button" onClick={() => void loadCodexConfigFiles()} disabled={busy}>
                 <FileSearch size={16} /> {t.loadConfig}
-              </button>
+              </Button>
               <span>{codexConfig?.codexHome || codexHome || "~/.codex"}</span>
             </div>
             <div className="config-editor-grid">
@@ -2771,16 +2619,17 @@ export default function App() {
                     <small>{codexConfig?.authJson.exists === false ? t.configMissing : codexConfig?.authJson.path || "auth.json"}</small>
                   </div>
                   <div className="row-actions">
-                    <button className="mini-button" onClick={() => void formatCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
+                    <Button size="small" onClick={() => void formatCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
                       {t.formatConfig}
-                    </button>
-                    <button className="mini-button primary" onClick={() => void saveCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
+                    </Button>
+                    <Button size="small" type="primary" onClick={() => void saveCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
                       {t.saveConfig}
-                    </button>
+                    </Button>
                   </div>
                 </div>
-                <textarea
+                <Input.TextArea
                   className="config-editor"
+                  rows={16}
                   spellCheck={false}
                   value={authJsonDraft}
                   onChange={(event) => setAuthJsonDraft(event.target.value)}
@@ -2794,16 +2643,17 @@ export default function App() {
                     <small>{codexConfig?.configToml.exists === false ? t.configMissing : codexConfig?.configToml.path || "config.toml"}</small>
                   </div>
                   <div className="row-actions">
-                    <button className="mini-button" onClick={() => void formatCodexConfig("config.toml")} disabled={busy}>
+                    <Button size="small" onClick={() => void formatCodexConfig("config.toml")} disabled={busy}>
                       {t.formatConfig}
-                    </button>
-                    <button className="mini-button primary" onClick={() => void saveCodexConfig("config.toml")} disabled={busy}>
+                    </Button>
+                    <Button size="small" type="primary" onClick={() => void saveCodexConfig("config.toml")} disabled={busy}>
                       {t.saveConfig}
-                    </button>
+                    </Button>
                   </div>
                 </div>
-                <textarea
+                <Input.TextArea
                   className="config-editor"
+                  rows={16}
                   spellCheck={false}
                   value={configTomlDraft}
                   onChange={(event) => setConfigTomlDraft(event.target.value)}
@@ -2811,7 +2661,7 @@ export default function App() {
                 />
               </section>
             </div>
-          </details>
+          </> }]} />
 
           {accountViewMode === "cards" ? (
           <div className="account-card-grid">
@@ -2834,7 +2684,7 @@ export default function App() {
                       <div className="account-identity-row">
                         <small>{accountText}</small>
                         {canCopyAccount && (
-                          <button
+                          <Button
                             className="mini-button icon-only account-copy-button"
                             onClick={(event) => {
                               event.stopPropagation();
@@ -2844,7 +2694,7 @@ export default function App() {
                             aria-label={t.copyAccount}
                           >
                             <Copy size={13} />
-                          </button>
+                          </Button>
                         )}
                       </div>
                       {profile.note && <small className="account-note">{profile.note}</small>}
@@ -2987,7 +2837,7 @@ export default function App() {
                   .replace("{count}", String(filteredProfiles.length))}
               </span>
               <div className="row-actions">
-                <button
+                <Button
                   className="mini-button"
                   onClick={() => setAccountPage((page) => Math.max(1, page - 1))}
                   disabled={accountPage <= 1}
@@ -2995,8 +2845,8 @@ export default function App() {
                   aria-label={t.previousPage}
                 >
                   {t.previousPage}
-                </button>
-                <button
+                </Button>
+                <Button
                   className="mini-button"
                   onClick={() => setAccountPage((page) => Math.min(totalAccountPages, page + 1))}
                   disabled={accountPage >= totalAccountPages}
@@ -3004,33 +2854,33 @@ export default function App() {
                   aria-label={t.nextPage}
                 >
                   {t.nextPage}
-                </button>
+                </Button>
               </div>
             </div>
           )}
 
-        </div>
+        </Card>
       </section>
 
-      <section className="migration-band">
+      <Card className="settings-band migration-band">
         <div className="migration-copy">
           <h2>多设备共享与迁移</h2>
           <p>迁移包导出/导入、连接分享码和设备同步已统一放到多设备共享页。</p>
         </div>
         <div className="migration-controls">
-          <button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title="打开多设备共享">
+          <Button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title="打开多设备共享">
             <Share2 size={17} />
             打开多设备共享
-          </button>
-          <button className="icon-button" onClick={() => void restoreBackup()} disabled={busy} title={t.restoreBackup}>
+          </Button>
+          <Button className="icon-button" onClick={() => void restoreBackup()} disabled={busy} title={t.restoreBackup}>
             <RotateCcw size={17} />
             {t.restoreBackup}
-          </button>
+          </Button>
         </div>
-      </section>
+      </Card>
 
       <section className="bottom-grid">
-        <div className="panel">
+        <Card className="panel">
           <div className="panel-header">
             <div>
               <h2>{t.migrationList}</h2>
@@ -3052,9 +2902,9 @@ export default function App() {
               ))}
             </div>
           </div>
-        </div>
+        </Card>
 
-        <div className="panel">
+        <Card className="panel">
           <div className="panel-header">
             <div>
               <h2>{t.operationLog}</h2>
@@ -3071,7 +2921,7 @@ export default function App() {
               </div>
             ))}
           </div>
-        </div>
+        </Card>
       </section>
         </>
       )}

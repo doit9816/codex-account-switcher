@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Modal } from "antd";
 import { formatDate } from "../../profileUtils";
 import type { RoutingLogEntry } from "../../types";
 import { routingLogResult, routingLogTone } from "./routingView";
@@ -10,23 +10,15 @@ type RoutingLogDialogProps = {
 
 export function RoutingLogDialog({ log, onClose }: RoutingLogDialogProps) {
   return (
-    <div className="update-dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="routing-log-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="routing-log-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="update-dialog-head">
-          <div>
-            <h2 id="routing-log-title">请求详情</h2>
-            <span className="edit-account-type">{formatDate(log.ts)}</span>
-          </div>
-          <button className="notice-close" onClick={onClose} title="关闭请求详情">
-            <X size={18} />
-          </button>
-        </div>
+    <Modal
+      open
+      onCancel={onClose}
+      footer={null}
+      title={<span id="routing-log-title">请求详情 · {formatDate(log.ts)}</span>}
+      width={760}
+      aria-labelledby="routing-log-title"
+      styles={{ body: { maxHeight: "calc(100vh - 180px)", overflow: "auto", padding: 4 } }}
+    >
         <dl className="routing-log-detail-grid">
           <div><dt>请求 ID</dt><dd>{log.requestId || "-"}</dd></div>
           <div><dt>入口</dt><dd>{log.method || "POST"} {log.path || "/v1/responses"}</dd></div>
@@ -44,7 +36,6 @@ export function RoutingLogDialog({ log, onClose }: RoutingLogDialogProps) {
           <div className={`detail-span-all ${log.error ? "detail-error" : ""}`}><dt>错误</dt><dd>{log.error || "无"}</dd></div>
         </dl>
         <p className="routing-log-privacy">为保护隐私，请求提示词、响应正文和密钥不会写入日志。</p>
-      </section>
-    </div>
+    </Modal>
   );
 }

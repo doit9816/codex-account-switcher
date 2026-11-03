@@ -1,5 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { ConfigProvider } from "antd";
+import zhCN from "antd/locale/zh_CN";
 import App from "./App";
 import { logAppError } from "./api/appLog";
 import "./styles.css";
@@ -36,7 +38,9 @@ try {
   }
   ReactDOM.createRoot(root).render(
     <React.StrictMode>
-      <App />
+      <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: "#1769c2", borderRadius: 8, fontSize: 13 }, components: { Button: { controlHeight: 32 }, Card: { bodyPadding: 14 } } }}>
+        <App />
+      </ConfigProvider>
     </React.StrictMode>
   );
 } catch (error) {

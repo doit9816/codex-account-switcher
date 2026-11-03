@@ -1,5 +1,6 @@
 import { Sparkles } from "lucide-react";
 import { useState } from "react";
+import { Button, Select } from "antd";
 
 import type { I18n } from "../i18n";
 
@@ -52,17 +53,9 @@ export function OpenCodeZenPreset({ disabled, onApply, t }: OpenCodeZenPresetPro
       <div className="opencode-zen-preset-actions">
         <label>
           {t.openCodeZenFreeModel}
-          <select value={model} onChange={(event) => setModel(event.target.value)}>
-            {OPENCODE_ZEN_FREE_MODELS.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name} ({item.id})
-              </option>
-            ))}
-          </select>
+          <Select value={model} onChange={setModel} options={OPENCODE_ZEN_FREE_MODELS.map((item) => ({ value: item.id, label: `${item.name} (${item.id})` }))} />
         </label>
-        <button className="icon-button" type="button" onClick={applyPreset} disabled={disabled}>
-          <Sparkles size={16} /> {t.openCodeZenApplyPreset}
-        </button>
+        <Button icon={<Sparkles size={16} />} onClick={applyPreset} disabled={disabled}>{t.openCodeZenApplyPreset}</Button>
       </div>
       <small>{t.openCodeZenApiKeyHint}</small>
     </section>

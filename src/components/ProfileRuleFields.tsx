@@ -1,4 +1,5 @@
 import type { I18n } from "../i18n";
+import { Checkbox, InputNumber } from "antd";
 import type { QuotaRule } from "../types";
 import { parseOptionalNumber } from "../profileUtils";
 
@@ -27,59 +28,57 @@ export function ProfileRuleFields({
       <div className="profile-rule-grid">
         <label>
           {t.hourlyLimit}
-          <input
-            type="number"
+          <InputNumber
             min={0}
             placeholder={t.unlimited}
-            value={quota.hourlyLimit ?? ""}
-            onChange={(event) => onQuotaChange({
+            value={quota.hourlyLimit ?? null}
+            onChange={(value) => onQuotaChange({
               ...quota,
-              hourlyLimit: parseOptionalNumber(event.target.value)
+              hourlyLimit: parseOptionalNumber(value == null ? "" : String(value))
             })}
+            style={{ width: "100%" }}
           />
         </label>
         <label>
           {t.dailyLimit}
-          <input
-            type="number"
+          <InputNumber
             min={0}
             placeholder={t.unlimited}
-            value={quota.dailyLimit ?? ""}
-            onChange={(event) => onQuotaChange({
+            value={quota.dailyLimit ?? null}
+            onChange={(value) => onQuotaChange({
               ...quota,
-              dailyLimit: parseOptionalNumber(event.target.value)
+              dailyLimit: parseOptionalNumber(value == null ? "" : String(value))
             })}
+            style={{ width: "100%" }}
           />
         </label>
         <label>
           {t.cooldownMinutes}
-          <input
-            type="number"
+          <InputNumber
             min={1}
             value={quota.cooldownMinutes}
-            onChange={(event) => onQuotaChange({
+            onChange={(value) => onQuotaChange({
               ...quota,
-              cooldownMinutes: Number(event.target.value) || 180
+              cooldownMinutes: value || 180
             })}
+            style={{ width: "100%" }}
           />
         </label>
         <label>
           {t.priority}
-          <input
-            type="number"
+          <InputNumber
             value={priority}
-            onChange={(event) => onPriorityChange(Number(event.target.value) || 0)}
+            onChange={(value) => onPriorityChange(value || 0)}
+            style={{ width: "100%" }}
           />
         </label>
       </div>
       <div className="profile-rule-footer">
         <label className="checkline profile-enabled-check" title={t.enableAccount}>
-          <input
-            type="checkbox"
+          <Checkbox
             checked={enabled}
             onChange={(event) => onEnabledChange(event.target.checked)}
-          />
-          {t.enableAccount}
+          >{t.enableAccount}</Checkbox>
         </label>
       </div>
     </fieldset>

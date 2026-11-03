@@ -13,8 +13,13 @@
 
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 0;
   min-height: 100vh;
+}
+
+#root {
+  min-width: 0;
+  width: 100%;
 }
 
 .startup-error {
@@ -93,6 +98,10 @@ button:disabled {
   padding: 24px;
 }
 
+.mobile-page-select {
+  display: none;
+}
+
 .startup-shell {
   display: grid;
   place-items: center;
@@ -134,8 +143,9 @@ button:disabled {
 
 .topbar {
   align-items: center;
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(250px, 1fr) auto;
   margin-bottom: 18px;
 }
 
@@ -143,6 +153,108 @@ button:disabled {
   align-items: center;
   display: flex;
   gap: 12px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.topbar-actions .ant-tabs {
+  min-width: 0;
+}
+
+.topbar-actions .ant-tabs-nav {
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-shell {
+    padding: 12px;
+  }
+
+  .topbar {
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .topbar > div:first-child h1 {
+    font-size: 22px;
+    margin-bottom: 2px;
+  }
+
+  .topbar > div:first-child p {
+    font-size: 12px;
+    margin: 0;
+  }
+
+  .topbar-actions {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .topbar-actions .desktop-page-tabs {
+    display: none;
+  }
+
+  .topbar-actions .mobile-page-select {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .topbar-actions > .ant-select:first-child {
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .topbar-actions > .ant-btn {
+    padding-inline: 10px;
+  }
+
+  .panel,
+  .ant-card.settings-band,
+  .migration-band {
+    min-width: 0;
+  }
+
+  .ant-card.settings-band > .ant-card-body {
+    padding: 14px;
+  }
+
+  .account-panel-header > :first-child {
+    flex: 1 1 auto;
+  }
+
+  .account-toolbar {
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .account-toolbar .compact-checkline {
+    min-width: 0;
+  }
+
+  .account-toolbar .ant-select {
+    width: 100%;
+  }
+
+  .account-search-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
 }
 
 .language-select {
@@ -270,31 +382,6 @@ button:disabled {
 
 .notice-close:hover {
   background: rgba(25, 33, 42, 0.08);
-}
-
-.update-dialog-backdrop {
-  align-items: center;
-  background: rgba(15, 23, 42, 0.48);
-  display: flex;
-  inset: 0;
-  justify-content: center;
-  padding: 24px;
-  position: fixed;
-  z-index: 1100;
-}
-
-.update-dialog {
-  background: #ffffff;
-  border: 1px solid #d9e3ee;
-  border-radius: 16px;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
-  display: grid;
-  gap: 16px;
-  max-height: calc(100vh - 48px);
-  max-width: 580px;
-  overflow: auto;
-  padding: 22px;
-  width: 100%;
 }
 
 .update-dialog-head {
@@ -566,40 +653,43 @@ button:disabled {
   }
 }
 
-.toolbar-band,
-.proxy-band,
-.auto-band,
-.routing-log-settings-band,
-.update-band,
-.migration-band {
-  align-items: center;
+.ant-card.settings-band {
   background: #ffffff;
   border: 1px solid #d8e0e8;
   border-radius: 8px;
+  margin-bottom: 18px;
+}
+
+.ant-card.settings-band > .ant-card-body {
+  align-items: center;
   display: flex;
   gap: 18px;
   justify-content: space-between;
-  margin-bottom: 18px;
   padding: 16px;
 }
 
 .proxy-band {
-  flex-wrap: wrap;
-  justify-content: flex-start;
   margin-top: -2px;
 }
 
 .auto-band {
-  flex-wrap: wrap;
-  justify-content: flex-start;
   margin-top: -2px;
 }
 
 .update-band {
-  align-items: flex-start;
+  margin-top: -2px;
+}
+
+.proxy-band > .ant-card-body,
+.auto-band > .ant-card-body,
+.routing-log-settings-band > .ant-card-body,
+.update-band > .ant-card-body {
   flex-wrap: wrap;
   justify-content: flex-start;
-  margin-top: -2px;
+}
+
+.update-band > .ant-card-body {
+  align-items: flex-start;
 }
 
 .update-copy {
@@ -765,7 +855,7 @@ input:focus {
 .bottom-grid {
   display: grid;
   gap: 18px;
-  grid-template-columns: minmax(520px, 1.25fr) minmax(420px, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-bottom: 18px;
 }
 
@@ -774,8 +864,6 @@ input:focus {
 }
 
 .routing-log-settings-band {
-  flex-wrap: wrap;
-  justify-content: flex-start;
   margin-top: -2px;
 }
 
@@ -1239,20 +1327,6 @@ input:focus {
   gap: 8px;
 }
 
-.routing-log-dialog {
-  background: #ffffff;
-  border: 1px solid #d9e3ee;
-  border-radius: 16px;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
-  display: grid;
-  gap: 16px;
-  max-height: calc(100vh - 48px);
-  max-width: 760px;
-  overflow: auto;
-  padding: 22px;
-  width: 100%;
-}
-
 .routing-log-detail-grid {
   display: grid;
   gap: 10px;
@@ -1304,11 +1378,104 @@ input:focus {
   padding: 16px;
 }
 
+.ant-card.panel {
+  padding: 0;
+}
+
+.ant-card.panel > .ant-card-body {
+  padding: 16px;
+}
+
 .panel-header {
   align-items: center;
   display: flex;
   justify-content: space-between;
   margin-bottom: 14px;
+}
+
+.account-panel-header {
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.account-panel-header > :first-child {
+  flex: 0 0 180px;
+  padding-top: 4px;
+}
+
+.account-toolbar {
+  display: grid;
+  flex: 1;
+  gap: 10px;
+  grid-template-columns: auto minmax(150px, 1fr) minmax(170px, 1.2fr) 76px;
+  min-width: 0;
+}
+
+.account-toolbar .compact-checkline {
+  align-items: center;
+  background: #f5f8fc;
+  border: 1px solid #dce5ef;
+  border-radius: 7px;
+  display: inline-flex;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.account-toolbar .ant-select,
+.account-toolbar .view-toggle {
+  min-width: 0;
+  width: 100%;
+}
+
+.account-toolbar .view-toggle {
+  grid-column: 4;
+  justify-self: end;
+  width: 76px;
+}
+
+.account-search-row {
+  display: flex;
+  gap: 10px;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.account-search-row .ant-input-affix-wrapper,
+.account-search-row .ant-input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .account-panel-header {
+    display: block;
+  }
+
+  .account-panel-header > :first-child {
+    margin-bottom: 12px;
+  }
+
+  .account-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .account-toolbar .view-toggle {
+    grid-column: auto;
+    justify-self: stretch;
+    width: auto;
+  }
+
+  .view-toggle-label {
+    display: none;
+  }
+
+  .account-search-row {
+    flex-wrap: wrap;
+  }
+
+  .account-search-row .ant-btn {
+    width: 100%;
+  }
 }
 
 .panel-header h2 {
@@ -1351,7 +1518,14 @@ input:focus {
   display: inline-flex;
   height: 30px;
   justify-content: center;
-  width: 34px;
+  gap: 5px;
+  min-width: 34px;
+  padding: 0 8px;
+  width: auto;
+}
+
+.view-toggle-label {
+  display: none;
 }
 
 .view-toggle button:hover {
@@ -1383,7 +1557,7 @@ input:focus {
 .account-card-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
 }
 
 .api-provider-panel {
@@ -1623,6 +1797,20 @@ input:focus {
   border-radius: 10px;
   margin-bottom: 16px;
   padding: 12px 14px;
+}
+
+.mesh-directory-tree,
+.mesh-local-directory-tree {
+  background: #f7faff;
+  border: 1px solid #dbe5f0;
+  border-radius: 8px;
+  margin: 10px 0 14px;
+  padding: 6px 8px;
+}
+
+.mesh-directory-tree .ant-tree,
+.mesh-local-directory-tree .ant-tree {
+  background: transparent;
 }
 
 .codex-config-panel summary {
@@ -2220,6 +2408,10 @@ input:focus {
   align-items: flex-start;
 }
 
+.migration-band > .ant-card-body {
+  align-items: flex-start;
+}
+
 .migration-copy {
   max-width: 420px;
 }
@@ -2407,20 +2599,17 @@ input:focus {
 }
 
 @media (max-width: 1050px) {
-  body {
-    min-width: 0;
-  }
-
   .app-shell {
     padding: 16px;
   }
 
-  .toolbar-band,
-  .proxy-band,
-  .auto-band,
-  .update-band,
-  .migration-band,
+  .ant-card.settings-band > .ant-card-body,
   .topbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .migration-band > .ant-card-body {
     align-items: stretch;
     flex-direction: column;
   }
@@ -2462,6 +2651,79 @@ input:focus {
 }
 
 @media (max-width: 720px) {
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  .notice {
+    left: 12px;
+    max-width: calc(100vw - 24px);
+    min-width: 0;
+    right: 12px;
+    top: 12px;
+  }
+
+  .proxy-input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .path-control,
+  .update-copy,
+  .update-status,
+  .routing-settings-panel,
+  .routing-key-panel,
+  .mesh-column,
+  .mesh-files-panel,
+  .mesh-device-panel,
+  .mesh-share-panel,
+  .mesh-migration-panel {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .app-shell {
+    padding: 12px;
+  }
+
+  .main-grid,
+  .bottom-grid,
+  .routing-columns,
+  .mesh-columns,
+  .list-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panel,
+  .ant-card.settings-band,
+  .migration-band {
+    min-width: 0;
+  }
+
+  .ant-card.settings-band > .ant-card-body {
+    padding: 12px;
+  }
+
+  .topbar-actions > * {
+    min-width: 0;
+  }
+
+  .account-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-toolbar .compact-checkline {
+    white-space: normal;
+  }
+
+  .form-grid,
+  .api-advanced-grid,
+  .config-editor-grid,
+  .routing-status-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .update-dialog-backdrop {
     padding: 12px;
   }
@@ -2796,18 +3058,6 @@ input:focus {
   white-space: nowrap;
 }
 
-.mesh-add-device-dialog {
-  background: #ffffff;
-  border: 1px solid #d9e3ee;
-  border-radius: 16px;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
-  display: grid;
-  gap: 16px;
-  max-width: 620px;
-  padding: 22px;
-  width: 100%;
-}
-
 .mesh-add-device-hint {
   color: #667085;
   line-height: 1.6;
@@ -2977,10 +3227,6 @@ input:focus {
 .mesh-group-notice {
   color: #1769e0;
   font-size: 13px;
-}
-
-.mesh-join-group-dialog {
-  max-width: 660px;
 }
 
 .mesh-group-dialog-field {
@@ -3315,6 +3561,10 @@ input:focus {
   margin: 10px 0;
   padding: 4px 12px;
 }
+
+.mesh-remote-files-panel .ant-list-item { min-width: 0; }
+.mesh-remote-files-panel .ant-list-item-meta { min-width: 0; }
+.mesh-remote-files-panel .mesh-file-breadcrumb { margin: 12px 0; }
 
 .mesh-file-header-actions {
   display: flex;

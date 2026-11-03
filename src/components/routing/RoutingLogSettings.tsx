@@ -1,5 +1,6 @@
 import { FileClock, FolderOpen, Save } from "lucide-react";
 import type { I18n } from "../../i18n";
+import { Button, InputNumber, Card } from "antd";
 
 type RoutingLogSettingsProps = {
   t: I18n;
@@ -19,7 +20,7 @@ export function RoutingLogSettings({
   onOpenLogs
 }: RoutingLogSettingsProps) {
   return (
-    <section className="routing-log-settings-band">
+    <Card className="settings-band routing-log-settings-band">
       <div className="routing-log-settings-copy">
         <FileClock size={21} />
         <div>
@@ -29,34 +30,31 @@ export function RoutingLogSettings({
       </div>
       <label>
         {t.routingLogRetention}
-        <input
-          className="small-number"
-          type="number"
+        <InputNumber
           min={1}
           max={365}
           value={retentionDays}
-          onChange={(event) => onRetentionDaysChange(Number(event.target.value) || 1)}
+          onChange={(value) => onRetentionDaysChange(value || 1)}
           title={t.routingLogRetention}
+          style={{ width: 100 }}
         />
       </label>
-      <button
-        className="icon-button"
+      <Button
         onClick={() => void onSave()}
         disabled={busy}
         title={t.saveRoutingLogSettings}
+        icon={<Save size={17} />}
       >
-        <Save size={17} />
         {t.saveRoutingLogSettings}
-      </button>
-      <button
-        className="icon-button"
+      </Button>
+      <Button
         onClick={() => void onOpenLogs()}
         disabled={busy}
         title="打开日志目录"
+        icon={<FolderOpen size={17} />}
       >
-        <FolderOpen size={17} />
         打开日志目录
-      </button>
-    </section>
+      </Button>
+    </Card>
   );
 }

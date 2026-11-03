@@ -1,4 +1,5 @@
 use super::*;
+use tauri::Emitter;
 
 fn safe_log_label(value: &str) -> String {
     value
@@ -635,6 +636,15 @@ pub(super) fn stream_download_to<R: Read>(
     source: &mut R,
     destination: &Path,
 ) -> Result<u64, String> {
+    stream_download_to_with_progress(source, destination, |_, _| {}, None)
+}
+
+fn stream_download_to_with_progress<R: Read, F: FnMut(u64, Option<u64>)>(
+    source: &mut R,
+    destination: &Path,
+    mut progress: F,
+    total: Option<u64>,
+) -> Result<u64, String> {
     if !destination.is_absolute() {
         return Err("download destination must be absolute".to_string());
     }
@@ -659,7 +669,15 @@ pub(super) fn stream_download_to<R: Read>(
             .create_new(true)
             .open(&temporary)
             .map_err(display_err)?;
-        let bytes = std::io::copy(source, &mut output).map_err(display_err)?;
+        let mut bytes = 0;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = source.read(&mut buffer).map_err(display_err)?;
+            if count == 0 { break; }
+            output.write_all(&buffer[..count]).map_err(display_err)?;
+            bytes += count as u64;
+            progress(bytes, total);
+        }
         output.flush().map_err(display_err)?;
         Ok(bytes)
     })();
@@ -1058,7 +1076,11 @@ pub(crate) fn download_group_remote_file(
         error
     })?;
     let destination = PathBuf::from(destination);
-    match stream_download_to(&mut response, &destination) {
+    let total = response.content_length();
+    let transfer_id = format!("{group_id}:{device_id}:{share_id}:{relative}");
+    match stream_download_to_with_progress(&mut response, &destination, |bytes, total| {
+        let _ = app.emit("mesh-file-download-progress", serde_json::json!({"transferId": transfer_id, "bytes": bytes, "total": total}));
+    }, total) {
         Ok(bytes) => {
             append_app_log(&app, "info", &format!("mesh_remote_file_download_completed group_id={group_id} device_id={device_id} share_id={share_id} bytes={bytes} elapsed_ms={}", started.elapsed().as_millis()));
             Ok(bytes)
