@@ -599,6 +599,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
           {props.groupStatus?.fileAccess?.aiAccessEnabled && <div className="mesh-ai-endpoints">
             {props.groupStatus.fileAccess.aiToken && <>
               <Select
+                className="mesh-ai-device-select"
                 size="large"
                 aria-label="外部 AI 访问设备"
                 placeholder="选择 AI 访问的设备"
