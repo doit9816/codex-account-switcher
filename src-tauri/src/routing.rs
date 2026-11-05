@@ -3,12 +3,12 @@ use crate::routing_protocol::{
     chat_sse_reader, prepare_api_request, transform_chat_response, WireProtocol,
 };
 use crate::{
-    app_data_dir, append_app_log, build_probe_client, decrypt_secret, default_routing_log_retention_days,
-    display_err, encrypt_secret, load_master_key, load_store, mutate_store, now_string, parse_time,
-    push_event, refresh_auth_json_with_client, refresh_error_requires_relogin,
-    replace_file_with_rollback, resolve_codex_home, save_store, should_refresh_access_token,
-    summarize_auth, AccountProfile, AppStore, RouteHealth, RoutingMode, RoutingSettings,
-    ROUTER_PROVIDER_ID,
+    app_data_dir, append_app_log, build_probe_client, decrypt_secret,
+    default_routing_log_retention_days, display_err, encrypt_secret, load_master_key, load_store,
+    mutate_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
+    refresh_error_requires_relogin, replace_file_with_rollback, resolve_codex_home, save_store,
+    should_refresh_access_token, summarize_auth, AccountProfile, AppStore, RouteHealth,
+    RoutingMode, RoutingSettings, ROUTER_PROVIDER_ID,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -2341,7 +2341,10 @@ mod tests {
     fn mcp_route_matches_when_group_id_is_in_query_string() {
         assert!(is_mcp_endpoint(&Method::Post, "/mcp?groupId=group-a"));
         assert!(!is_mcp_endpoint(&Method::Get, "/mcp?groupId=group-a"));
-        assert!(!is_mcp_endpoint(&Method::Post, "/mcp-extra?groupId=group-a"));
+        assert!(!is_mcp_endpoint(
+            &Method::Post,
+            "/mcp-extra?groupId=group-a"
+        ));
     }
 
     fn profile(id: &str, priority: i32, expiry: Option<&str>, hourly_used: u32) -> AccountProfile {

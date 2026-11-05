@@ -1529,6 +1529,11 @@ async fn mesh_group_status(
 }
 
 #[tauri::command]
+async fn mesh_group_delete(app: AppHandle, group_id: String) -> Result<(), String> {
+    run_mesh_blocking(move || easytier_mesh::delete_group(app, group_id)).await
+}
+
+#[tauri::command]
 async fn mesh_group_add_file_share(
     app: AppHandle,
     group_id: String,
@@ -1554,7 +1559,10 @@ async fn mesh_group_set_file_device_access(
     device_id: String,
     allowed: bool,
 ) -> Result<easytier_mesh::MeshGroupStatus, String> {
-    run_mesh_blocking(move || easytier_mesh::set_group_file_device_access(app, group_id, device_id, allowed)).await
+    run_mesh_blocking(move || {
+        easytier_mesh::set_group_file_device_access(app, group_id, device_id, allowed)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1567,28 +1575,73 @@ async fn mesh_group_set_ai_file_access(
 }
 
 #[tauri::command]
-async fn mesh_group_list_files(app: AppHandle, group_id: String, share_id: String, path: String) -> Result<Vec<easytier_mesh::MeshFileEntry>, String> {
+async fn mesh_group_list_files(
+    app: AppHandle,
+    group_id: String,
+    share_id: String,
+    path: String,
+) -> Result<Vec<easytier_mesh::MeshFileEntry>, String> {
     run_mesh_blocking(move || easytier_mesh::list_group_files(app, group_id, share_id, path)).await
 }
 
 #[tauri::command]
-async fn mesh_group_download_file(app: AppHandle, group_id: String, share_id: String, path: String, destination: String) -> Result<u64, String> {
-    run_mesh_blocking(move || easytier_mesh::download_group_file(app, group_id, share_id, path, destination)).await
+async fn mesh_group_download_file(
+    app: AppHandle,
+    group_id: String,
+    share_id: String,
+    path: String,
+    destination: String,
+) -> Result<u64, String> {
+    run_mesh_blocking(move || {
+        easytier_mesh::download_group_file(app, group_id, share_id, path, destination)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn mesh_group_remote_file_shares(app: AppHandle, group_id: String, device_id: String) -> Result<Vec<easytier_mesh::MeshFileShareView>, String> {
-    run_mesh_blocking(move || easytier_mesh::list_group_remote_shares(app, group_id, device_id)).await
+async fn mesh_group_remote_file_shares(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+) -> Result<Vec<easytier_mesh::MeshFileShareView>, String> {
+    run_mesh_blocking(move || easytier_mesh::list_group_remote_shares(app, group_id, device_id))
+        .await
 }
 
 #[tauri::command]
-async fn mesh_group_remote_files(app: AppHandle, group_id: String, device_id: String, share_id: String, path: String) -> Result<Vec<easytier_mesh::MeshFileEntry>, String> {
-    run_mesh_blocking(move || easytier_mesh::list_group_remote_files(app, group_id, device_id, share_id, path)).await
+async fn mesh_group_remote_files(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+    share_id: String,
+    path: String,
+) -> Result<Vec<easytier_mesh::MeshFileEntry>, String> {
+    run_mesh_blocking(move || {
+        easytier_mesh::list_group_remote_files(app, group_id, device_id, share_id, path)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn mesh_group_download_remote_file(app: AppHandle, group_id: String, device_id: String, share_id: String, path: String, destination: String) -> Result<u64, String> {
-    run_mesh_blocking(move || easytier_mesh::download_group_remote_file(app, group_id, device_id, share_id, path, destination)).await
+async fn mesh_group_download_remote_file(
+    app: AppHandle,
+    group_id: String,
+    device_id: String,
+    share_id: String,
+    path: String,
+    destination: String,
+) -> Result<u64, String> {
+    run_mesh_blocking(move || {
+        easytier_mesh::download_group_remote_file(
+            app,
+            group_id,
+            device_id,
+            share_id,
+            path,
+            destination,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3407,7 +3460,9 @@ fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os(VALIDATION_DATA_DIR_ENV) {
         let path = PathBuf::from(path);
         if !path.is_absolute() {
-            return Err(format!("{VALIDATION_DATA_DIR_ENV} must be an absolute path"));
+            return Err(format!(
+                "{VALIDATION_DATA_DIR_ENV} must be an absolute path"
+            ));
         }
         return Ok(path);
     }
@@ -3423,7 +3478,9 @@ pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(dir);
     }
     let store_existed = dir.join(STORE_FILE).exists();
-    let legacy_dir = dir.parent().map(|parent| parent.join(LEGACY_APP_IDENTIFIER));
+    let legacy_dir = dir
+        .parent()
+        .map(|parent| parent.join(LEGACY_APP_IDENTIFIER));
     if !store_existed {
         if let Some(legacy_dir) = legacy_dir.as_ref().filter(|path| path.exists()) {
             append_app_log(
@@ -3434,7 +3491,18 @@ pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
     if let Err(error) = migrate_legacy_app_data_dir(&dir) {
-        append_app_log(app, "error", &format!("legacy_data_migration_failed target={} source={} error={error}", dir.display(), legacy_dir.as_deref().unwrap_or(Path::new("<none>")).display()));
+        append_app_log(
+            app,
+            "error",
+            &format!(
+                "legacy_data_migration_failed target={} source={} error={error}",
+                dir.display(),
+                legacy_dir
+                    .as_deref()
+                    .unwrap_or(Path::new("<none>"))
+                    .display()
+            ),
+        );
         return Err(error);
     }
     fs::create_dir_all(&dir).map_err(display_err)?;
@@ -3444,7 +3512,14 @@ pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
             .and_then(|text| serde_json::from_str::<AppStore>(&text).ok())
             .map(|store| store_snapshot_summary(&store))
             .unwrap_or_else(|| "unparseable_or_unavailable".to_string());
-        append_app_log(app, "info", &format!("legacy_data_migration_complete target={} resulting_store={migrated}", dir.display()));
+        append_app_log(
+            app,
+            "info",
+            &format!(
+                "legacy_data_migration_complete target={} resulting_store={migrated}",
+                dir.display()
+            ),
+        );
     }
     Ok(dir)
 }
@@ -3526,7 +3601,15 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
                 .unwrap_or_else(|| "unparseable_or_unavailable".to_string());
             append_app_log(app, "warn", &format!("store_recovery_start reason=primary_store_missing source={} target={} source_metadata={} recovery_candidate={recovery_summary}", recovery_path.display(), path.display(), file_metadata_summary(&recovery_path)));
             if let Err(error) = fs::copy(&recovery_path, &path) {
-                append_app_log(app, "error", &format!("store_recovery_failed source={} target={} error={error}", recovery_path.display(), path.display()));
+                append_app_log(
+                    app,
+                    "error",
+                    &format!(
+                        "store_recovery_failed source={} target={} error={error}",
+                        recovery_path.display(),
+                        path.display()
+                    ),
+                );
                 return Err(display_err(error));
             }
             append_app_log(app, "warn", &format!("store_recovery_complete reason=primary_store_missing restored={recovery_summary}"));
@@ -3556,11 +3639,23 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
         }
     }
     let text = fs::read_to_string(&path).map_err(|error| {
-        append_app_log(app, "error", &format!("store_read_failed path={} error={error}", path.display()));
+        append_app_log(
+            app,
+            "error",
+            &format!("store_read_failed path={} error={error}", path.display()),
+        );
         display_err(error)
     })?;
     let mut store: AppStore = serde_json::from_str(&text).map_err(|error| {
-        append_app_log(app, "error", &format!("store_parse_failed path={} bytes={} error={error}", path.display(), text.len()));
+        append_app_log(
+            app,
+            "error",
+            &format!(
+                "store_parse_failed path={} bytes={} error={error}",
+                path.display(),
+                text.len()
+            ),
+        );
         display_err(error)
     })?;
     if easytier_mesh::migrate_settings(&mut store.settings.mesh) {
@@ -3572,7 +3667,9 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
 fn initialize_default_store_files(path: &Path, store: &AppStore) -> Result<(), String> {
     let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
     if path.exists() || recovery_path.exists() {
-        return Err("refusing to initialize store when primary or recovery file already exists".to_string());
+        return Err(
+            "refusing to initialize store when primary or recovery file already exists".to_string(),
+        );
     }
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(store).map_err(display_err)?;
@@ -3632,47 +3729,112 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
     easytier_mesh::sync_legacy_settings(&mut store.settings.mesh);
     let text = serde_json::to_string_pretty(&store).map_err(display_err)?;
     fs::write(&tmp, text).map_err(|error| {
-        append_app_log(app, "error", &format!("store_write_temp_failed path={} error={error}", tmp.display()));
+        append_app_log(
+            app,
+            "error",
+            &format!(
+                "store_write_temp_failed path={} error={error}",
+                tmp.display()
+            ),
+        );
         display_err(error)
     })?;
     if path.exists() {
         if let Err(error) = fs::remove_file(&path) {
-            append_app_log(app, "error", &format!("store_write_primary_remove_failed path={} temp={} error={error}", path.display(), tmp.display()));
+            append_app_log(
+                app,
+                "error",
+                &format!(
+                    "store_write_primary_remove_failed path={} temp={} error={error}",
+                    path.display(),
+                    tmp.display()
+                ),
+            );
             return Err(display_err(error));
         }
     }
     fs::rename(&tmp, &path).map_err(|error| {
-        append_app_log(app, "error", &format!("store_write_primary_rename_failed temp={} target={} error={error}", tmp.display(), path.display()));
+        append_app_log(
+            app,
+            "error",
+            &format!(
+                "store_write_primary_rename_failed temp={} target={} error={error}",
+                tmp.display(),
+                path.display()
+            ),
+        );
         display_err(error)
     })?;
     let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
     fs::copy(&path, &recovery_path).map_err(|error| {
-        append_app_log(app, "error", &format!("store_write_recovery_snapshot_failed primary={} recovery={} error={error}", path.display(), recovery_path.display()));
+        append_app_log(
+            app,
+            "error",
+            &format!(
+                "store_write_recovery_snapshot_failed primary={} recovery={} error={error}",
+                path.display(),
+                recovery_path.display()
+            ),
+        );
         display_err(error)
     })?;
     append_app_log(
         app,
         "info",
-        &format!("store_write_committed trigger={} profile_delta={} summary={candidate_summary}", store_trigger_summary(&store), committed_delta),
+        &format!(
+            "store_write_committed trigger={} profile_delta={} summary={candidate_summary}",
+            store_trigger_summary(&store),
+            committed_delta
+        ),
     );
     Ok(())
 }
 
 fn store_trigger_summary(store: &AppStore) -> String {
-    store.events.first().map(|event| format!("{}:{}", event.level, event.message)).unwrap_or_else(|| "no_store_event".to_string())
+    store
+        .events
+        .first()
+        .map(|event| format!("{}:{}", event.level, event.message))
+        .unwrap_or_else(|| "no_store_event".to_string())
 }
 
 fn store_profile_delta(current: &AppStore, candidate: &AppStore) -> String {
-    let old = current.profiles.iter().map(|profile| profile.id.as_str()).collect::<std::collections::HashSet<_>>();
-    let new = candidate.profiles.iter().map(|profile| profile.id.as_str()).collect::<std::collections::HashSet<_>>();
-    let added = candidate.profiles.iter().filter(|profile| !old.contains(profile.id.as_str())).map(|profile| profile.alias.as_str()).take(20).collect::<Vec<_>>();
-    let removed = current.profiles.iter().filter(|profile| !new.contains(profile.id.as_str())).map(|profile| profile.alias.as_str()).take(20).collect::<Vec<_>>();
+    let old = current
+        .profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let new = candidate
+        .profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let added = candidate
+        .profiles
+        .iter()
+        .filter(|profile| !old.contains(profile.id.as_str()))
+        .map(|profile| profile.alias.as_str())
+        .take(20)
+        .collect::<Vec<_>>();
+    let removed = current
+        .profiles
+        .iter()
+        .filter(|profile| !new.contains(profile.id.as_str()))
+        .map(|profile| profile.alias.as_str())
+        .take(20)
+        .collect::<Vec<_>>();
     format!("added={added:?} removed={removed:?}")
 }
 
 fn file_metadata_summary(path: &Path) -> String {
     fs::metadata(path)
-        .map(|metadata| format!("exists=true bytes={} modified={:?}", metadata.len(), metadata.modified().ok()))
+        .map(|metadata| {
+            format!(
+                "exists=true bytes={} modified={:?}",
+                metadata.len(),
+                metadata.modified().ok()
+            )
+        })
         .unwrap_or_else(|_| "exists=false".to_string())
 }
 
@@ -4307,7 +4469,10 @@ fn cleanup_non_api_config_with_timeout(
                     &worker_switch_id,
                     &worker_profile_id,
                     "config_restore_backup_complete",
-                    format!("scope=codex_config_only profiles_unchanged=true backup_exists_after={}", backup_path.exists()),
+                    format!(
+                        "scope=codex_config_only profiles_unchanged=true backup_exists_after={}",
+                        backup_path.exists()
+                    ),
                 );
                 append_switch_diagnostic(
                     &worker_app,
@@ -5561,9 +5726,13 @@ fn collect_additional_rate_limit_windows(body: &Value, out: &mut Vec<DetectedLim
         return;
     };
     for item in additional {
-        let Some(item) = item.as_object() else { continue };
+        let Some(item) = item.as_object() else {
+            continue;
+        };
         let limit_name = pick_string(item, &["limit_name", "metered_feature"]);
-        let Some(rate_limit) = item.get("rate_limit").and_then(Value::as_object) else { continue };
+        let Some(rate_limit) = item.get("rate_limit").and_then(Value::as_object) else {
+            continue;
+        };
         collect_rate_limit_windows(rate_limit, limit_name.as_deref(), out);
     }
 }
@@ -5573,7 +5742,6 @@ fn collect_rate_limit_windows(
     limit_name: Option<&str>,
     out: &mut Vec<DetectedLimit>,
 ) {
-
     for (key, label) in [
         ("primary_window", "primary"),
         ("secondary_window", "secondary"),
@@ -5591,7 +5759,11 @@ fn collect_rate_limit_windows(
 
         let display_label = match limit_name {
             Some(name) if name.eq_ignore_ascii_case("gpt-reserve") => {
-                if window_name == "1周" { "GPT reserve Weekly".to_string() } else { format!("GPT reserve {window_name}") }
+                if window_name == "1周" {
+                    "GPT reserve Weekly".to_string()
+                } else {
+                    format!("GPT reserve {window_name}")
+                }
             }
             Some(name) => format!("{name} {window_name}"),
             None => window_name.clone(),
@@ -6094,6 +6266,7 @@ fn main() {
             mesh_status,
             mesh_group_list,
             mesh_group_status,
+            mesh_group_delete,
             mesh_group_add_file_share,
             mesh_group_remove_file_share,
             mesh_group_set_file_device_access,

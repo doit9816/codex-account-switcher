@@ -1029,6 +1029,23 @@ export default function App() {
     }, running ? "分享组连接已启动" : "分享组连接已停止");
   }
 
+  async function deleteMeshGroup(groupId: string) {
+    return await run(async () => {
+      await invoke("mesh_group_delete", { groupId });
+      const mesh = await invoke<MeshStatus>("mesh_status");
+      setMeshStatus(mesh);
+      const remaining = mesh.groups ?? [];
+      const nextGroupId = remaining[0]?.groupId ?? null;
+      setMeshSelectedGroupId(nextGroupId);
+      if (nextGroupId) {
+        await reloadMeshGroupStatus(nextGroupId);
+      } else {
+        setMeshGroupStatus(null);
+      }
+      return mesh;
+    }, "分享组已删除");
+  }
+
   async function revokeMeshGroupDevice(input: { groupId: string; deviceId: string; revoked: boolean }) {
     return await run(async () => {
       const groupStatus = await invoke<MeshGroupStatus>("mesh_group_revoke", input);
@@ -1907,7 +1924,7 @@ export default function App() {
             openEditProfile(profile);
           }}
           disabled={busy}
-          title={t.editAccount}
+          title={t.editAccountHint}
           aria-label={t.editAccount}
         >
           <Pencil size={14} />
@@ -1920,7 +1937,7 @@ export default function App() {
               void consumeUsageReset(profile.id);
             }}
             disabled={busy}
-            title={t.useReset}
+            title={t.useResetHint}
             aria-label={t.useReset}
           >
             <RotateCcw size={14} />
@@ -1934,7 +1951,7 @@ export default function App() {
               void reauthorizeProfile(profile);
             }}
             disabled={busy || oauthStatus === "starting" || oauthStatus === "exchanging"}
-            title={t.reauthorize}
+            title={t.reauthorizeHint}
             aria-label={t.reauthorize}
           >
             <KeyRound size={14} />
@@ -1947,7 +1964,7 @@ export default function App() {
             void probeProfile(profile.id);
           }}
           disabled={busy}
-          title={t.probeQuota}
+          title={t.probeQuotaHint}
           aria-label={t.probeQuota}
         >
           <RefreshCcw size={14} />
@@ -1959,7 +1976,7 @@ export default function App() {
             void switchProfile(profile.id);
           }}
           disabled={busy}
-          title={profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? "固定到路由" : t.switch}
+          title={profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? t.pinRoutingHint : t.switchAccountHint}
           aria-label={profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? "固定到路由" : t.switch}
         >
           {profile.apiConfig && profile.apiConfig.wireApi !== "responses" ? <Network size={14} /> : <Zap size={14} />}
@@ -1972,8 +1989,8 @@ export default function App() {
               void fixProfileToRouting(profile.id);
             }}
             disabled={busy}
-            title="固定到路由"
-            aria-label="固定到路由"
+            title={t.pinRoutingHint}
+            aria-label={t.pinRoutingHint}
           >
             <Network size={14} />
           </Button>
@@ -1985,7 +2002,7 @@ export default function App() {
             void deleteProfile(profile.id);
           }}
           disabled={busy}
-          title={t.deleteAccount}
+          title={t.deleteAccountHint}
           aria-label={t.deleteAccount}
         >
           <Trash2 size={15} />
@@ -2008,7 +2025,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <AppNavigation page={activePage} onPageChange={setActivePage} language={languageSetting} onLanguageChange={setLanguageSetting} labels={{ language: t.language, followSystem: t.followSystem, dashboard: t.dashboard, settings: t.settings, refresh: t.refresh, subtitle: t.appSubtitle }} languageLabels={languageLabels} busy={busy} onRefresh={() => void refresh()} />
+      <AppNavigation page={activePage} onPageChange={setActivePage} language={languageSetting} onLanguageChange={setLanguageSetting} labels={{ language: t.language, followSystem: t.followSystem, dashboard: t.dashboard, settings: t.settings, refresh: t.refresh, refreshHint: t.refreshHint, subtitle: t.appSubtitle, mesh: t.multiDeviceSharing, routing: t.routingPage, page: t.pageLabel }} languageLabels={languageLabels} busy={busy} onRefresh={() => void refresh()} />
 
       {notice && (
         <div className={`notice ${notice.kind}`} role="status" aria-live="polite">
@@ -2044,16 +2061,16 @@ export default function App() {
             )}
             <div className="update-dialog-actions">
               {!updateInstalled && (
-                <Button className="icon-button" onClick={() => setShowUpdateDialog(false)} disabled={updateInstalling}>
+                <Button className="icon-button" onClick={() => setShowUpdateDialog(false)} disabled={updateInstalling} title={t.cancelUpdateDialogHint}>
                   {t.closeNotice}
                 </Button>
               )}
               {!updateInstalled ? (
-                <Button className="icon-button primary" onClick={() => void installAvailableUpdate()} disabled={updateInstalling}>
+                <Button className="icon-button primary" onClick={() => void installAvailableUpdate()} disabled={updateInstalling} title={t.installUpdateHint}>
                   <Download size={17} /> {t.downloadAndInstall}
                 </Button>
               ) : (
-                <Button className="icon-button primary" onClick={() => void relaunch()}>
+                <Button className="icon-button primary" onClick={() => void relaunch()} title={t.restartUpdateHint}>
                   <RotateCcw size={17} /> {t.relaunchNow}
                 </Button>
               )}
@@ -2091,18 +2108,18 @@ export default function App() {
                       {t.authorizationUrl}
                       <div className="oauth-url-row">
                         <Input value={oauthSession.authUrl} readOnly />
-                        <Button onClick={() => void copyOAuthUrl()}>{t.copyLink}</Button>
-                        <Button onClick={() => void reopenOAuthUrl()}>{t.openAgain}</Button>
+                        <Button onClick={() => void copyOAuthUrl()} title={t.copyOAuthUrlHint}>{t.copyLink}</Button>
+                        <Button onClick={() => void reopenOAuthUrl()} title={t.reopenOAuthUrlHint}>{t.openAgain}</Button>
                       </div>
                     </label>
                     <div className="oauth-callback-row">
                       <Input value={oauthCallbackInput} onChange={(event) => setOauthCallbackInput(event.target.value)} placeholder={t.manualCallback} disabled={oauthStatus === "exchanging"} />
-                      <Button className="icon-button" onClick={() => void submitOAuthCallback()} disabled={!oauthCallbackInput.trim() || oauthStatus === "exchanging"}>{t.submitCallback}</Button>
+                      <Button className="icon-button" onClick={() => void submitOAuthCallback()} disabled={!oauthCallbackInput.trim() || oauthStatus === "exchanging"} title={t.submitOAuthCallbackHint}>{t.submitCallback}</Button>
                     </div>
                     {oauthError && <div className="oauth-error">{oauthError}</div>}
                     <div className="oauth-action-row">
-                      {oauthStatus === "error" && <Button className="icon-button primary" onClick={() => void completeNativeOAuth(oauthSession.loginId)}>{t.retryExchange}</Button>}
-                      <Button className="icon-button" onClick={() => void cancelNativeOAuth()} disabled={oauthStatus === "exchanging"}>{t.cancelOAuth}</Button>
+                      {oauthStatus === "error" && <Button className="icon-button primary" onClick={() => void completeNativeOAuth(oauthSession.loginId)} title={t.retryExchangeHint}>{t.retryExchange}</Button>}
+                      <Button className="icon-button" onClick={() => void cancelNativeOAuth()} disabled={oauthStatus === "exchanging"} title={t.cancelOAuthHint}>{t.cancelOAuth}</Button>
                     </div>
                   </>
                 ) : (
@@ -2111,17 +2128,17 @@ export default function App() {
                     <Button className="icon-button primary wide-button" onClick={() => {
                       setOauthReauthProfileId(null);
                       void beginNativeOAuth();
-                    }} disabled={oauthStatus === "starting" || oauthStatus === "exchanging"}>
+                    }} disabled={oauthStatus === "starting" || oauthStatus === "exchanging"} title={t.startOAuthHint}>
                       <KeyRound size={17} /> {t.startOAuthLogin}
                     </Button>
                   </>
                 )}
                 <Collapse className="oauth-cli-fallback" items={[{ key: "cli", label: t.cliFallback, children: <>
                   <p>{t.cliFallbackHint}</p>
-                  <Button className="icon-button wide-button" onClick={() => void startCliOAuthLogin()} disabled={busy}>
+                  <Button className="icon-button wide-button" onClick={() => void startCliOAuthLogin()} disabled={busy} title={t.startCliLoginHint}>
                     <KeyRound size={17} /> {t.startCliLogin}
                   </Button>
-                  <Button className="icon-button wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
+                  <Button className="icon-button wide-button" onClick={() => void importCurrentAuth()} disabled={busy} title={t.oauthImportDoneHint}>
                     <CheckCircle2 size={17} /> {t.oauthImportDone}
                   </Button>
                 </> }]} />
@@ -2130,7 +2147,7 @@ export default function App() {
             {addAccountTab === "json" && (
               <div className="add-account-content">
                 <Input.TextArea className="auth-json-input" spellCheck={false} value={authJsonInput} onChange={(event) => setAuthJsonInput(event.target.value)} placeholder={t.authJsonPlaceholder} rows={9} />
-                <Button className="icon-button primary wide-button" onClick={() => void addAuthJsonAccount()} disabled={busy || !authJsonInput.trim()}>
+                <Button className="icon-button primary wide-button" onClick={() => void addAuthJsonAccount()} disabled={busy || !authJsonInput.trim()} title={t.addJsonAccountHint}>
                   <FileText size={17} /> {t.addFromJson}
                 </Button>
               </div>
@@ -2163,7 +2180,7 @@ export default function App() {
                     </label>
                   </div>
                 }]} />
-                <Button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiModel.trim() || !apiKey.trim()}>
+                <Button className="icon-button primary wide-button" onClick={() => void addApiProvider()} disabled={busy || !apiModel.trim() || !apiKey.trim()} title={t.addApiProviderHint}>
                   <KeyRound size={17} /> {t.addApiProvider}
                 </Button>
               </div>
@@ -2171,7 +2188,7 @@ export default function App() {
             {addAccountTab === "import" && (
               <div className="add-account-content">
                 <p>{t.codexConfigHint}</p>
-                <Button className="icon-button primary wide-button" onClick={() => void importCurrentAuth()} disabled={busy}>
+                <Button className="icon-button primary wide-button" onClick={() => void importCurrentAuth()} disabled={busy} title={t.importCurrentHint}>
                   <Download size={17} /> {t.importCurrent}
                 </Button>
               </div>
@@ -2246,11 +2263,12 @@ export default function App() {
                   onEnabledChange={setEditEnabledDraft}
                 />
                 <div className="edit-form-actions">
-                  <Button onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</Button>
+                  <Button onClick={closeEditProfile} disabled={busy} title={t.closeDialogHint}>{t.closeNotice}</Button>
                   <Button
                     className="icon-button primary"
                     onClick={() => void saveProfileDetails()}
                     disabled={busy || !editAliasDraft.trim() || !editModelDraft.trim()}
+                    title={t.saveProfileHint}
                   >
                     <ShieldCheck size={17} /> {t.saveRules}
                   </Button>
@@ -2282,11 +2300,12 @@ export default function App() {
                   onEnabledChange={setEditEnabledDraft}
                 />
                 <div className="edit-form-actions">
-                  <Button onClick={closeEditProfile} disabled={busy}>{t.closeNotice}</Button>
+                  <Button onClick={closeEditProfile} disabled={busy} title={t.closeDialogHint}>{t.closeNotice}</Button>
                   <Button
                     className="icon-button primary"
                     onClick={() => void saveProfileDetails()}
                     disabled={busy || !editAliasDraft.trim()}
+                    title={t.saveProfileHint}
                   >
                     <ShieldCheck size={17} /> {t.saveRules}
                   </Button>
@@ -2376,6 +2395,7 @@ export default function App() {
           onSelectGroup={selectMeshGroup}
           onStartGroup={({ groupId }) => setMeshGroupRunning(groupId, true)}
           onStopGroup={({ groupId }) => setMeshGroupRunning(groupId, false)}
+          onDeleteGroup={({ groupId }) => deleteMeshGroup(groupId)}
           onRevokeDevice={revokeMeshGroupDevice}
           onRemoveDevice={removeMeshGroupDevice}
           onSaveGroupDevice={saveMeshGroupDevice}
@@ -2390,8 +2410,8 @@ export default function App() {
         <div className="path-control">
           <label>{t.codexDir}</label>
           <Input value={codexHome} onChange={(event) => setCodexHome(event.target.value)} />
-          <Button icon={<FileSearch size={17} />} onClick={() => void scanHome()} disabled={busy} title={t.scan}>{t.scan}</Button>
-          <Button icon={<FolderOpen size={17} />} onClick={() => void openCodexHome()} disabled={busy} title={t.openDir}>{t.openDir}</Button>
+          <Button icon={<FileSearch size={17} />} onClick={() => void scanHome()} disabled={busy} title={t.scanCodexHomeHint}>{t.scan}</Button>
+          <Button icon={<FolderOpen size={17} />} onClick={() => void openCodexHome()} disabled={busy} title={t.openCodexHomeHint}>{t.openDir}</Button>
         </div>
         <div className="scan-state">
           <StatusPill ok={!!scan?.exists} text={scan?.exists ? t.dirExists : t.notScanned} />
@@ -2419,8 +2439,8 @@ export default function App() {
             setProxyUrl(event.target.value);
           }}
         />
-        <Button icon={<ShieldCheck size={17} />} onClick={() => void saveProxySettings()} disabled={busy} title={t.saveProxy}>{t.saveProxy}</Button>
-        <Button icon={<Wifi size={17} />} onClick={() => void testProxySettings()} disabled={busy} title={t.testProxy}>{t.testProxy}</Button>
+        <Button icon={<ShieldCheck size={17} />} onClick={() => void saveProxySettings()} disabled={busy} title={t.saveProxyHint}>{t.saveProxy}</Button>
+        <Button icon={<Wifi size={17} />} onClick={() => void testProxySettings()} disabled={busy} title={t.testProxyHint}>{t.testProxy}</Button>
         <span className="proxy-hint">{t.proxyHint}</span>
       </Card>
 
@@ -2484,8 +2504,8 @@ export default function App() {
             style={{ width: 100 }}
           />
         </label>
-        <Button icon={<RefreshCcw size={17} />} onClick={() => void saveAutoSettings()} disabled={busy || autoProbeRunning} title={t.saveAutoRefresh}>{autoProbeRunning ? "探测中..." : t.saveAutoRefresh}</Button>
-        <Button icon={<KeyRound size={17} />} onClick={() => void refreshOtherProfileTokensNow()} disabled={busy} title={t.keepaliveNow}>{t.keepaliveNow}</Button>
+        <Button icon={<RefreshCcw size={17} />} onClick={() => void saveAutoSettings()} disabled={busy || autoProbeRunning} title={t.saveAutoSettingsHint}>{autoProbeRunning ? "探测中..." : t.saveAutoRefresh}</Button>
+        <Button icon={<KeyRound size={17} />} onClick={() => void refreshOtherProfileTokensNow()} disabled={busy} title={t.keepaliveNowHint}>{t.keepaliveNow}</Button>
         <span className="proxy-hint">{t.autoHint}</span>
       </Card>
 
@@ -2532,7 +2552,7 @@ export default function App() {
           </div>
         )}
         <div className="action-row">
-          <Button className="icon-button" onClick={() => void checkForUpdate(true)} disabled={updateChecking || updateInstalling} title={t.checkUpdate}>
+          <Button className="icon-button" onClick={() => void checkForUpdate(true)} disabled={updateChecking || updateInstalling} title={t.checkUpdateHint}>
             <RefreshCcw size={17} />
             {updateChecking ? t.checkUpdate : t.checkUpdate}
           </Button>
@@ -2540,12 +2560,12 @@ export default function App() {
             className="icon-button primary"
             onClick={() => void installAvailableUpdate()}
             disabled={!availableUpdate || updateInstalling || updateInstalled}
-            title={t.downloadAndInstall}
+            title={t.installUpdateHint}
           >
             <Download size={17} />
             {t.downloadAndInstall}
           </Button>
-          <Button className="icon-button" onClick={() => void relaunch()} disabled={!updateInstalled} title={t.relaunchNow}>
+          <Button className="icon-button" onClick={() => void relaunch()} disabled={!updateInstalled} title={t.restartUpdateHint}>
             <RotateCcw size={17} />
             {t.relaunchNow}
           </Button>
@@ -2598,7 +2618,7 @@ export default function App() {
                   onChange={(event) => setAccountFilter(event.target.value)}
                   title={t.searchPlaceholder}
                 />
-                <Button type="primary" icon={<KeyRound size={17} />} onClick={() => setShowAddAccountDialog(true)} disabled={busy} title={t.addAccount}>{t.addAccount}</Button>
+                <Button type="primary" icon={<KeyRound size={17} />} onClick={() => setShowAddAccountDialog(true)} disabled={busy} title={t.addAccountDialogHint}>{t.addAccount}</Button>
               </div>
             </div>
           </div>
@@ -2606,7 +2626,7 @@ export default function App() {
           <Collapse className="codex-config-panel" items={[{ key: "config", label: t.codexConfig, children: <>
             <p>{t.codexConfigHint}</p>
             <div className="config-toolbar">
-              <Button className="icon-button" onClick={() => void loadCodexConfigFiles()} disabled={busy}>
+              <Button className="icon-button" onClick={() => void loadCodexConfigFiles()} disabled={busy} title={t.loadConfigHint}>
                 <FileSearch size={16} /> {t.loadConfig}
               </Button>
               <span>{codexConfig?.codexHome || codexHome || "~/.codex"}</span>
@@ -2619,10 +2639,10 @@ export default function App() {
                     <small>{codexConfig?.authJson.exists === false ? t.configMissing : codexConfig?.authJson.path || "auth.json"}</small>
                   </div>
                   <div className="row-actions">
-                    <Button size="small" onClick={() => void formatCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
+                    <Button size="small" onClick={() => void formatCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()} title={t.formatAuthJsonHint}>
                       {t.formatConfig}
                     </Button>
-                    <Button size="small" type="primary" onClick={() => void saveCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()}>
+                    <Button size="small" type="primary" onClick={() => void saveCodexConfig("auth.json")} disabled={busy || !authJsonDraft.trim()} title={t.saveAuthJsonHint}>
                       {t.saveConfig}
                     </Button>
                   </div>
@@ -2643,10 +2663,10 @@ export default function App() {
                     <small>{codexConfig?.configToml.exists === false ? t.configMissing : codexConfig?.configToml.path || "config.toml"}</small>
                   </div>
                   <div className="row-actions">
-                    <Button size="small" onClick={() => void formatCodexConfig("config.toml")} disabled={busy}>
+                    <Button size="small" onClick={() => void formatCodexConfig("config.toml")} disabled={busy} title={t.formatTomlHint}>
                       {t.formatConfig}
                     </Button>
-                    <Button size="small" type="primary" onClick={() => void saveCodexConfig("config.toml")} disabled={busy}>
+                    <Button size="small" type="primary" onClick={() => void saveCodexConfig("config.toml")} disabled={busy} title={t.saveTomlHint}>
                       {t.saveConfig}
                     </Button>
                   </div>
@@ -2690,8 +2710,8 @@ export default function App() {
                               event.stopPropagation();
                               void copyProfileAccount(profile);
                             }}
-                            title={t.copyAccount}
-                            aria-label={t.copyAccount}
+                            title={t.copyAccountHint}
+                            aria-label={t.copyAccountHint}
                           >
                             <Copy size={13} />
                           </Button>
@@ -2841,7 +2861,7 @@ export default function App() {
                   className="mini-button"
                   onClick={() => setAccountPage((page) => Math.max(1, page - 1))}
                   disabled={accountPage <= 1}
-                  title={t.previousPage}
+                  title={t.previousPageHint}
                   aria-label={t.previousPage}
                 >
                   {t.previousPage}
@@ -2850,7 +2870,7 @@ export default function App() {
                   className="mini-button"
                   onClick={() => setAccountPage((page) => Math.min(totalAccountPages, page + 1))}
                   disabled={accountPage >= totalAccountPages}
-                  title={t.nextPage}
+                  title={t.nextPageHint}
                   aria-label={t.nextPage}
                 >
                   {t.nextPage}
@@ -2868,11 +2888,11 @@ export default function App() {
           <p>迁移包导出/导入、连接分享码和设备同步已统一放到多设备共享页。</p>
         </div>
         <div className="migration-controls">
-          <Button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title="打开多设备共享">
+          <Button className="icon-button primary" onClick={() => setActivePage("mesh")} disabled={busy} title={t.openMeshHint}>
             <Share2 size={17} />
             打开多设备共享
           </Button>
-          <Button className="icon-button" onClick={() => void restoreBackup()} disabled={busy} title={t.restoreBackup}>
+          <Button className="icon-button" onClick={() => void restoreBackup()} disabled={busy} title={t.restoreBackupHint}>
             <RotateCcw size={17} />
             {t.restoreBackup}
           </Button>

@@ -673,7 +673,9 @@ fn stream_download_to_with_progress<R: Read, F: FnMut(u64, Option<u64>)>(
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let count = source.read(&mut buffer).map_err(display_err)?;
-            if count == 0 { break; }
+            if count == 0 {
+                break;
+            }
             output.write_all(&buffer[..count]).map_err(display_err)?;
             bytes += count as u64;
             progress(bytes, total);
@@ -829,6 +831,12 @@ pub(super) fn send_remote_file_request(
         append_app_log(app, "warn", &format!("mesh_remote_file_request_rejected group_id={group_id} device_id={device_id} operation={operation} status={status} elapsed_ms={}", started.elapsed().as_millis()));
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err("对端没有文件分享接口，请先升级对端客户端。".to_string());
+        }
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return Err(
+                "对端拒绝了文件访问：请在目标设备的共享组设备列表中，允许本机设备访问文件。"
+                    .to_string(),
+            );
         }
         return Err(format!("remote {operation} request failed: HTTP {status}"));
     }
@@ -1078,9 +1086,17 @@ pub(crate) fn download_group_remote_file(
     let destination = PathBuf::from(destination);
     let total = response.content_length();
     let transfer_id = format!("{group_id}:{device_id}:{share_id}:{relative}");
-    match stream_download_to_with_progress(&mut response, &destination, |bytes, total| {
-        let _ = app.emit("mesh-file-download-progress", serde_json::json!({"transferId": transfer_id, "bytes": bytes, "total": total}));
-    }, total) {
+    match stream_download_to_with_progress(
+        &mut response,
+        &destination,
+        |bytes, total| {
+            let _ = app.emit(
+                "mesh-file-download-progress",
+                serde_json::json!({"transferId": transfer_id, "bytes": bytes, "total": total}),
+            );
+        },
+        total,
+    ) {
         Ok(bytes) => {
             append_app_log(&app, "info", &format!("mesh_remote_file_download_completed group_id={group_id} device_id={device_id} share_id={share_id} bytes={bytes} elapsed_ms={}", started.elapsed().as_millis()));
             Ok(bytes)
@@ -1228,6 +1244,28 @@ pub(super) fn handle_file_request_with_auth(
         );
     }
     let path = url.split('?').next().unwrap_or(&url);
+    // AI access is a local gateway: when a remote file-enabled device exists,
+    // forward AI requests to that device instead of exposing this machine's
+    // local shares. A deviceId query parameter may pin a specific remote node.
+    if ai_authorized {
+        let requested_device = query.get("deviceId").map(String::as_str);
+        let candidate = group.authorized_devices.iter().find(|device| {
+            device.id != local_device_id()
+                && device.trusted
+                && device.revoked_at.is_none()
+                && requested_device.is_none_or(|requested| requested == device.id)
+        });
+        if let Some(device) = candidate {
+            return proxy_ai_file_request(app, request, group_id, &device.id, path, &query);
+        }
+        if requested_device.is_some() {
+            return respond_sync_json(
+                request,
+                404,
+                serde_json::json!({"error":"所选终端不存在、未受信任或已撤销"}),
+            );
+        }
+    }
     let mut response_status = 200;
     let result = if method == tiny_http::Method::Get && path == format!("{MESH_FILES_PATH}/shares")
     {
@@ -1313,12 +1351,95 @@ pub(super) fn handle_file_request_with_auth(
     result
 }
 
+fn proxy_ai_file_request(
+    app: Option<&AppHandle>,
+    request: Request,
+    group_id: &str,
+    device_id: &str,
+    path: &str,
+    query: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let Some(app) = app else {
+        return respond_sync_json(
+            request,
+            503,
+            serde_json::json!({"error":"remote AI file proxy is unavailable"}),
+        );
+    };
+    let (client, base_url, credential, local_id) =
+        match remote_file_client(app, group_id, device_id) {
+            Ok(value) => value,
+            Err(error) => {
+                return respond_sync_json(request, 502, serde_json::json!({"error": error}))
+            }
+        };
+    let share_id = query.get("shareId").map(String::as_str);
+    let relative = query.get("path").map(String::as_str);
+    let operation = if path.ends_with("/shares") {
+        "ai_proxy_list_shares"
+    } else if path.ends_with("/download") {
+        "ai_proxy_download"
+    } else {
+        "ai_proxy_list_files"
+    };
+    let response = match send_remote_file_request(
+        app,
+        group_id,
+        device_id,
+        operation,
+        remote_file_request(
+            &client,
+            &base_url,
+            group_id,
+            &credential,
+            &local_id,
+            path,
+            share_id,
+            relative,
+        ),
+    ) {
+        Ok(response) => response,
+        Err(error) => return respond_sync_json(request, 502, serde_json::json!({"error": error})),
+    };
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let body = match response.bytes() {
+        Ok(body) => body,
+        Err(error) => {
+            return respond_sync_json(
+                request,
+                502,
+                serde_json::json!({"error": display_err(error)}),
+            )
+        }
+    };
+    let header = Header::from_bytes("Content-Type", content_type)
+        .map_err(|_| "failed to build proxy response header".to_string())?;
+    request
+        .respond(
+            Response::from_data(body.to_vec())
+                .with_status_code(StatusCode(status))
+                .with_header(header),
+        )
+        .map_err(display_err)
+}
+
 pub(crate) fn handle_mcp_request(app: AppHandle, request: Request) -> Result<(), String> {
-    let request_group = request.url().split_once('?').and_then(|(_, query)| {
-        url::form_urlencoded::parse(query.as_bytes())
-            .find(|(key, _)| key == "groupId")
-            .map(|(_, value)| value.into_owned())
-    });
+    let query = request
+        .url()
+        .split_once('?')
+        .map(|(_, query)| {
+            url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let request_group = query.get("groupId").cloned();
     let Some(request_group) = request_group else {
         append_app_log(
             &app,
@@ -1383,8 +1504,90 @@ pub(crate) fn handle_mcp_request(app: AppHandle, request: Request) -> Result<(),
             serde_json::json!({"error":"MCP is only available locally or through this share group"}),
         );
     }
-    let authorized = ai_file_token_matches(auth_group, &auth_key, &bearer);
-    handle_mcp_request_with_auth(Some(&app), request, &request_group, auth_group, authorized)
+    let ai_authorized = ai_file_token_matches(auth_group, &auth_key, &bearer);
+    if ai_authorized {
+        if let Some(device_id) = query.get("deviceId") {
+            return proxy_ai_mcp_request(&app, request, &request_group, device_id);
+        }
+    }
+    let device_authorized =
+        group_file_device_request_authorized(&request, &auth_store, auth_group, &auth_key);
+    handle_mcp_request_with_auth(
+        Some(&app),
+        request,
+        &request_group,
+        auth_group,
+        ai_authorized || device_authorized,
+    )
+}
+
+fn proxy_ai_mcp_request(
+    app: &AppHandle,
+    mut request: Request,
+    group_id: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    let mut body = Vec::new();
+    request
+        .as_reader()
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut body)
+        .map_err(display_err)?;
+    if body.len() > 64 * 1024 {
+        return respond_sync_json(
+            request,
+            413,
+            serde_json::json!({"error":"MCP request exceeds 64 KiB"}),
+        );
+    }
+    let (client, base_url, credential, local_id) =
+        match remote_file_client(app, group_id, device_id) {
+            Ok(value) => value,
+            Err(error) => {
+                return respond_sync_json(request, 502, serde_json::json!({"error":error}))
+            }
+        };
+    let mut endpoint = url::Url::parse(&base_url).map_err(display_err)?;
+    endpoint.set_path("/mcp");
+    endpoint.set_query(Some(&format!("groupId={}", urlencoding::encode(group_id))));
+    let response = client
+        .post(endpoint)
+        .header(MESH_GROUP_ID_HEADER, group_id)
+        .header(MESH_HELLO_DEVICE_ID_HEADER, local_id)
+        .header(MESH_DEVICE_CREDENTIAL_HEADER, credential)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send();
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            let status = response.status();
+            let detail = response.text().unwrap_or_default();
+            return respond_sync_json(
+                request,
+                status.as_u16(),
+                serde_json::json!({"error":detail}),
+            );
+        }
+        Err(error) => {
+            return respond_sync_json(
+                request,
+                502,
+                serde_json::json!({"error":error.without_url().to_string()}),
+            )
+        }
+    };
+    let status = response.status().as_u16();
+    let response_body = response.bytes().map_err(display_err)?;
+    let header = Header::from_bytes("Content-Type", "application/json")
+        .map_err(|_| "failed to build MCP response header")?;
+    request
+        .respond(
+            Response::from_data(response_body.to_vec())
+                .with_status_code(StatusCode(status))
+                .with_header(header),
+        )
+        .map_err(display_err)
 }
 
 #[cfg(test)]
@@ -1765,9 +1968,12 @@ mod tests {
                     _ => return,
                 };
                 if request.url().split('?').next() == Some("/mcp") {
-                    let authorized = request.remote_addr().is_some_and(|address| {
-                        ip_is_local_or_in_group(address.ip(), &request_group.virtual_cidr)
-                    });
+                    let authorized = group_file_device_request_authorized(
+                        &request,
+                        &server_store,
+                        &request_group,
+                        &key,
+                    );
                     let _ = handle_mcp_request_with_auth(
                         None,
                         request,
@@ -1900,7 +2106,9 @@ mod tests {
                 let mcp_client = build_remote_file_http_client(Some(&proxy_url))?;
                 let response = mcp_client
                     .post(&mcp_url)
-                    .bearer_auth(ai_token)
+                    .header(MESH_GROUP_ID_HEADER, &transfer_group_id)
+                    .header(MESH_HELLO_DEVICE_ID_HEADER, &transfer_device_id)
+                    .header(MESH_DEVICE_CREDENTIAL_HEADER, device_credential)
                     .json(&serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
                     .header("connection", "close")
                     .send()

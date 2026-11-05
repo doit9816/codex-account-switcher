@@ -157,6 +157,21 @@ button:disabled {
   min-width: 0;
 }
 
+/* Keep Ant Design selects vertically centered alongside tabs and buttons. */
+.topbar-actions > .ant-select {
+  align-self: center;
+}
+
+.topbar-actions > .ant-select .ant-select-selector {
+  align-items: center;
+  display: flex;
+}
+
+.topbar-actions > .ant-select .ant-select-selection-item,
+.topbar-actions > .ant-select .ant-select-selection-placeholder {
+  line-height: 1.4;
+}
+
 .topbar-actions .ant-tabs {
   min-width: 0;
 }
@@ -833,6 +848,8 @@ input:focus {
   gap: 7px;
   height: 38px;
   justify-content: center;
+  max-width: 100%;
+  min-width: 0;
   padding: 0 12px;
   white-space: nowrap;
 }
@@ -900,8 +917,9 @@ input:focus {
 .routing-columns {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
   align-items: start;
+  min-width: 0;
 }
 
 .routing-column {
@@ -909,6 +927,13 @@ input:focus {
   display: grid;
   gap: 16px;
   min-width: 0;
+  width: 100%;
+}
+
+.routing-column > .ant-card,
+.routing-column > .panel {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .routing-settings-panel .form-grid {
@@ -987,6 +1012,10 @@ input:focus {
   margin-bottom: 0;
 }
 
+.routing-key-panel {
+  gap: 14px;
+}
+
 .routing-takeover-card {
   align-items: flex-start;
   background: #f8fafc;
@@ -1034,7 +1063,7 @@ input:focus {
 .routing-status-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .routing-status-grid > div {
@@ -1106,6 +1135,20 @@ input:focus {
   gap: 6px;
   margin-bottom: 10px;
   padding: 10px 12px;
+}
+
+.routing-key-panel > .action-row {
+  align-items: stretch;
+  background: #f8fafc;
+  border: 1px solid #e4eaf1;
+  border-radius: 10px;
+  gap: 8px;
+  padding: 8px;
+}
+
+.routing-key-panel > .action-row .icon-button {
+  flex: 1 1 150px;
+  justify-content: center;
 }
 
 .routing-secret span {
@@ -3084,19 +3127,20 @@ input:focus {
 .mesh-group-list {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 360px));
+  justify-content: start;
 }
 
 .mesh-group-card {
-  align-items: center;
+  align-items: stretch;
   background: #ffffff;
   border: 1px solid #dce4ed;
   border-radius: 10px;
   color: #1d2939;
   cursor: pointer;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
   padding: 12px;
   text-align: left;
@@ -3113,8 +3157,45 @@ input:focus {
   gap: 10px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
+  height: auto;
+  min-height: 58px;
   padding: 0;
   text-align: left;
+  white-space: normal;
+  width: 100%;
+}
+
+.mesh-group-card-select.ant-btn,
+.mesh-group-card-select.ant-btn:hover,
+.mesh-group-card-select.ant-btn:focus,
+.mesh-group-card-select.ant-btn:active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: inherit;
+}
+
+.mesh-group-card > .icon-button {
+  justify-content: center;
+  margin-top: 2px;
+  width: 100%;
+}
+
+.mesh-group-card-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.mesh-group-card-actions > .icon-button {
+  flex: 1 1 150px;
+  justify-content: center;
+}
+
+.mesh-group-card-actions > .ant-btn-dangerous {
+  flex: 0 0 auto;
 }
 
 .mesh-group-card-select:disabled {
@@ -3122,14 +3203,15 @@ input:focus {
 }
 
 .mesh-group-card:hover {
-  background: #f8fbff;
-  border-color: #b7cbe7;
+  background: #ffffff;
+  border-color: #c8d5e5;
+  box-shadow: 0 1px 4px rgba(16, 32, 51, 0.06);
 }
 
 .mesh-group-card.active {
   background: #f5f9ff;
   border-color: #4f82d8;
-  box-shadow: 0 0 0 2px rgba(79, 130, 216, 0.12);
+  box-shadow: 0 0 0 1px rgba(79, 130, 216, 0.08);
 }
 
 .mesh-group-card-icon {
@@ -3147,6 +3229,7 @@ input:focus {
   display: grid;
   gap: 6px;
   min-width: 0;
+  width: 100%;
 }
 
 .mesh-group-card-title,
@@ -3401,7 +3484,6 @@ input:focus {
 
   .mesh-mode-grid,
   .mesh-form-grid,
-  .mesh-migration-options,
   .mesh-device-row {
     grid-template-columns: 1fr;
   }
@@ -3630,9 +3712,22 @@ input:focus {
 }
 
 .mesh-device-sync-heading {
+  align-items: center;
   color: #475467;
+  display: flex;
   font-size: 12px;
+  gap: 5px;
   font-weight: 700;
+  width: fit-content;
+}
+
+.mesh-help-indicator {
+  color: #1677ff;
+  cursor: help;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 4px;
 }
 
 .mesh-device-auto-sync {
@@ -3707,19 +3802,39 @@ input:focus {
 }
 
 .mesh-groups-page .mesh-migration-options {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
-.mesh-groups-page .mesh-migration-options > input[type="password"] {
+.mesh-groups-page .mesh-migration-options > .ant-input-affix-wrapper {
   grid-column: 1 / -1;
+  width: 100%;
 }
 
 .mesh-groups-page .mesh-migration-options .checkline {
   align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e4eaf1;
+  border-radius: 8px;
   display: flex !important;
   gap: 8px;
   justify-content: flex-start;
+  min-height: 42px;
+  padding: 8px 10px;
   width: 100%;
+}
+
+.mesh-groups-page .mesh-migration-options .checkline > span:last-child {
+  line-height: 1.35;
+}
+
+.mesh-groups-page .mesh-migration-options .checkline > .ant-checkbox-wrapper {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  line-height: 1;
 }
 
 .mesh-groups-page .mesh-migration-options .checkline input[type="checkbox"] {
@@ -3752,6 +3867,14 @@ input:focus {
   .mesh-groups-page .mesh-group-card > .icon-button {
     justify-self: start;
   }
+
+.mesh-groups-page .mesh-group-card-actions {
+  justify-content: stretch;
+}
+
+.mesh-groups-page .mesh-group-card-actions > .icon-button {
+  flex-basis: 100%;
+}
 
   .mesh-groups-page .mesh-files-panel .mesh-shared-file-row,
   .mesh-groups-page .mesh-remote-files-panel .mesh-shared-file-row {

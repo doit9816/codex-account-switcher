@@ -9,7 +9,7 @@ type Props = {
   onPageChange: (page: Page) => void;
   language: LanguageSetting;
   onLanguageChange: (language: LanguageSetting) => void;
-  labels: { language: string; followSystem: string; dashboard: string; settings: string; refresh: string; subtitle: string };
+  labels: { language: string; followSystem: string; dashboard: string; settings: string; refresh: string; refreshHint: string; subtitle: string; mesh: string; routing: string; page: string };
   languageLabels: Record<"zh-CN" | "en" | "zh-TW", string>;
   busy: boolean;
   onRefresh: () => void;
@@ -26,24 +26,24 @@ export function AppNavigation({ page, onPageChange, language, onLanguageChange, 
         { value: "zh-TW", label: languageLabels["zh-TW"] },
       ]} />
       <Tabs className="desktop-page-tabs" activeKey={page} onChange={(key) => onPageChange(key as Page)} items={[
-        { key: "dashboard", label: <><LayoutDashboard size={16} /> {labels.dashboard}</> },
-        { key: "settings", label: <><Settings size={16} /> {labels.settings}</> },
-        { key: "mesh", label: <><Share2 size={16} /> 多设备共享</> },
-        { key: "routing", label: <><Network size={16} /> 路由</> },
+        { key: "dashboard", label: <span title={labels.dashboard}><LayoutDashboard size={16} /> {labels.dashboard}</span> },
+        { key: "settings", label: <span title={labels.settings}><Settings size={16} /> {labels.settings}</span> },
+        { key: "mesh", label: <span title={labels.mesh}><Share2 size={16} /> {labels.mesh}</span> },
+        { key: "routing", label: <span title={labels.routing}><Network size={16} /> {labels.routing}</span> },
       ]} />
       <Select
         className="mobile-page-select"
-        aria-label="页面"
+        aria-label={labels.page}
         value={page}
         onChange={(key) => onPageChange(key as Page)}
         options={[
           { value: "dashboard", label: labels.dashboard },
           { value: "settings", label: labels.settings },
-          { value: "mesh", label: "多设备共享" },
-          { value: "routing", label: "路由" },
+          { value: "mesh", label: labels.mesh },
+          { value: "routing", label: labels.routing },
         ]}
       />
-      <Button type="primary" icon={<RefreshCcw size={16} />} disabled={busy} onClick={onRefresh}>{labels.refresh}</Button>
+      <Button type="primary" icon={<RefreshCcw size={16} />} disabled={busy} onClick={onRefresh} title={labels.refreshHint}>{labels.refresh}</Button>
     </div>
   </header>;
 }

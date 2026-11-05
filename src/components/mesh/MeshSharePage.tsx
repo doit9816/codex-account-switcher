@@ -21,7 +21,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Button, Card, Checkbox, Input, Switch, Collapse, Dropdown, Tree, Breadcrumb, Modal, Alert, type TreeDataNode } from "antd";
+import { Button, Card, Checkbox, Input, Switch, Collapse, Dropdown, Tree, Breadcrumb, Modal, Alert, Select, type TreeDataNode } from "antd";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { logAppError } from "../../api/appLog";
 import {
@@ -109,6 +109,7 @@ export type MeshSharePageProps = {
   onSelectGroup?: (input: MeshGroupSelectInput) => void | Promise<unknown>;
   onStartGroup?: (input: MeshGroupStartInput) => void | Promise<unknown>;
   onStopGroup?: (input: MeshGroupStopInput) => void | Promise<unknown>;
+  onDeleteGroup?: (input: MeshGroupSelectInput) => void | Promise<unknown>;
   onRevokeDevice?: (input: MeshGroupRevokeDeviceInput) => void | Promise<unknown>;
   onRemoveDevice?: (input: MeshGroupRemoveDeviceInput) => void | Promise<unknown>;
   onSaveGroupDevice?: (input: MeshGroupDeviceSyncInput) => void | Promise<unknown>;
@@ -129,6 +130,8 @@ export function MeshSharePage(props: MeshSharePageProps) {
   const [syncingDeviceId, setSyncingDeviceId] = useState<string | null>(null);
   const [removeConfirmDeviceId, setRemoveConfirmDeviceId] = useState<string | null>(null);
   const [selectedShareId, setSelectedShareId] = useState<string>("");
+  const [aiGuideCopied, setAiGuideCopied] = useState(false);
+  const [aiTargetDeviceId, setAiTargetDeviceId] = useState("");
   const [expandedLocalKeys, setExpandedLocalKeys] = useState<string[]>([]);
   const [localFiles, setLocalFiles] = useState<MeshFileEntry[]>([]);
   const [remoteFiles, setRemoteFiles] = useState<MeshFileEntry[]>([]);
@@ -195,8 +198,15 @@ export function MeshSharePage(props: MeshSharePageProps) {
       ?? effectiveGroups[0]?.id;
   const activeGroup = effectiveGroups.find((group) => group.id === activeGroupId) ?? effectiveGroups[0];
   const groupDevices = remoteDevices;
+  const aiDevices = props.groupStatus?.fileAccess?.aiDevices ?? [];
   const selectedProfiles = props.profiles.filter((profile) => props.exportProfileIds.includes(profile.id));
   const activeIsLegacy = usingLegacyGroup || activeGroup?.id === LEGACY_GROUP_ID;
+
+  useEffect(() => {
+    if (!aiDevices.some((device) => device.id === aiTargetDeviceId)) {
+      setAiTargetDeviceId(aiDevices[0]?.id ?? "");
+    }
+  }, [aiDevices.map((device) => device.id).join("|"), aiTargetDeviceId]);
   const canUseGroupCommands = !activeIsLegacy;
 
   useEffect(() => {
@@ -325,6 +335,14 @@ export function MeshSharePage(props: MeshSharePageProps) {
 
   async function browseShare(shareId: string, relative = "") {
     if (!activeGroup) return;
+    if (!relative && selectedShareId === shareId) {
+      setSelectedShareId("");
+      setFilePath("");
+      setLocalFiles([]);
+      setLocalDirectoryNodes({});
+      setExpandedLocalKeys([]);
+      return;
+    }
     setSelectedShareId(shareId);
     setFilePath(relative);
     setLocalDirectoryNodes({});
@@ -451,7 +469,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
               icon={<Plus size={17} />}
               onClick={() => { setActionError(""); setGroupName(""); setDialog("create"); }}
               disabled={props.busy || !props.onCreateGroup}
-              title={!props.onCreateGroup ? t.waitingForGroupCommands : undefined}
+              title={props.onCreateGroup ? t.createGroupHint : t.waitingForGroupCommands}
             >
               {t.createGroup}
             </Button>
@@ -460,6 +478,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
               icon={<Link2 size={17} />}
               onClick={() => { setActionError(""); setGroupName(""); setShareCode(""); setDialog("join"); }}
               disabled={props.busy}
+              title={t.joinGroupHint}
             >
               {t.joinGroup}
             </Button>
@@ -480,6 +499,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                   className="mesh-group-card-select"
                   onClick={() => selectGroup(group)}
                   disabled={props.busy || (!selected && !props.onSelectGroup)}
+                  title={selected ? t.activeGroup : meshText(t.selectGroupHint, { name: group.name })}
                 >
                   <span className="mesh-group-card-icon"><Users size={19} /></span>
                   <span className="mesh-group-card-main">
@@ -494,10 +514,26 @@ export function MeshSharePage(props: MeshSharePageProps) {
                   </span>
                   {selected && <CheckCircle2 className="mesh-group-card-check" size={18} />}
                 </Button>
-                {selected && <Button className={`icon-button ${groupRunning ? "" : "primary"}`} onClick={toggleGroupRuntime} disabled={props.busy || runtimePending || !groupActionAvailable}>
-                  {groupRunning ? <Square size={16} /> : <Play size={16} />}
-                  {runtimePending ? t.processing : groupRunning ? t.stopGroup : t.startGroup}
-                </Button>}
+                <div className="mesh-group-card-actions">
+                  {selected && <Button className={`icon-button ${groupRunning ? "" : "primary"}`} onClick={toggleGroupRuntime} disabled={props.busy || runtimePending || !groupActionAvailable} title={groupRunning ? t.stopGroupHint : t.startGroupHint}>
+                    {groupRunning ? <Square size={16} /> : <Play size={16} />}
+                    {runtimePending ? t.processing : groupRunning ? t.stopGroup : t.startGroup}
+                  </Button>}
+                  {group.id !== LEGACY_GROUP_ID && props.onDeleteGroup && <Button
+                    danger
+                    icon={<Trash2 size={15} />}
+                    disabled={props.busy || group.runtimeStatus === "starting" || group.runtimeStatus === "stopping"}
+                    title={t.deleteGroupHint}
+                    onClick={() => Modal.confirm({
+                      title: t.deleteGroup,
+                      content: meshText(t.deleteGroupConfirm, { name: group.name }),
+                      okText: t.deleteGroup,
+                      okButtonProps: { danger: true },
+                      cancelText: t.cancel,
+                      onOk: () => runAction(() => props.onDeleteGroup!({ groupId: group.id })),
+                    })}
+                  >{t.deleteGroup}</Button>}
+                </div>
               </div>
             );
           })}
@@ -514,8 +550,8 @@ export function MeshSharePage(props: MeshSharePageProps) {
           <div className="panel-header">
             <div><h2>{t.filesTitle}</h2><p>{t.filesHint}</p></div>
             <div className="mesh-file-header-actions">
-              <Button icon={<Plus size={16} />} onClick={() => void addFileShare(false)} disabled={props.busy}>{t.addFiles}</Button>
-              <Button type="primary" icon={<Plus size={16} />} onClick={() => void addFileShare(true)} disabled={props.busy}>{t.addFolder}</Button>
+              <Button icon={<Plus size={16} />} onClick={() => void addFileShare(false)} disabled={props.busy} title={t.addFilesHint}>{t.addFiles}</Button>
+              <Button type="primary" icon={<Plus size={16} />} onClick={() => void addFileShare(true)} disabled={props.busy} title={t.addFolderHint}>{t.addFolder}</Button>
             </div>
           </div>
           {(props.groupStatus?.fileAccess?.shares ?? []).map((share) => (
@@ -523,8 +559,8 @@ export function MeshSharePage(props: MeshSharePageProps) {
               <div className="mesh-shared-file-row">
                 <span className="mesh-shared-file-info"><span className="mesh-share-name"><span className="mesh-file-type-icon">{share.kind === "directory" ? <Folder size={17} /> : <File size={17} />}</span><strong title={share.name}>{share.name}</strong></span></span>
                 <div className="mesh-shared-file-actions"><Dropdown trigger={["click", "contextMenu"]} menu={{ items: [
-                  { key: "browse", label: t.browseFiles, onClick: () => void browseShare(share.id) },
-                  { key: "remove", label: t.removeShare, danger: true, onClick: () => void runAction(async () => {
+                  { key: "browse", label: t.browseFiles, title: meshText(t.browseShareHint, { name: share.name }), onClick: () => void browseShare(share.id) },
+                  { key: "remove", label: t.removeShare, title: t.removeShareHint, danger: true, onClick: () => void runAction(async () => {
                     const status = await invoke<MeshGroupStatus>("mesh_group_remove_file_share", { groupId: activeGroup.id, shareId: share.id });
                     props.onGroupFilesChanged?.(status);
                     if (selectedShareId === share.id) {
@@ -534,15 +570,16 @@ export function MeshSharePage(props: MeshSharePageProps) {
                       setLocalDirectoryNodes({});
                     }
                   }) },
-                ] }}><Button aria-label={t.filesTitle} title={t.filesTitle} icon={<MoreHorizontal size={16} />} /></Dropdown>
-                <Button className="mini-button" onClick={() => void browseShare(share.id)}>{t.browseFiles}</Button></div>
+                ] }}><Button aria-label={meshText(t.remoteShareMenuHint, { name: share.name })} title={meshText(t.remoteShareMenuHint, { name: share.name })} icon={<MoreHorizontal size={16} />} /></Dropdown>
+                <Button className="mini-button" title={selectedShareId === share.id ? t.collapseFileListHint : meshText(t.browseShareHint, { name: share.name })} onClick={() => void browseShare(share.id)}>{selectedShareId === share.id ? t.collapse : t.browseFiles}</Button></div>
               </div>
               {selectedShareId === share.id && <div className="mesh-shared-file-list">
-                {filePath && <Breadcrumb className="mesh-file-breadcrumb" items={filePath.split("/").filter(Boolean).map((segment, index, segments) => ({ title: <Button type="link" onClick={() => void browseShare(share.id, segments.slice(0, index + 1).join("/"))}>{segment}</Button> }))} />}
+                {filePath && <Breadcrumb className="mesh-file-breadcrumb" items={filePath.split("/").filter(Boolean).map((segment, index, segments) => ({ title: <Button type="link" title={meshText(t.openFolderHint, { name: segment })} onClick={() => void browseShare(share.id, segments.slice(0, index + 1).join("/"))}>{segment}</Button> }))} />}
                 <Tree.DirectoryTree
                   className="mesh-local-directory-tree"
                   showLine={{ showLeafIcon: false }}
                   showIcon
+                  autoExpandParent={false}
                   expandedKeys={expandedLocalKeys}
                   onExpand={(keys) => setExpandedLocalKeys(keys.map(String))}
                   treeData={localDirectoryTree}
@@ -560,12 +597,45 @@ export function MeshSharePage(props: MeshSharePageProps) {
             <span><strong>{t.aiFileAccess}</strong><small>{t.aiFileAccessHint}</small></span>
           </label>
           {props.groupStatus?.fileAccess?.aiAccessEnabled && <div className="mesh-ai-endpoints">
-            <Alert type="info" showIcon message={t.aiAccessInstructions} description={t.aiCredentialWarning} />
             {props.groupStatus.fileAccess.aiToken && <>
-            <strong>{t.aiCredentials}</strong>
-            <code>HTTP: {props.groupStatus.fileAccess.aiHttpUrl}?groupId={encodeURIComponent(activeGroup.id)}</code>
-            <code>MCP: {props.groupStatus.fileAccess.aiMcpUrl}</code>
-            <Input.TextArea className="mesh-payload-box" readOnly value={props.groupStatus.fileAccess.aiToken} aria-label={t.aiCredentials} autoSize={{ minRows: 2, maxRows: 4 }} />
+              <Select
+                size="large"
+                aria-label="外部 AI 访问设备"
+                placeholder="选择 AI 访问的设备"
+                value={aiTargetDeviceId || undefined}
+                onChange={setAiTargetDeviceId}
+                options={(props.groupStatus.fileAccess.aiDevices ?? []).map((device) => ({
+                  value: device.id,
+                  label: `${device.name}${device.online ? " · 在线" : " · 离线"}`,
+                }))}
+                style={{ width: "100%" }}
+              />
+              <div className="mesh-ai-guide-header">
+                <strong>{t.aiCredentials}</strong>
+              <Button size="small" title={t.copyAiInstructionsHint} aria-label={t.copyAiInstructionsHint} icon={<Copy size={14} />} onClick={async () => {
+                  const fileAccess = props.groupStatus?.fileAccess;
+                  if (!fileAccess?.aiToken) return;
+                  if (!aiTargetDeviceId) return;
+                  const httpUrl = `${fileAccess.aiHttpUrl}?groupId=${encodeURIComponent(activeGroup.id)}&deviceId=${encodeURIComponent(aiTargetDeviceId)}`;
+                  const mcpUrl = `${fileAccess.aiMcpUrl}&deviceId=${encodeURIComponent(aiTargetDeviceId)}`;
+                  const guide = [
+                    "CodexSwitcher 外部 AI 文件访问",
+                    `Authorization: Bearer ${fileAccess.aiToken}`,
+                    `HTTP：${httpUrl}`,
+                    `MCP：${mcpUrl}`,
+                    `使用说明：${t.aiAccessInstructions}`,
+                  ].join("\n");
+                  await navigator.clipboard.writeText(guide);
+                  setAiGuideCopied(true);
+                  window.setTimeout(() => setAiGuideCopied(false), 1800);
+                }} disabled={!aiTargetDeviceId}>{aiGuideCopied ? "已复制" : "复制给 AI"}</Button>
+              </div>
+              <Input.TextArea className="mesh-payload-box" readOnly value={[
+                `Authorization: Bearer ${props.groupStatus.fileAccess.aiToken}`,
+                `HTTP：${props.groupStatus.fileAccess.aiHttpUrl}?groupId=${encodeURIComponent(activeGroup.id)}&deviceId=${encodeURIComponent(aiTargetDeviceId || "<设备ID>")}`,
+                `MCP：${props.groupStatus.fileAccess.aiMcpUrl}&deviceId=${encodeURIComponent(aiTargetDeviceId || "<设备ID>")}`,
+                `使用说明：${t.aiAccessInstructions}`,
+              ].join("\n")} aria-label={t.aiCredentials} autoSize={{ minRows: 5, maxRows: 10 }} />
             </>}
           </div>}</div>
         </Card>
@@ -602,7 +672,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                       </small>
                     </div>
                     <div className="mesh-device-sync-options">
-                      <div className="mesh-device-sync-heading">{t.allowedSyncContents}</div>
+              <div className="mesh-device-sync-heading" title={t.deviceScopeHint}>{t.allowedSyncContents}<span className="mesh-help-indicator" aria-hidden="true">ⓘ</span></div>
                       <ScopeEditor
                         compact
                         value={device.syncScope}
@@ -618,7 +688,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                             onChange={(event) => saveDeviceSelection(device, device.syncScope, event.target.checked)}
                           />
                           <span>
-                            <strong>{t.autoSyncAccounts}</strong>
+                          <strong title={t.autoSyncAccountsHint}>{t.autoSyncAccounts}<span className="mesh-help-indicator" aria-hidden="true">ⓘ</span></strong>
                             <small>{t.autoSyncAccountsHint}</small>
                           </span>
                         </label>
@@ -632,7 +702,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                             props.onGroupFilesChanged?.(status);
                           })}
                         />
-                        <span><strong>{t.fileAccess}</strong></span>
+                        <span><strong title={t.fileAccessHint}>{t.fileAccess}<span className="mesh-help-indicator" aria-hidden="true">ⓘ</span></strong></span>
                       </label>
                     </div>
                     <div className="mesh-device-actions">
@@ -641,7 +711,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         className="mini-button"
                         onClick={() => void browseDeviceShares(device)}
                         disabled={props.busy || !device.online || revoked || !device.trusted}
-                        title={!device.online ? t.deviceStatusOffline : undefined}
+                        title={!device.online ? t.deviceStatusOffline : meshText(t.browseDeviceHint, { name: device.name })}
                       >
                         <Download size={14} /> {t.browseFiles}
                       </Button>
@@ -650,7 +720,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         className="mini-button"
                         onClick={() => syncDevice(device.id)}
                         disabled={props.busy || syncingDeviceId !== null || !device.online || revoked || !device.trusted || !syncAvailable}
-                        title={!device.online ? t.deviceStatusOffline : undefined}
+                        title={!device.online ? t.deviceStatusOffline : meshText(t.syncDeviceHint, { name: device.name })}
                       >
                         {syncingDeviceId === device.id ? <LoaderCircle className="button-spinner" size={14} /> : <RefreshCcw size={14} />} {syncingDeviceId === device.id ? t.processing : t.syncDevice}
                       </Button>
@@ -659,6 +729,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                         className={`mini-button ${revoked ? "" : "danger"}`}
                         onClick={() => toggleDeviceRevocation(device)}
                         disabled={props.busy || !revokeAvailable}
+                        title={revoked ? meshText(t.restoreDeviceHint, { name: device.name }) : meshText(t.revokeDeviceHint, { name: device.name })}
                       >
                         {revoked ? <CheckCircle2 size={14} /> : <ShieldOff size={14} />}
                         {revoked ? t.restoreDevice : t.revokeDevice}
@@ -671,6 +742,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                               className="mini-button"
                               onClick={() => setRemoveConfirmDeviceId(null)}
                               disabled={props.busy}
+                              title={t.cancelDialogHint}
                             >
                               <X size={14} /> {t.cancel}
                             </Button>
@@ -680,7 +752,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
                             className="mini-button danger"
                             onClick={() => removeDevice(device)}
                             disabled={props.busy}
-                            title={removing ? t.removeDeviceConfirm : t.removeDevice}
+                            title={removing ? meshText(t.removeDeviceConfirmHint, { name: device.name }) : meshText(t.removeDeviceHint, { name: device.name })}
                           >
                             <Trash2 size={14} /> {removing ? t.confirmRemoveDevice : t.removeDevice}
                           </Button>
@@ -696,6 +768,7 @@ export function MeshSharePage(props: MeshSharePageProps) {
               className="icon-button"
               onClick={() => syncDevice()}
               disabled={props.busy || syncingDeviceId !== null || !syncAvailable || !groupDevices.some((device) => device.online && device.trusted && !deviceIsRevoked(device))}
+              title={t.syncAllDevicesHint}
             >
               {syncingDeviceId === "__all__" ? <LoaderCircle className="button-spinner" size={17} /> : <RefreshCcw size={17} />} {syncingDeviceId === "__all__" ? t.processing : t.syncAllDevices}
             </Button>
@@ -712,11 +785,11 @@ export function MeshSharePage(props: MeshSharePageProps) {
               </div>
               <KeyRound size={22} />
             </div>
-            <div className="mesh-share-scope-hint">
+            <div className="mesh-share-scope-hint" title={t.groupScopeHint}>
               <strong>{t.shareContents}</strong>
-              <span>{t.defaultScopeHint}</span>
+              <span>{t.defaultScopeHint}</span><span className="mesh-help-indicator" aria-hidden="true">ⓘ</span>
             </div>
-            <ScopeEditor value={props.syncScope} onChange={changeShareScope} />
+            <ScopeEditor value={props.syncScope} onChange={changeShareScope} title={t.groupScopeHint} />
             <div className="action-row">
               <Button
                 className="icon-button primary"
@@ -728,10 +801,11 @@ export function MeshSharePage(props: MeshSharePageProps) {
                   }
                 }}
                 disabled={props.busy || (canUseGroupCommands ? !props.onCreateGroupShare : false)}
+                title={t.createShareCodeHint}
               >
                 <KeyRound size={17} /> {t.createShareCode}
               </Button>
-              <Button className="icon-button" onClick={() => void props.onCopyShare()} disabled={props.busy || !props.sharePayload.trim()}>
+              <Button className="icon-button" onClick={() => void props.onCopyShare()} disabled={props.busy || !props.sharePayload.trim()} title={t.copyShareCodeHint}>
                 <Copy size={17} /> {t.copyOriginalShareCode}
               </Button>
             </div>
@@ -766,27 +840,27 @@ export function MeshSharePage(props: MeshSharePageProps) {
                   checked={props.migrationUseMeshSecret}
                   onChange={(event) => props.onMigrationUseMeshSecretChange(event.target.checked)}
                 />
-                {t.useGroupCredential}
+                <span title={t.useGroupCredentialHint}>{t.useGroupCredential}<span className="mesh-help-indicator" aria-hidden="true">ⓘ</span></span>
               </label>
               <label className="checkline">
                 <Checkbox
                   checked={props.includeConversations}
                   onChange={(event) => props.onIncludeConversationsChange(event.target.checked)}
                 />
-                {t.includeConversations}
+                <span title={t.includeConversationsHint}>{t.includeConversations}<span className="mesh-help-indicator" aria-hidden="true">ⓘ</span></span>
               </label>
               <label className="checkline">
                 <Checkbox
                   checked={props.restoreConversations}
                   onChange={(event) => props.onRestoreConversationsChange(event.target.checked)}
                 />
-                {t.restoreConversations}
+                <span title={t.restoreConversationsHint}>{t.restoreConversations}<span className="mesh-help-indicator" aria-hidden="true">ⓘ</span></span>
               </label>
             </div>
             <Collapse className="export-selector mesh-export-selector" items={[{ key: "accounts", label: <><span>{t.migrationAccounts}</span><strong>{selectedProfiles.length}/{props.profiles.length}</strong></>, children: <>
               <div className="export-selector-actions">
-                <Button size="small" onClick={props.onSelectAllProfiles}>{t.selectAll}</Button>
-                <Button size="small" onClick={props.onClearProfiles}>{t.clear}</Button>
+                <Button size="small" onClick={props.onSelectAllProfiles} title={t.selectAllProfilesHint}>{t.selectAll}</Button>
+                <Button size="small" onClick={props.onClearProfiles} title={t.clearProfilesHint}>{t.clear}</Button>
               </div>
               <div className="export-account-list">
                 {props.profiles.map((profile) => (
@@ -804,10 +878,10 @@ export function MeshSharePage(props: MeshSharePageProps) {
               </div>
             </> }]} />
             <div className="action-row">
-              <Button className="icon-button primary" onClick={() => void props.onExportMigration()} disabled={props.busy || selectedProfiles.length === 0}>
+              <Button className="icon-button primary" onClick={() => void props.onExportMigration()} disabled={props.busy || selectedProfiles.length === 0} title={t.exportMigrationHint}>
                 <Download size={17} /> {t.exportMigration}
               </Button>
-              <Button className="icon-button" onClick={() => void props.onImportMigration()} disabled={props.busy}>
+              <Button className="icon-button" onClick={() => void props.onImportMigration()} disabled={props.busy} title={t.importMigrationHint}>
                 <Upload size={17} /> {t.importMigration}
               </Button>
             </div>
@@ -838,11 +912,12 @@ export function MeshSharePage(props: MeshSharePageProps) {
             )}
             {actionError && <div className="mesh-warning">{actionError}</div>}
             <div className="update-dialog-actions">
-              <Button className="icon-button" onClick={() => setDialog(null)}>{t.cancel}</Button>
+              <Button className="icon-button" onClick={() => setDialog(null)} title={t.cancelDialogHint}>{t.cancel}</Button>
               <Button
                 className="icon-button primary"
                 onClick={dialog === "create" ? submitCreateGroup : submitJoinGroup}
                 disabled={props.busy || (dialog === "create" ? !groupName.trim() : !shareCode.trim())}
+                title={dialog === "create" ? t.createGroupHint : t.joinGroupHint}
               >
                 {dialog === "create" ? <Plus size={17} /> : <Link2 size={17} />}
                 {dialog === "create" ? t.create : t.join}
@@ -860,12 +935,14 @@ function ScopeEditor({
   onChange,
   compact = false,
   disabled = false,
+  title,
 }: {
   value: MeshSyncScope;
   allowed?: MeshSyncScope;
   onChange: (value: MeshSyncScope) => void;
   compact?: boolean;
   disabled?: boolean;
+  title?: string;
 }) {
   const t = getMeshI18n();
   const options: Array<{ key: keyof MeshSyncScope; label: string }> = [
@@ -875,7 +952,7 @@ function ScopeEditor({
     { key: "conversations", label: t.scopeConversations },
   ];
   return (
-    <div className={`mesh-scope-editor ${compact ? "compact" : ""}`}>
+    <div className={`mesh-scope-editor ${compact ? "compact" : ""}`} title={title}>
       {options.map((option) => (
         <label className="checkline" key={option.key}>
           <Checkbox

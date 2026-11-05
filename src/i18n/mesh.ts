@@ -7,6 +7,10 @@ export type MeshI18n = {
   groupsHint: string;
   createGroup: string;
   joinGroup: string;
+  selectGroupHint: string;
+  startGroupHint: string;
+  stopGroupHint: string;
+  deleteGroupHint: string;
   activeGroup: string;
   running: string;
   stopped: string;
@@ -14,6 +18,8 @@ export type MeshI18n = {
   onlineDevices: string;
   startGroup: string;
   stopGroup: string;
+  deleteGroup: string;
+  deleteGroupConfirm: string;
   processing: string;
   waitingForGroupCommands: string;
   actionFailed: string;
@@ -30,7 +36,17 @@ export type MeshI18n = {
   revocationPersisted: string;
   syncDevice: string;
   syncAllDevices: string;
+  browseDeviceHint: string;
+  syncDeviceHint: string;
+  restoreDeviceHint: string;
+  revokeDeviceHint: string;
+  removeDeviceHint: string;
+  removeDeviceConfirmHint: string;
+  syncAllDevicesHint: string;
   allowedSyncContents: string;
+  groupScopeHint: string;
+  deviceScopeHint: string;
+  fileAccessHint: string;
   autoSyncAccounts: string;
   autoSyncAccountsHint: string;
   revokeDevice: string;
@@ -56,8 +72,11 @@ export type MeshI18n = {
   groupCredentialPlaceholder: string;
   passwordPlaceholder: string;
   useGroupCredential: string;
+  useGroupCredentialHint: string;
   includeConversations: string;
+  includeConversationsHint: string;
   restoreConversations: string;
+  restoreConversationsHint: string;
   migrationAccounts: string;
   selectAll: string;
   clear: string;
@@ -80,6 +99,24 @@ export type MeshI18n = {
   filesHint: string;
   addFiles: string;
   addFolder: string;
+  addFilesHint: string;
+  addFolderHint: string;
+  browseShareHint: string;
+  collapseFileListHint: string;
+  collapse: string;
+  openFolderHint: string;
+  copyAiInstructionsHint: string;
+  browseRemoteShareHint: string;
+  remoteShareMenuHint: string;
+  navigateFolderHint: string;
+  removeShareHint: string;
+  createShareCodeHint: string;
+  copyShareCodeHint: string;
+  selectAllProfilesHint: string;
+  clearProfilesHint: string;
+  exportMigrationHint: string;
+  importMigrationHint: string;
+  cancelDialogHint: string;
   removeShare: string;
   browseFiles: string;
   downloadFile: string;
@@ -101,6 +138,10 @@ const zhCN: MeshI18n = {
   groupsHint: "选择一个分享组，查看运行状态和组内设备。",
   createGroup: "创建组",
   joinGroup: "粘贴分享码加入",
+  selectGroupHint: "切换到“{name}”并查看其设备和分享设置。",
+  startGroupHint: "连接此分享组网络，并允许组内设备通信。",
+  stopGroupHint: "断开此分享组网络；保存的组和共享文件设置会保留。",
+  deleteGroupHint: "停止并删除本机保存的此分组配置，不会删除磁盘上的共享文件。",
   activeGroup: "当前组",
   running: "运行中",
   stopped: "已停止",
@@ -108,6 +149,8 @@ const zhCN: MeshI18n = {
   onlineDevices: "{count} 台在线",
   startGroup: "启动组",
   stopGroup: "停止组",
+  deleteGroup: "删除组",
+  deleteGroupConfirm: "确定删除“{name}”？这会断开该组并移除本机保存的组配置，不会删除共享目录或文件。",
   processing: "处理中",
   waitingForGroupCommands: "等待 App.tsx 接入分享组命令",
   actionFailed: "操作失败，请稍后重试。",
@@ -124,7 +167,17 @@ const zhCN: MeshI18n = {
   revocationPersisted: "同步授权已撤销，设备记录保留",
   syncDevice: "同步此设备",
   syncAllDevices: "同步当前组在线设备",
+  browseDeviceHint: "浏览“{name}”设备授权共享的文件并下载。",
+  syncDeviceHint: "从“{name}”拉取此设备和对端都允许的同步内容。",
+  restoreDeviceHint: "恢复“{name}”设备的同步和文件访问授权。",
+  revokeDeviceHint: "撤销“{name}”设备授权，并关闭其文件访问权限。",
+  removeDeviceHint: "从当前组移除此设备记录并清除其文件访问授权。",
+  removeDeviceConfirmHint: "再次点击确认移除“{name}”并清除相关授权。",
+  syncAllDevicesHint: "从当前组所有在线且已授权设备拉取允许的同步内容。",
   allowedSyncContents: "允许同步内容",
+  groupScopeHint: "这是本机共享上限；每台设备只能使用此处允许内容与对方设备上限的交集。",
+  deviceScopeHint: "这是此设备可从本机拉取的内容，并受分享码权限上限限制。",
+  fileAccessHint: "单独控制此设备能否浏览和下载本机添加的共享文件，不影响账号同步。",
   autoSyncAccounts: "账号自动同步",
   autoSyncAccountsHint: "开启后，账号变更会自动同步到此设备。",
   revokeDevice: "撤销同步",
@@ -150,8 +203,11 @@ const zhCN: MeshI18n = {
   groupCredentialPlaceholder: "使用当前组凭据保护迁移包",
   passwordPlaceholder: "迁移包密码，可留空",
   useGroupCredential: "使用当前组凭据保护",
+  useGroupCredentialHint: "使用此分享组的网络凭据加密迁移包；加入组的设备可用对应凭据解密。",
   includeConversations: "导出会话记录",
+  includeConversationsHint: "勾选后将会话记录写入迁移包；文件可能较大且包含私人内容。",
   restoreConversations: "导入时恢复会话",
+  restoreConversationsHint: "仅对当前导入操作生效；勾选后从迁移包恢复会话记录。",
   migrationAccounts: "迁移账号",
   selectAll: "全选",
   clear: "清空",
@@ -174,6 +230,24 @@ const zhCN: MeshI18n = {
   filesHint: "添加单个文件或目录；其他设备手动浏览并下载。",
   addFiles: "添加文件",
   addFolder: "添加目录",
+  addFilesHint: "选择一个或多个本机文件，加入当前组的共享列表。",
+  addFolderHint: "选择本机目录；组内获准设备可浏览并下载其中内容。",
+  browseShareHint: "在此卡片下展开“{name}”的文件和目录。",
+  collapseFileListHint: "收起此共享项的文件列表。",
+  collapse: "收起",
+  openFolderHint: "打开“{name}”目录。",
+  copyAiInstructionsHint: "复制访问令牌、目标设备地址和 AI 使用说明。",
+  browseRemoteShareHint: "打开“{name}”并列出其中可浏览的文件。",
+  remoteShareMenuHint: "打开“{name}”的文件操作菜单。",
+  navigateFolderHint: "返回共享目录“{name}”。",
+  removeShareHint: "停止共享此路径；不会删除原文件或目录。",
+  createShareCodeHint: "生成当前组加入码；新设备获得的权限由分享内容选项决定。",
+  copyShareCodeHint: "复制当前已生成的分享码。",
+  selectAllProfilesHint: "选中迁移包中的全部账号。",
+  clearProfilesHint: "取消选择所有要导出的账号。",
+  exportMigrationHint: "将选中的账号和勾选内容打包到本机文件。",
+  importMigrationHint: "选择已有迁移包并导入账号及其中包含的内容。",
+  cancelDialogHint: "关闭窗口并放弃未提交的输入。",
   removeShare: "移除分享",
   browseFiles: "浏览",
   downloadFile: "下载",
@@ -195,6 +269,10 @@ const en: MeshI18n = {
   groupsHint: "Choose a share group to see its runtime and devices.",
   createGroup: "Create group",
   joinGroup: "Join with code",
+  selectGroupHint: "Switch to “{name}” to view its devices and sharing settings.",
+  startGroupHint: "Connect this share group network so its devices can communicate.",
+  stopGroupHint: "Disconnect this group. Its saved configuration and file shares remain.",
+  deleteGroupHint: "Stop and remove this group configuration from this device. Shared files on disk remain.",
   activeGroup: "Current",
   running: "Running",
   stopped: "Stopped",
@@ -202,6 +280,8 @@ const en: MeshI18n = {
   onlineDevices: "{count} online",
   startGroup: "Start group",
   stopGroup: "Stop group",
+  deleteGroup: "Delete group",
+  deleteGroupConfirm: "Delete “{name}”? This disconnects the group and removes its saved configuration from this device. Shared files and folders on disk are not deleted.",
   processing: "Working",
   waitingForGroupCommands: "Waiting for App.tsx to connect group commands",
   actionFailed: "The action failed. Try again.",
@@ -218,7 +298,17 @@ const en: MeshI18n = {
   revocationPersisted: "Sync access revoked; device record retained",
   syncDevice: "Sync device",
   syncAllDevices: "Sync online devices in this group",
+  browseDeviceHint: "Browse and download files shared by “{name}”.",
+  syncDeviceHint: "Pull content allowed by both this device and “{name}”.",
+  restoreDeviceHint: "Restore sync and file access for “{name}”.",
+  revokeDeviceHint: "Revoke “{name}” and disable its file access.",
+  removeDeviceHint: "Remove this device record and clear its file access grant.",
+  removeDeviceConfirmHint: "Click again to remove “{name}” and clear its grants.",
+  syncAllDevicesHint: "Pull allowed content from every authorized device currently online.",
   allowedSyncContents: "Allowed sync content",
+  groupScopeHint: "This sets the content limit shared by this device. Each peer can use only the intersection with the limit advertised by the other device.",
+  deviceScopeHint: "Controls what this device may pull from this device, bounded by the share-code permissions.",
+  fileAccessHint: "Separately allows this device to browse and download files shared from this device. It does not affect account sync.",
   autoSyncAccounts: "Auto-sync accounts",
   autoSyncAccountsHint: "When enabled, account changes are sent to this device automatically.",
   revokeDevice: "Revoke sync",
@@ -244,8 +334,11 @@ const en: MeshI18n = {
   groupCredentialPlaceholder: "Protected with the current group credential",
   passwordPlaceholder: "Bundle password, optional",
   useGroupCredential: "Protect with current group credential",
+  useGroupCredentialHint: "Encrypts the migration bundle with this group’s network credential. Devices with the matching credential can decrypt it.",
   includeConversations: "Export conversations",
+  includeConversationsHint: "Includes conversation history in the bundle. It may be large and contains private data.",
   restoreConversations: "Restore conversations on import",
+  restoreConversationsHint: "Applies only to this import. When selected, conversation history is restored from the bundle.",
   migrationAccounts: "Accounts to migrate",
   selectAll: "Select all",
   clear: "Clear",
@@ -268,6 +361,24 @@ const en: MeshI18n = {
   filesHint: "Add files or folders. Other devices can browse and download manually.",
   addFiles: "Add files",
   addFolder: "Add folder",
+  addFilesHint: "Choose one or more local files to share with this group.",
+  addFolderHint: "Choose a local folder for authorized group devices to browse and download.",
+  browseShareHint: "Expand the files and folders in “{name}” below this item.",
+  collapseFileListHint: "Collapse this shared item's file list.",
+  collapse: "Collapse",
+  openFolderHint: "Open the “{name}” folder.",
+  copyAiInstructionsHint: "Copy the access token, target device address, and AI usage instructions.",
+  browseRemoteShareHint: "Open “{name}” and list the files available to browse.",
+  remoteShareMenuHint: "Open file actions for “{name}”.",
+  navigateFolderHint: "Return to the shared folder “{name}”.",
+  removeShareHint: "Stop sharing this path. The original file or folder will not be deleted.",
+  createShareCodeHint: "Create a join code. New device permissions follow the Shared content options.",
+  copyShareCodeHint: "Copy the currently generated share code.",
+  selectAllProfilesHint: "Select every account for the migration bundle.",
+  clearProfilesHint: "Deselect all accounts for export.",
+  exportMigrationHint: "Package the selected accounts and enabled content into a local file.",
+  importMigrationHint: "Choose a migration bundle and import its accounts and included content.",
+  cancelDialogHint: "Close the dialog and discard unsubmitted input.",
   removeShare: "Remove share",
   browseFiles: "Browse",
   downloadFile: "Download",
@@ -285,11 +396,33 @@ const en: MeshI18n = {
 
 const zhTW: MeshI18n = {
   ...zhCN,
+  addFilesHint: "選擇一個或多個本機檔案，加入目前組的共享清單。",
+  addFolderHint: "選擇本機目錄，讓組內獲准裝置瀏覽和下載。",
+  browseShareHint: "在此項目下展開「{name}」的檔案和目錄。",
+  collapseFileListHint: "收起此共享項目的檔案清單。",
+  collapse: "收起",
+  openFolderHint: "開啟「{name}」目錄。",
+  copyAiInstructionsHint: "複製存取令牌、目標裝置地址和 AI 使用說明。",
+  browseRemoteShareHint: "開啟「{name}」並列出可瀏覽的檔案。",
+  remoteShareMenuHint: "開啟「{name}」的檔案操作選單。",
+  navigateFolderHint: "返回共享目錄「{name}」。",
+  removeShareHint: "停止共享此路徑；不會刪除原始檔案或目錄。",
+  createShareCodeHint: "產生目前組加入碼；新裝置權限由分享內容選項決定。",
+  copyShareCodeHint: "複製目前已產生的分享碼。",
+  selectAllProfilesHint: "選取遷移包中的所有帳號。",
+  clearProfilesHint: "取消選取所有要匯出的帳號。",
+  exportMigrationHint: "將所選帳號和勾選內容打包成此裝置上的檔案。",
+  importMigrationHint: "選取遷移包並匯入其中包含的帳號和內容。",
+  cancelDialogHint: "關閉視窗並放棄尚未提交的輸入。",
   pageKicker: "多裝置共享",
   groupsTitle: "分享組",
   groupsHint: "選擇一個分享組，查看執行狀態和組內裝置。",
   createGroup: "建立組",
   joinGroup: "貼上分享碼加入",
+  selectGroupHint: "切換至「{name}」並查看其裝置和分享設定。",
+  startGroupHint: "連線此分享組網路，讓組內裝置互相通訊。",
+  stopGroupHint: "中斷此分享組網路；已儲存的組態和共享檔案設定會保留。",
+  deleteGroupHint: "停止並移除此裝置儲存的分組設定，不會刪除磁碟上的共享檔案。",
   activeGroup: "目前組",
   running: "執行中",
   stopped: "已停止",
@@ -301,6 +434,13 @@ const zhTW: MeshI18n = {
   noGroupDevices: "目前組暫無裝置。",
   syncDevice: "同步此裝置",
   syncAllDevices: "同步目前組在線裝置",
+  browseDeviceHint: "瀏覽「{name}」裝置授權共享的檔案並下載。",
+  syncDeviceHint: "從「{name}」取得兩端都允許同步的內容。",
+  restoreDeviceHint: "恢復「{name}」裝置的同步和檔案存取授權。",
+  revokeDeviceHint: "撤銷「{name}」裝置授權並關閉其檔案存取權限。",
+  removeDeviceHint: "從目前組移除此裝置記錄並清除檔案存取授權。",
+  removeDeviceConfirmHint: "再次點擊以移除「{name}」並清除相關授權。",
+  syncAllDevicesHint: "從目前組所有在線且已授權的裝置取得允許同步的內容。",
   sharingTitle: "目前組分享",
   createGroupTitle: "建立分享組",
   joinGroupTitle: "加入分享組",

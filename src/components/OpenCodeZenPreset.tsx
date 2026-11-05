@@ -55,7 +55,7 @@ export function OpenCodeZenPreset({ disabled, onApply, t }: OpenCodeZenPresetPro
           {t.openCodeZenFreeModel}
           <Select value={model} onChange={setModel} options={OPENCODE_ZEN_FREE_MODELS.map((item) => ({ value: item.id, label: `${item.name} (${item.id})` }))} />
         </label>
-        <Button icon={<Sparkles size={16} />} onClick={applyPreset} disabled={disabled}>{t.openCodeZenApplyPreset}</Button>
+        <Button icon={<Sparkles size={16} />} onClick={applyPreset} disabled={disabled} title={t.openCodeZenApplyPresetHint}>{t.openCodeZenApplyPreset}</Button>
       </div>
       <small>{t.openCodeZenApiKeyHint}</small>
     </section>

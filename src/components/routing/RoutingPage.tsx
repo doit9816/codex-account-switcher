@@ -307,6 +307,7 @@ export function RoutingPage({
                         className="mini-button"
                         onClick={() => void savePriority(profile)}
                         disabled={busy || Number(priorityDrafts[profile.id] ?? profile.priority) === profile.priority}
+                        title={t.savePriorityHint}
                       >
                         保存
                       </Button>
@@ -502,6 +503,7 @@ export function RoutingPage({
                     htmlType="button"
                     disabled={logPage <= 1}
                     onClick={() => setLogPage((current) => Math.max(1, current - 1))}
+                    title={t.previousLogsHint}
                   >
                     上一页
                   </Button>
@@ -510,6 +512,7 @@ export function RoutingPage({
                     htmlType="button"
                     disabled={logPage >= logPageCount}
                     onClick={() => setLogPage((current) => Math.min(logPageCount, current + 1))}
+                    title={t.nextLogsHint}
                   >
                     下一页
                   </Button>

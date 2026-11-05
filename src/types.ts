@@ -245,6 +245,7 @@ export type MeshFileAccessStatus = {
   aiHttpUrl: string;
   aiMcpUrl: string;
   aiToken?: string | null;
+  aiDevices?: Array<{ id: string; name: string; online: boolean }>;
 };
 
 export type MeshSettings = {
