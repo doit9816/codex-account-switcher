@@ -44,6 +44,8 @@ use zip::{ZipArchive, ZipWriter};
 
 const STORE_FILE: &str = "store.json";
 const STORE_RECOVERY_FILE: &str = "store.json.recovery";
+const STORE_BACKUP_DIR: &str = "store-backups";
+const LEGACY_MIGRATION_MARKER: &str = ".codex-switcher-migrated-to-local-app-data";
 const SWITCH_DIAGNOSTICS_FILE: &str = "switch-diagnostics.log";
 const APP_LOG_DIR: &str = "logs";
 const LOCAL_KEY_FILE: &str = "local-profile.key";
@@ -3483,11 +3485,15 @@ pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map(|parent| parent.join(LEGACY_APP_IDENTIFIER));
     if !store_existed {
         if let Some(legacy_dir) = legacy_dir.as_ref().filter(|path| path.exists()) {
-            append_app_log(
-                app,
-                "warn",
-                &format!("legacy_data_migration_start target={} source={} target_store_existed=false source_store_metadata={}", dir.display(), legacy_dir.display(), file_metadata_summary(&legacy_dir.join(STORE_FILE))),
-            );
+            if legacy_dir.join(LEGACY_MIGRATION_MARKER).exists() {
+                append_app_log(app, "warn", &format!("legacy_data_migration_skipped reason=already_migrated_before target={} source={} target_store_existed=false marker={}", dir.display(), legacy_dir.display(), legacy_dir.join(LEGACY_MIGRATION_MARKER).display()));
+            } else {
+                append_app_log(
+                    app,
+                    "warn",
+                    &format!("legacy_data_migration_start target={} source={} target_store_existed=false source_store_metadata={}", dir.display(), legacy_dir.display(), file_metadata_summary(&legacy_dir.join(STORE_FILE))),
+                );
+            }
         }
     }
     if let Err(error) = migrate_legacy_app_data_dir(&dir) {
@@ -3537,7 +3543,12 @@ fn migrate_legacy_app_data_dir(new_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    copy_dir_contents_if_missing(&legacy_dir, new_dir)
+    if legacy_dir.join(LEGACY_MIGRATION_MARKER).exists() {
+        return Ok(());
+    }
+
+    copy_dir_contents_if_missing(&legacy_dir, new_dir)?;
+    fs::write(legacy_dir.join(LEGACY_MIGRATION_MARKER), b"migrated\n").map_err(display_err)
 }
 
 fn copy_dir_contents_if_missing(from: &Path, to: &Path) -> Result<(), String> {
@@ -3739,32 +3750,53 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
         );
         display_err(error)
     })?;
+    let previous_path = path.with_file_name("store.json.previous");
     if path.exists() {
-        if let Err(error) = fs::remove_file(&path) {
+        backup_store_snapshot(&path).map_err(|error| {
             append_app_log(
                 app,
                 "error",
                 &format!(
-                    "store_write_primary_remove_failed path={} temp={} error={error}",
+                    "store_write_backup_failed primary={} error={error}",
+                    path.display()
+                ),
+            );
+            error
+        })?;
+        let _ = fs::remove_file(&previous_path);
+        if let Err(error) = fs::rename(&path, &previous_path) {
+            append_app_log(
+                app,
+                "error",
+                &format!(
+                    "store_write_primary_stage_failed path={} previous={} temp={} error={error}",
                     path.display(),
+                    previous_path.display(),
                     tmp.display()
                 ),
             );
             return Err(display_err(error));
         }
     }
-    fs::rename(&tmp, &path).map_err(|error| {
+    if let Err(error) = fs::rename(&tmp, &path) {
+        let restored = if previous_path.exists() {
+            fs::rename(&previous_path, &path).is_ok()
+        } else {
+            false
+        };
         append_app_log(
             app,
             "error",
             &format!(
-                "store_write_primary_rename_failed temp={} target={} error={error}",
+                "store_write_primary_rename_failed temp={} target={} restored_previous={} error={error}",
                 tmp.display(),
-                path.display()
+                path.display(),
+                restored
             ),
         );
-        display_err(error)
-    })?;
+        return Err(display_err(error));
+    }
+    let _ = fs::remove_file(&previous_path);
     let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
     fs::copy(&path, &recovery_path).map_err(|error| {
         append_app_log(
@@ -3787,6 +3819,37 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
             committed_delta
         ),
     );
+    Ok(())
+}
+
+fn backup_store_snapshot(path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let backup_dir = parent.join(STORE_BACKUP_DIR);
+    fs::create_dir_all(&backup_dir).map_err(display_err)?;
+    let stamp = Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| Utc::now().timestamp_millis() * 1_000_000);
+    let backup_path = backup_dir.join(format!("store-{stamp}.json"));
+    fs::copy(path, &backup_path).map_err(display_err)?;
+    let mut backups = fs::read_dir(&backup_dir)
+        .map_err(display_err)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    backups.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    while backups.len() > 5 {
+        if let Some(entry) = backups.first() {
+            let _ = fs::remove_file(entry.path());
+        }
+        backups.remove(0);
+    }
     Ok(())
 }
 
