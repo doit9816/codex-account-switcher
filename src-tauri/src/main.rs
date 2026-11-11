@@ -3942,6 +3942,33 @@ fn store_recovery_candidates(path: &Path) -> Vec<PathBuf> {
         });
         backups.reverse();
         candidates.extend(backups);
+
+        // Older releases wrote one-off backups next to store.json instead of
+        // into store-backups/. Keep recognizing those files so upgrading does
+        // not strand an otherwise valid account library.
+        let mut legacy_backups = fs::read_dir(parent)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                let name = candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                name.starts_with("store.json.probe-backup-")
+                    || name.starts_with("store.json.before-restore-")
+                    || name.starts_with("store.json.backup-")
+            })
+            .collect::<Vec<_>>();
+        legacy_backups.sort_by_key(|candidate| {
+            fs::metadata(candidate)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        });
+        legacy_backups.reverse();
+        candidates.extend(legacy_backups);
     }
     candidates
 }
@@ -3985,7 +4012,43 @@ fn recover_corrupt_store(app: &AppHandle, path: &Path) -> Result<AppStore, Strin
         );
         return Ok(recovered);
     }
-    Err("未找到可解析的 previous、recovery 或历史快照".to_string())
+
+    // An unrecoverable store must not make every command in the application
+    // unusable. Preserve all damaged evidence, then create a clean store that
+    // can receive accounts again through local import or device sync.
+    let stamp = Utc::now().timestamp_millis();
+    let preserved_primary = path.with_file_name(format!("store.json.corrupt-{stamp}"));
+    if path.exists() {
+        fs::copy(path, &preserved_primary).map_err(display_err)?;
+    }
+    let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
+    let preserved_recovery = path.with_file_name(format!("store.json.recovery.corrupt-{stamp}"));
+    if recovery_path.exists() {
+        fs::copy(&recovery_path, &preserved_recovery).map_err(display_err)?;
+    }
+
+    let mut store = AppStore::default();
+    push_event(
+        &mut store,
+        "warn",
+        "检测到本地账号库损坏且无有效备份，已保留损坏文件并建立空存档；请重新导入或从其他设备同步账号",
+    );
+    let text = serde_json::to_vec_pretty(&store).map_err(display_err)?;
+    durable_replace_file(path, &text)?;
+    durable_replace_file(&recovery_path, &text)?;
+    validate_store_file(path)?;
+    validate_store_file(&recovery_path)?;
+    append_app_log(
+        app,
+        "error",
+        &format!(
+            "store_recovery_initialized_empty reason=no_valid_candidate preserved_primary={} preserved_recovery={} result={}",
+            preserved_primary.display(),
+            preserved_recovery.display(),
+            store_snapshot_summary(&store)
+        ),
+    );
+    Ok(store)
 }
 
 fn store_trigger_summary(store: &AppStore) -> String {
@@ -6761,6 +6824,24 @@ mod tests {
         fs::write(&path, vec![0u8; text.len()]).unwrap();
         let error = validate_store_file(&path).unwrap_err();
         assert!(error.contains("全部为零字节"));
+    }
+
+    #[test]
+    fn recovery_candidates_include_legacy_root_backups() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(STORE_FILE);
+        let probe_backup = dir.path().join("store.json.probe-backup-20260727174721");
+        let restore_backup = dir.path().join("store.json.before-restore-20260901-091540");
+        let corrupt_copy = dir.path().join("store.json.corrupt-123");
+        write_text(&probe_backup, "{}");
+        write_text(&restore_backup, "{}");
+        write_text(&corrupt_copy, "{}");
+
+        let candidates = store_recovery_candidates(&path);
+
+        assert!(candidates.contains(&probe_backup));
+        assert!(candidates.contains(&restore_backup));
+        assert!(!candidates.contains(&corrupt_copy));
     }
 
     #[test]
