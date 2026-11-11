@@ -3657,18 +3657,23 @@ fn read_store_unlocked(app: &AppHandle) -> Result<AppStore, String> {
         );
         display_err(error)
     })?;
-    let mut store: AppStore = serde_json::from_str(&text).map_err(|error| {
-        append_app_log(
-            app,
-            "error",
-            &format!(
-                "store_parse_failed path={} bytes={} error={error}",
-                path.display(),
-                text.len()
-            ),
-        );
-        display_err(error)
-    })?;
+    let mut store: AppStore = match serde_json::from_str(&text) {
+        Ok(store) => store,
+        Err(error) => {
+            append_app_log(
+                app,
+                "error",
+                &format!(
+                    "store_parse_failed path={} bytes={} error={error}",
+                    path.display(),
+                    text.len()
+                ),
+            );
+            recover_corrupt_store(app, &path).map_err(|recovery_error| {
+                format!("本地账号库损坏且没有可用备份：{error}；自动恢复失败：{recovery_error}")
+            })?
+        }
+    };
     if easytier_mesh::migrate_settings(&mut store.settings.mesh) {
         write_store_unlocked(app, &store)?;
     }
@@ -3682,11 +3687,9 @@ fn initialize_default_store_files(path: &Path, store: &AppStore) -> Result<(), S
             "refusing to initialize store when primary or recovery file already exists".to_string(),
         );
     }
-    let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(store).map_err(display_err)?;
-    fs::write(&tmp, text).map_err(display_err)?;
-    fs::rename(&tmp, path).map_err(display_err)?;
-    fs::copy(path, &recovery_path).map_err(display_err)?;
+    durable_replace_file(path, text.as_bytes())?;
+    durable_replace_file(&recovery_path, text.as_bytes())?;
     Ok(())
 }
 
@@ -3734,12 +3737,13 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
             );
         }
     }
-    let tmp = path.with_extension("json.tmp");
     let mut store = store.clone();
     easytier_mesh::migrate_settings(&mut store.settings.mesh);
     easytier_mesh::sync_legacy_settings(&mut store.settings.mesh);
     let text = serde_json::to_string_pretty(&store).map_err(display_err)?;
-    fs::write(&tmp, text).map_err(|error| {
+    serde_json::from_str::<AppStore>(&text).map_err(display_err)?;
+    let tmp = path.with_extension(format!("json.tmp-{}", Uuid::new_v4()));
+    durable_create_file(&tmp, text.as_bytes()).map_err(|error| {
         append_app_log(
             app,
             "error",
@@ -3748,7 +3752,19 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
                 tmp.display()
             ),
         );
-        display_err(error)
+        error
+    })?;
+    validate_store_file(&tmp).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        append_app_log(
+            app,
+            "error",
+            &format!(
+                "store_write_temp_validation_failed path={} error={error}",
+                tmp.display()
+            ),
+        );
+        error
     })?;
     let previous_path = path.with_file_name("store.json.previous");
     if path.exists() {
@@ -3796,9 +3812,8 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
         );
         return Err(display_err(error));
     }
-    let _ = fs::remove_file(&previous_path);
     let recovery_path = path.with_file_name(STORE_RECOVERY_FILE);
-    fs::copy(&path, &recovery_path).map_err(|error| {
+    durable_replace_file(&recovery_path, text.as_bytes()).map_err(|error| {
         append_app_log(
             app,
             "error",
@@ -3808,8 +3823,11 @@ fn write_store_unlocked(app: &AppHandle, store: &AppStore) -> Result<(), String>
                 recovery_path.display()
             ),
         );
-        display_err(error)
+        error
     })?;
+    validate_store_file(&path)?;
+    validate_store_file(&recovery_path)?;
+    let _ = fs::remove_file(&previous_path);
     append_app_log(
         app,
         "info",
@@ -3832,7 +3850,9 @@ fn backup_store_snapshot(path: &Path) -> Result<(), String> {
         .timestamp_nanos_opt()
         .unwrap_or_else(|| Utc::now().timestamp_millis() * 1_000_000);
     let backup_path = backup_dir.join(format!("store-{stamp}.json"));
-    fs::copy(path, &backup_path).map_err(display_err)?;
+    let bytes = fs::read(path).map_err(display_err)?;
+    serde_json::from_slice::<AppStore>(&bytes).map_err(display_err)?;
+    durable_create_file(&backup_path, &bytes)?;
     let mut backups = fs::read_dir(&backup_dir)
         .map_err(display_err)?
         .filter_map(Result::ok)
@@ -3851,6 +3871,121 @@ fn backup_store_snapshot(path: &Path) -> Result<(), String> {
         backups.remove(0);
     }
     Ok(())
+}
+
+fn durable_create_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(display_err)?;
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = options.open(path).map_err(display_err)?;
+    if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(display_err(error));
+    }
+    Ok(())
+}
+
+fn durable_replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
+    durable_create_file(&tmp, bytes)?;
+    let previous = path.with_extension(format!("previous-{}", Uuid::new_v4()));
+    let had_previous = path.exists();
+    if had_previous {
+        if let Err(error) = fs::rename(path, &previous) {
+            let _ = fs::remove_file(&tmp);
+            return Err(display_err(error));
+        }
+    }
+    if let Err(error) = fs::rename(&tmp, path) {
+        if had_previous {
+            let _ = fs::rename(&previous, path);
+        }
+        let _ = fs::remove_file(&tmp);
+        return Err(display_err(error));
+    }
+    if had_previous {
+        let _ = fs::remove_file(previous);
+    }
+    Ok(())
+}
+
+fn validate_store_file(path: &Path) -> Result<AppStore, String> {
+    let bytes = fs::read(path).map_err(display_err)?;
+    if bytes.is_empty() || bytes.iter().all(|byte| *byte == 0) {
+        return Err(format!("存档为空或全部为零字节：{}", path.display()));
+    }
+    serde_json::from_slice::<AppStore>(&bytes).map_err(display_err)
+}
+
+fn store_recovery_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![
+        path.with_file_name("store.json.previous"),
+        path.with_file_name(STORE_RECOVERY_FILE),
+    ];
+    if let Some(parent) = path.parent() {
+        let backup_dir = parent.join(STORE_BACKUP_DIR);
+        let mut backups = fs::read_dir(backup_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| candidate.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+        backups.sort_by_key(|candidate| {
+            fs::metadata(candidate)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        });
+        backups.reverse();
+        candidates.extend(backups);
+    }
+    candidates
+}
+
+fn recover_corrupt_store(app: &AppHandle, path: &Path) -> Result<AppStore, String> {
+    for candidate in store_recovery_candidates(path) {
+        let recovered = match validate_store_file(&candidate) {
+            Ok(store) => store,
+            Err(error) => {
+                append_app_log(
+                    app,
+                    "warn",
+                    &format!(
+                        "store_recovery_candidate_rejected source={} metadata={} error={error}",
+                        candidate.display(),
+                        file_metadata_summary(&candidate)
+                    ),
+                );
+                continue;
+            }
+        };
+        let bytes = fs::read(&candidate).map_err(display_err)?;
+        let corrupt_copy = path.with_file_name(format!(
+            "store.json.corrupt-{}",
+            Utc::now().timestamp_millis()
+        ));
+        if path.exists() {
+            let _ = fs::copy(path, &corrupt_copy);
+        }
+        durable_replace_file(path, &bytes)?;
+        validate_store_file(path)?;
+        append_app_log(
+            app,
+            "warn",
+            &format!(
+                "store_recovery_complete reason=primary_store_corrupt source={} preserved_corrupt={} restored={}",
+                candidate.display(),
+                corrupt_copy.display(),
+                store_snapshot_summary(&recovered)
+            ),
+        );
+        return Ok(recovered);
+    }
+    Err("未找到可解析的 previous、recovery 或历史快照".to_string())
 }
 
 fn store_trigger_summary(store: &AppStore) -> String {
@@ -6610,6 +6745,22 @@ mod tests {
         assert!(decoded.profiles.is_empty());
         assert!(decoded.settings.mesh.groups.is_empty());
         assert!(initialize_default_store_files(&path, &store).is_err());
+    }
+
+    #[test]
+    fn durable_store_write_rejects_zero_filled_corruption() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(STORE_FILE);
+        let store = AppStore::default();
+        let text = serde_json::to_vec_pretty(&store).unwrap();
+
+        durable_replace_file(&path, &text).unwrap();
+        let decoded = validate_store_file(&path).unwrap();
+        assert!(decoded.profiles.is_empty());
+
+        fs::write(&path, vec![0u8; text.len()]).unwrap();
+        let error = validate_store_file(&path).unwrap_err();
+        assert!(error.contains("全部为零字节"));
     }
 
     #[test]

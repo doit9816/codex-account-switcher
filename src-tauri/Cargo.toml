@@ -1,6 +1,6 @@
 [package]
 name = "codex-account-switcher"
-version = "0.1.58"
+version = "0.1.59"
 description = "Desktop manager for multiple Codex ChatGPT accounts"
 authors = ["cmsCloud"]
 edition = "2021"

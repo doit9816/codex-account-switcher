@@ -92,6 +92,31 @@ jobs:
           "LIB=$packetLibDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Packet.lib: $packetLib"
 
+      - name: Cache Windows YY-Thunks libraries (build-time only)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = "1.1.7"
+          $archive = Join-Path $env:RUNNER_TEMP "YY-Thunks-Objs-$version.zip"
+          $root = Join-Path $env:RUNNER_TEMP "YY-Thunks-$version"
+          curl.exe --fail --location `
+            --retry 8 --retry-all-errors --retry-delay 5 `
+            --connect-timeout 30 --max-time 300 `
+            --user-agent "CodexSwitcher-Release/1.0" `
+            --output $archive `
+            "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v$version/YY-Thunks-Objs.zip"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf) -or (Get-Item -LiteralPath $archive).Length -lt 100000) {
+            throw "YY-Thunks download is missing or unexpectedly small: $archive"
+          }
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
+          $requiredObject = Join-Path $root "objs\x64\YY_Thunks_for_Vista.obj"
+          if (-not (Test-Path -LiteralPath $requiredObject -PathType Leaf)) {
+            throw "YY-Thunks object was not found after extraction: $requiredObject"
+          }
+          "YY_THUNKS=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "YY-Thunks: $requiredObject"
+
       - name: Validate release version
         shell: bash
         env:
