@@ -1436,10 +1436,17 @@ export default function App() {
     setUpdateChecking(true);
     try {
       const proxy = updaterProxyUrl(storeRef.current);
-      const update = await check({
-        timeout: 15000,
-        ...(proxy ? { proxy } : {})
-      });
+      let update: Update | null;
+      try {
+        update = await check({
+          timeout: 20000,
+          ...(proxy ? { proxy } : {})
+        });
+      } catch (proxyError) {
+        if (!proxy) throw proxyError;
+        await logAppError("check_for_update_proxy_retry_direct", proxyError);
+        update = await check({ timeout: 30000 });
+      }
       setUpdateChecked(true);
       setUpdateError("");
       setAvailableUpdate(update);
@@ -2025,7 +2032,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <AppNavigation page={activePage} onPageChange={setActivePage} language={languageSetting} onLanguageChange={setLanguageSetting} labels={{ language: t.language, followSystem: t.followSystem, dashboard: t.dashboard, settings: t.settings, refresh: t.refresh, refreshHint: t.refreshHint, subtitle: t.appSubtitle, mesh: t.multiDeviceSharing, routing: t.routingPage, page: t.pageLabel }} languageLabels={languageLabels} busy={busy} onRefresh={() => void refresh()} />
+      <AppNavigation page={activePage} onPageChange={setActivePage} labels={{ dashboard: t.dashboard, settings: t.settings, refresh: t.refresh, refreshHint: t.refreshHint, subtitle: t.appSubtitle, mesh: t.multiDeviceSharing, routing: t.routingPage, page: t.pageLabel }} busy={busy} onRefresh={() => void refresh()} />
 
       {notice && (
         <div className={`notice ${notice.kind}`} role="status" aria-live="polite">
@@ -2406,6 +2413,23 @@ export default function App() {
         />
       ) : activePage === "settings" ? (
         <>
+      <Card className="settings-band language-band">
+        <div className="language-setting-control">
+          <label htmlFor="language-setting">{t.language}</label>
+          <Select
+            id="language-setting"
+            aria-label={t.language}
+            value={languageSetting}
+            onChange={setLanguageSetting}
+            options={[
+              { value: "system", label: t.followSystem },
+              { value: "zh-CN", label: languageLabels["zh-CN"] },
+              { value: "en", label: languageLabels.en },
+              { value: "zh-TW", label: languageLabels["zh-TW"] },
+            ]}
+          />
+        </div>
+      </Card>
       <Card className="settings-band toolbar-band">
         <div className="path-control">
           <label>{t.codexDir}</label>

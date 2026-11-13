@@ -1,6 +1,6 @@
 [package]
 name = "codex-account-switcher"
-version = "0.1.59"
+version = "0.1.60"
 description = "Desktop manager for multiple Codex ChatGPT accounts"
 authors = ["cmsCloud"]
 edition = "2021"
@@ -21,6 +21,9 @@ fs2 = "0.4"
 keyring = "2.3"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "socks"] }
+# tauri-plugin-updater uses reqwest 0.13 internally. Cargo feature unification
+# enables SOCKS proxy support for the updater without replacing its HTTP client.
+reqwest_updater = { package = "reqwest", version = "0.13", default-features = false, features = ["socks"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

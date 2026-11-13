@@ -225,7 +225,7 @@ button:disabled {
   .topbar-actions {
     display: grid;
     gap: 8px;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     overflow: visible;
     padding: 0;
   }
@@ -237,11 +237,6 @@ button:disabled {
   .topbar-actions .mobile-page-select {
     display: block;
     min-width: 0;
-    width: 100%;
-  }
-
-  .topbar-actions > .ant-select:first-child {
-    min-width: 0 !important;
     width: 100%;
   }
 
@@ -695,6 +690,25 @@ button:disabled {
 
 .proxy-band {
   margin-top: -2px;
+}
+
+.language-band > .ant-card-body {
+  justify-content: flex-start;
+}
+
+.language-setting-control {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.language-setting-control label {
+  color: #344054;
+  font-weight: 700;
+}
+
+.language-setting-control .ant-select {
+  min-width: 180px;
 }
 
 .auto-band {
