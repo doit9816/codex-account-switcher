@@ -1,6 +1,7 @@
 use crate::{
     app_data_dir, append_app_log, decrypt_secret, display_err, encrypt_secret, load_master_key,
-    load_store, now_string, parse_time, push_event, save_store, AppStore, SecretEnvelope,
+    load_store, mutate_store, now_string, parse_time, push_event, save_store, AppStore,
+    SecretEnvelope,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -1388,7 +1389,19 @@ pub(crate) fn refresh_public_nodes(app: AppHandle) -> Result<MeshStatus, String>
             push_event(&mut store, "warn", "连接节点配置刷新失败");
         }
     }
-    save_store(&app, &store)?;
+    let mesh = store.settings.mesh.clone();
+    let event = store.events.first().cloned();
+    mutate_store(&app, |latest| {
+        latest.settings.mesh.cached_nodes = mesh.cached_nodes;
+        latest.settings.mesh.last_node_refresh_at = mesh.last_node_refresh_at;
+        latest.settings.mesh.last_node_refresh_error = mesh.last_node_refresh_error;
+        latest.settings.mesh.node_source_url = mesh.node_source_url;
+        if let Some(event) = event {
+            latest.events.insert(0, event);
+            latest.events.truncate(100);
+        }
+        Ok(())
+    })?;
     status(app)
 }
 
@@ -2140,21 +2153,14 @@ fn run_auto_account_sync_inner(app: &AppHandle) {
     if succeeded > 0 || failed > 0 {
         // The import path writes the latest store; do not save the snapshot
         // loaded before the automatic sync started.
-        let Ok(latest_store) = load_store(app) else {
-            append_app_log(
-                app,
-                "error",
-                "automatic mesh account sync could not reload store",
+        let _ = mutate_store(app, |latest| {
+            push_event(
+                latest,
+                if failed == 0 { "info" } else { "warn" },
+                &format!("账号自动同步完成：成功 {succeeded} 台，失败 {failed} 台"),
             );
-            return;
-        };
-        store = latest_store;
-        push_event(
-            &mut store,
-            if failed == 0 { "info" } else { "warn" },
-            &format!("账号自动同步完成：成功 {succeeded} 台，失败 {failed} 台"),
-        );
-        let _ = save_store(app, &store);
+            Ok(())
+        });
     }
     if failed > 0 {
         append_app_log(

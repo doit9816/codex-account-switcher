@@ -42,6 +42,7 @@ import { RoutingPage } from "./components/routing/RoutingPage";
 import { RoutingLogSettings } from "./components/routing/RoutingLogSettings";
 import { MeshSharePage } from "./components/mesh/MeshSharePage";
 import { AppNavigation } from "./components/AppNavigation";
+import { GitHubStarCard } from "./components/GitHubStarCard";
 import { OpenCodeZenPreset, OPENCODE_ZEN_BASE_URL, OPENCODE_ZEN_FREE_MODELS } from "./components/OpenCodeZenPreset";
 import { ProfileRuleFields } from "./components/ProfileRuleFields";
 import { StatusPill } from "./components/StatusPill";
@@ -2540,6 +2541,14 @@ export default function App() {
         onRetentionDaysChange={setRoutingLogRetentionDays}
         onSave={saveRoutingLogSettings}
         onOpenLogs={openLogsDirectory}
+      />
+
+      <GitHubStarCard
+        t={t}
+        busy={busy}
+        onOpen={() => run(async () => {
+          await invoke("open_project_github");
+        }, undefined, "open_project_github")}
       />
 
       <Card className="settings-band update-band">

@@ -719,6 +719,41 @@ button:disabled {
   margin-top: -2px;
 }
 
+.github-star-band > .ant-card-body {
+  background: linear-gradient(135deg, #f7f9ff 0%, #fffaf0 100%);
+  flex-wrap: wrap;
+}
+
+.github-star-copy {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.github-star-copy h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.github-star-copy p {
+  color: #657283;
+  margin: 4px 0 0;
+  max-width: 680px;
+}
+
+.github-star-icon {
+  align-items: center;
+  background: #24292f;
+  border-radius: 10px;
+  color: #fff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
 .proxy-band > .ant-card-body,
 .auto-band > .ant-card-body,
 .routing-log-settings-band > .ant-card-body,

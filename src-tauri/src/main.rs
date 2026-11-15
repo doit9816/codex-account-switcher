@@ -15,7 +15,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::Argon2;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
 use fs2::FileExt;
 use provider_compat::{is_longcat_base_url, is_longcat_model};
 use rand::rngs::OsRng;
@@ -505,6 +505,10 @@ pub(crate) struct AccountProfile {
     pub(crate) quota_rule: QuotaRule,
     pub(crate) summary: AuthSummary,
     pub(crate) encrypted_auth_json: SecretEnvelope,
+    /// Changes only when the stored credentials change. Metadata such as
+    /// quota probe results must not advance this revision.
+    #[serde(default)]
+    pub(crate) credential_revision: u64,
     #[serde(default)]
     pub(crate) api_config: Option<ApiProviderConfig>,
     pub(crate) usage: UsageStats,
@@ -600,7 +604,7 @@ pub(crate) struct AuthSummary {
     pub(crate) auth_mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SecretEnvelope {
     pub(crate) v: u32,
@@ -785,6 +789,8 @@ struct ExportProfile {
     quota_rule: QuotaRule,
     summary: AuthSummary,
     auth_json: String,
+    #[serde(default)]
+    credential_revision: u64,
     #[serde(default)]
     api_config: Option<ApiProviderConfig>,
     usage: UsageStats,
@@ -1004,6 +1010,9 @@ fn upsert_auth_profile(
             .unwrap_or_default(),
         summary,
         encrypted_auth_json: encrypt_secret(auth_json.as_bytes(), &key)?,
+        credential_revision: existing_index
+            .map(|idx| store.profiles[idx].credential_revision.saturating_add(1))
+            .unwrap_or(1),
         api_config: None,
         usage,
         route_health: existing_index
@@ -1152,6 +1161,7 @@ fn add_api_profile(
             auth_mode: Some("apikey".to_string()),
         },
         encrypted_auth_json: encrypt_secret(auth_json.as_bytes(), &key)?,
+        credential_revision: 1,
         api_config: Some(ApiProviderConfig {
             provider_id,
             base_url,
@@ -1319,6 +1329,7 @@ fn update_profile_details(
         }
         if let Some(encrypted_api_auth) = encrypted_api_auth {
             profile.encrypted_auth_json = encrypted_api_auth;
+            profile.credential_revision = profile.credential_revision.saturating_add(1);
         }
         if api_config_changed {
             // A model/provider change starts a new upstream identity. Do not
@@ -1403,6 +1414,11 @@ fn open_logs_directory(app: AppHandle) -> Result<(), String> {
     let path = app_data_dir(&app)?.join(APP_LOG_DIR);
     fs::create_dir_all(&path).map_err(display_err)?;
     open_path_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn open_project_github() -> Result<(), String> {
+    open_external_url("https://github.com/doit9816/codex-account-switcher")
 }
 
 #[tauri::command]
@@ -1893,6 +1909,8 @@ fn refresh_profile_tokens_from_codex_home(
 
     store.profiles[idx].summary = summary;
     store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
+    store.profiles[idx].credential_revision =
+        store.profiles[idx].credential_revision.saturating_add(1);
     store.profiles[idx].updated_at = now_string();
     push_event(
         &mut store,
@@ -1937,6 +1955,8 @@ fn sync_current_auth_into_profile(
 
     store.profiles[idx].summary = summary;
     store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), key)?;
+    store.profiles[idx].credential_revision =
+        store.profiles[idx].credential_revision.saturating_add(1);
     store.profiles[idx].updated_at = now_string();
     push_event(
         store,
@@ -1977,6 +1997,8 @@ fn sync_auth_json_into_matching_profile(
     let profile_id = store.profiles[idx].id.clone();
     store.profiles[idx].summary = summary;
     store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), key)?;
+    store.profiles[idx].credential_revision =
+        store.profiles[idx].credential_revision.saturating_add(1);
     store.profiles[idx].updated_at = now_string();
     Ok(Some(profile_id))
 }
@@ -2087,6 +2109,8 @@ async fn refresh_all_profile_tokens(
                 store.profiles[idx].summary = summarize_auth(&updated_auth_json)?;
                 store.profiles[idx].encrypted_auth_json =
                     encrypt_secret(updated_auth_json.as_bytes(), &key)?;
+                store.profiles[idx].credential_revision =
+                    store.profiles[idx].credential_revision.saturating_add(1);
                 store.profiles[idx].usage.last_token_refresh_at = Some(now);
                 store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
                 store.profiles[idx].usage.last_token_refresh_error = None;
@@ -2312,6 +2336,8 @@ async fn switch_profile(
         };
         store.profiles[idx].summary = summarize_auth(&auth_json)?;
         store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
+        store.profiles[idx].credential_revision =
+            store.profiles[idx].credential_revision.saturating_add(1);
         store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
         store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
         store.profiles[idx].usage.last_token_refresh_error = None;
@@ -2635,6 +2661,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
         .iter()
         .position(|p| p.id == profile_id)
         .ok_or_else(|| "账号不存在".to_string())?;
+    let original_auth = store.profiles[idx].encrypted_auth_json.clone();
     let mut auth_json = String::from_utf8(decrypt_secret(
         &store.profiles[idx].encrypted_auth_json,
         &key,
@@ -2661,7 +2688,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
                 store.profiles[idx].usage.last_probe_status = Some(status.to_string());
                 store.profiles[idx].usage.last_error =
                     (status >= 400).then(|| format!("API HTTP {status}"));
-                save_store(&app, &store)?;
+                save_probe_store(&app, &store, &profile_id, &original_auth)?;
                 Ok(UsageProbeResult {
                     profile_id,
                     status: if status < 400 { "ok" } else { "http_error" }.to_string(),
@@ -2678,7 +2705,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
                 store.profiles[idx].usage.last_probe_at = Some(now);
                 store.profiles[idx].usage.last_probe_status = Some("network_error".to_string());
                 store.profiles[idx].usage.last_error = Some(error.to_string());
-                save_store(&app, &store)?;
+                save_probe_store(&app, &store, &profile_id, &original_auth)?;
                 Ok(UsageProbeResult {
                     profile_id,
                     status: "network_error".to_string(),
@@ -2706,7 +2733,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
                     Some("skipped_current".to_string());
                 store.profiles[idx].usage.last_token_refresh_error = Some(message.to_string());
                 push_event(&mut store, "warn", message);
-                save_store(&app, &store)?;
+                save_probe_store(&app, &store, &profile_id, &original_auth)?;
                 return Err(message.to_string());
             }
         } else {
@@ -2726,12 +2753,14 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
                     store.profiles[idx].usage.last_token_refresh_error = Some(error);
                     store.profiles[idx].usage.last_error = Some(message.clone());
                     push_event(&mut store, "warn", &message);
-                    save_store(&app, &store)?;
+                    save_probe_store(&app, &store, &profile_id, &original_auth)?;
                     return Err(message);
                 }
             };
             store.profiles[idx].summary = summarize_auth(&auth_json)?;
             store.profiles[idx].encrypted_auth_json = encrypt_secret(auth_json.as_bytes(), &key)?;
+            store.profiles[idx].credential_revision =
+                store.profiles[idx].credential_revision.saturating_add(1);
             store.profiles[idx].usage.last_token_refresh_at = Some(now_string());
             store.profiles[idx].usage.last_token_refresh_status = Some("ok".to_string());
             store.profiles[idx].usage.last_token_refresh_error = None;
@@ -2774,7 +2803,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
                 "info",
                 &format!("额度探测完成，HTTP {}", status),
             );
-            save_store(&app, &store)?;
+            save_probe_store(&app, &store, &profile_id, &original_auth)?;
             Ok(UsageProbeResult {
                 profile_id,
                 status: if status < 400 { "ok" } else { "http_error" }.to_string(),
@@ -2788,7 +2817,7 @@ async fn probe_usage(app: AppHandle, profile_id: String) -> Result<UsageProbeRes
             store.profiles[idx].usage.last_probe_status = Some("network_error".to_string());
             store.profiles[idx].usage.last_error = Some(err.to_string());
             push_event(&mut store, "warn", "额度探测失败，已回退到本地估算");
-            save_store(&app, &store)?;
+            save_probe_store(&app, &store, &profile_id, &original_auth)?;
             Ok(UsageProbeResult {
                 profile_id,
                 status: "network_error".to_string(),
@@ -2999,6 +3028,7 @@ fn export_bundle_internal(
                 quota_rule: p.quota_rule.clone(),
                 summary: p.summary.clone(),
                 auth_json,
+                credential_revision: p.credential_revision,
                 api_config: p.api_config.clone(),
                 usage: p.usage.clone(),
                 source_device_name: Some(source_device_name.clone()),
@@ -3095,6 +3125,20 @@ fn is_valid_mesh_account(profile: &AccountProfile) -> bool {
             .is_none_or(|expires_at| expires_at > Utc::now().timestamp())
 }
 
+fn local_credentials_not_older(
+    local_revision: u64,
+    local_updated_at: &str,
+    remote_revision: u64,
+    remote_updated_at: &str,
+) -> bool {
+    if local_revision == 0 && remote_revision == 0 {
+        // Backward compatibility for bundles created before credential
+        // revisions existed.
+        return local_updated_at >= remote_updated_at;
+    }
+    local_revision >= remote_revision
+}
+
 #[tauri::command]
 fn preview_bundle(bundle_path: String, password: String) -> Result<BundleManifest, String> {
     let payload = read_bundle(&bundle_path, &password)?;
@@ -3177,6 +3221,29 @@ pub(crate) fn import_accounts_bundle_with_scope(
                 || (p.summary.account_id.is_some()
                     && p.summary.account_id == profile.summary.account_id)
         });
+        if mesh_scope.is_some() {
+            if let Some(idx) = existing_index {
+                let local_revision = store.profiles[idx].credential_revision;
+                let remote_revision = profile.credential_revision;
+                let local_is_newer = local_credentials_not_older(
+                    local_revision,
+                    &store.profiles[idx].updated_at,
+                    remote_revision,
+                    &profile.updated_at,
+                );
+                if local_is_newer {
+                    append_app_log(
+                        &app,
+                        "info",
+                        &format!(
+                            "mesh_account_sync_skipped reason=local_credentials_not_older local_revision={} remote_revision={}",
+                            local_revision, remote_revision
+                        ),
+                    );
+                    continue;
+                }
+            }
+        }
         if profile_auth_is_expired_or_invalid(
             &profile.summary,
             &profile.usage,
@@ -3205,6 +3272,7 @@ pub(crate) fn import_accounts_bundle_with_scope(
             quota_rule: profile.quota_rule,
             summary: profile.summary,
             encrypted_auth_json,
+            credential_revision: profile.credential_revision,
             api_config: profile.api_config,
             usage: profile.usage,
             route_health: RouteHealth::default(),
@@ -3587,6 +3655,43 @@ pub(crate) fn save_store(app: &AppHandle, store: &AppStore) -> Result<(), String
         }
     }
     result
+}
+
+fn save_probe_store(
+    app: &AppHandle,
+    snapshot: &AppStore,
+    profile_id: &str,
+    original_auth: &SecretEnvelope,
+) -> Result<(), String> {
+    let Some(probed) = snapshot
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+    else {
+        return Ok(());
+    };
+    mutate_store(app, |latest| {
+        if let Some(profile) = latest
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+        {
+            profile.usage = probed.usage.clone();
+            profile.cooldown_until = probed.cooldown_until.clone();
+            if &profile.encrypted_auth_json == original_auth {
+                profile.encrypted_auth_json = probed.encrypted_auth_json.clone();
+                profile.summary = probed.summary.clone();
+                profile.credential_revision = probed.credential_revision;
+            }
+        }
+        if let Some(event) = snapshot.events.first() {
+            if latest.events.first().map(|item| &item.ts) != Some(&event.ts) {
+                latest.events.insert(0, event.clone());
+                latest.events.truncate(100);
+            }
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn mutate_store<T>(
@@ -6354,6 +6459,69 @@ fn app_log_path(data_dir: &Path, now: DateTime<Local>) -> PathBuf {
         .join(format!("app-{}.jsonl", now.format("%Y-%m-%d")))
 }
 
+pub(crate) fn cleanup_auxiliary_logs(app: &AppHandle, retention_days: u32) {
+    let Ok(data_dir) = app_data_root(app) else {
+        return;
+    };
+    let retention_days = retention_days.clamp(1, 365);
+    let cutoff = (Utc::now() - ChronoDuration::days(retention_days as i64)).date_naive();
+
+    if let Ok(entries) = fs::read_dir(data_dir.join(APP_LOG_DIR)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Some(date_text) = name
+                .strip_prefix("app-")
+                .and_then(|value| value.strip_suffix(".jsonl"))
+            else {
+                continue;
+            };
+            if NaiveDate::parse_from_str(date_text, "%Y-%m-%d")
+                .ok()
+                .is_some_and(|date| date < cutoff)
+            {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    let diagnostic_path = data_dir.join(SWITCH_DIAGNOSTICS_FILE);
+    let Ok(text) = fs::read_to_string(&diagnostic_path) else {
+        return;
+    };
+    let kept = text
+        .lines()
+        .filter(|line| {
+            serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|value| value.get("ts").and_then(Value::as_str).map(str::to_string))
+                .and_then(|ts| parse_time(&ts))
+                .is_some_and(|ts| ts.date_naive() >= cutoff)
+        })
+        .collect::<Vec<_>>();
+    if kept.len() != text.lines().count() {
+        let contents = if kept.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", kept.join("\n"))
+        };
+        let _ = fs::write(diagnostic_path, contents);
+    }
+}
+
+fn start_log_cleanup_task(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || loop {
+        let retention_days = load_store(&app)
+            .map(|store| store.settings.routing.log_retention_days)
+            .unwrap_or_else(|_| default_routing_log_retention_days());
+        cleanup_auxiliary_logs(&app, retention_days);
+        thread::sleep(Duration::from_secs(3_600));
+    });
+}
+
 fn redact_log_message(message: &str) -> String {
     let mut value = message.replace(['\r', '\n'], " ");
     let lower = value.to_ascii_lowercase();
@@ -6479,6 +6647,11 @@ fn main() {
             if let Ok(data_dir) = app_data_dir(app.handle()) {
                 oauth::restore_listener(app.handle().clone(), data_dir);
             }
+            let retention_days = load_store(app.handle())
+                .map(|store| store.settings.routing.log_retention_days)
+                .unwrap_or_else(|_| default_routing_log_retention_days());
+            cleanup_auxiliary_logs(app.handle(), retention_days);
+            start_log_cleanup_task(app.handle());
             routing::restore_enabled(app.handle().clone());
             easytier_mesh::restore_enabled(app.handle().clone());
             Ok(())
@@ -6513,6 +6686,7 @@ fn main() {
             test_proxy_settings,
             open_codex_home,
             open_logs_directory,
+            open_project_github,
             save_auto_settings,
             routing_status,
             routing_save_settings,
@@ -6756,6 +6930,7 @@ mod tests {
             quota_rule: QuotaRule::default(),
             summary: summarize_auth(&auth).unwrap(),
             encrypted_auth_json: encrypt_secret(auth.as_bytes(), &key).unwrap(),
+            credential_revision: 1,
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
@@ -6900,6 +7075,7 @@ mod tests {
                 quota_rule: QuotaRule::default(),
                 summary: summarize_auth(&fake_auth("acc-1", "one@example.com")).unwrap(),
                 auth_json: fake_auth("acc-1", "one@example.com"),
+                credential_revision: 1,
                 api_config: None,
                 usage: UsageStats::default(),
                 source_device_name: None,
@@ -7838,6 +8014,38 @@ command = "demo-server"
     }
 
     #[test]
+    fn credential_revision_wins_over_metadata_timestamp_during_mesh_sync() {
+        assert!(!local_credentials_not_older(
+            2,
+            "2026-11-15T17:00:00Z",
+            3,
+            "2026-11-15T16:00:00Z",
+        ));
+        assert!(local_credentials_not_older(
+            3,
+            "2026-11-15T16:00:00Z",
+            2,
+            "2026-11-15T17:00:00Z",
+        ));
+    }
+
+    #[test]
+    fn legacy_credentials_still_use_timestamp_during_mesh_sync() {
+        assert!(local_credentials_not_older(
+            0,
+            "2026-11-15T17:00:00Z",
+            0,
+            "2026-11-15T16:00:00Z",
+        ));
+        assert!(!local_credentials_not_older(
+            0,
+            "2026-11-15T16:00:00Z",
+            0,
+            "2026-11-15T17:00:00Z",
+        ));
+    }
+
+    #[test]
     fn token_keepalive_skips_only_current_and_relogin_required_profiles() {
         let current = test_profile("current", "acc-1", "one@example.com");
         let mut relogin = test_profile("relogin", "acc-2", "two@example.com");
@@ -7925,6 +8133,7 @@ command = "demo-server"
                 quota_rule: QuotaRule::default(),
                 summary: summarize_auth(&first_auth).unwrap(),
                 encrypted_auth_json: encrypt_secret(first_auth.as_bytes(), &key).unwrap(),
+                credential_revision: 1,
                 api_config: None,
                 usage: UsageStats::default(),
                 route_health: RouteHealth::default(),
@@ -7943,6 +8152,7 @@ command = "demo-server"
                 quota_rule: QuotaRule::default(),
                 summary: summarize_auth(&second_auth).unwrap(),
                 encrypted_auth_json: encrypt_secret(second_auth.as_bytes(), &key).unwrap(),
+                credential_revision: 1,
                 api_config: None,
                 usage: UsageStats::default(),
                 route_health: RouteHealth::default(),
@@ -8002,6 +8212,7 @@ command = "demo-server"
             quota_rule: QuotaRule::default(),
             summary: summarize_auth(&stored_auth).unwrap(),
             encrypted_auth_json: encrypt_secret(stored_auth.as_bytes(), &key).unwrap(),
+            credential_revision: 1,
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
@@ -8228,6 +8439,7 @@ command = "demo-server"
                 &key,
             )
             .unwrap(),
+            credential_revision: 1,
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),
@@ -8273,6 +8485,7 @@ command = "demo-server"
                 &key,
             )
             .unwrap(),
+            credential_revision: 1,
             api_config: None,
             usage: UsageStats::default(),
             route_health: RouteHealth::default(),

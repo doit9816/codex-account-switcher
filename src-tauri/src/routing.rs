@@ -3,7 +3,7 @@ use crate::routing_protocol::{
     chat_sse_reader, prepare_api_request, transform_chat_response, WireProtocol,
 };
 use crate::{
-    app_data_dir, append_app_log, build_probe_client, decrypt_secret,
+    app_data_dir, append_app_log, build_probe_client, cleanup_auxiliary_logs, decrypt_secret,
     default_routing_log_retention_days, display_err, encrypt_secret, load_master_key, load_store,
     mutate_store, now_string, parse_time, push_event, refresh_auth_json_with_client,
     refresh_error_requires_relogin, replace_file_with_rollback, resolve_codex_home, save_store,
@@ -267,6 +267,7 @@ pub(crate) fn save_log_settings(
         Ok(())
     })?;
     prune_logs(&app, retention_days)?;
+    cleanup_auxiliary_logs(&app, retention_days);
     status(app)
 }
 
@@ -1157,6 +1158,7 @@ fn refresh_profile_access(app: &AppHandle, profile_id: &str) -> Result<(), Strin
             .ok_or_else(|| "profile not found".to_string())?;
         profile.summary = summary;
         profile.encrypted_auth_json = encrypted_auth_json;
+        profile.credential_revision = profile.credential_revision.saturating_add(1);
         profile.usage.last_token_refresh_at = Some(now_string());
         profile.usage.last_token_refresh_status = Some("ok".to_string());
         profile.usage.last_token_refresh_error = None;
@@ -1749,6 +1751,7 @@ fn refresh_due_profiles(
             Ok(updated) => {
                 profile.summary = summarize_auth(&updated)?;
                 profile.encrypted_auth_json = encrypt_secret(updated.as_bytes(), key)?;
+                profile.credential_revision = profile.credential_revision.saturating_add(1);
                 profile.usage.last_token_refresh_at = Some(now_string());
                 profile.usage.last_token_refresh_status = Some("ok".to_string());
                 profile.usage.last_token_refresh_error = None;
@@ -2370,6 +2373,7 @@ mod tests {
                 nonce: String::new(),
                 ciphertext: String::new(),
             },
+            credential_revision: 1,
             api_config: None,
             usage: crate::UsageStats {
                 hourly_used,
