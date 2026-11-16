@@ -69,7 +69,9 @@ jobs:
         run: |
           $root = Join-Path $env:RUNNER_TEMP "WpdPack_4_1_2"
           $archive = Join-Path $env:RUNNER_TEMP "WpdPack_4_1_2.zip"
-          curl.exe --fail --location --retry 5 `
+          curl.exe --fail --location `
+            --retry 8 --retry-all-errors --retry-delay 5 `
+            --connect-timeout 30 --max-time 300 `
             --user-agent "CodexSwitcher-Release/1.0" `
             --output $archive `
             "https://www.winpcap.org/install/bin/WpdPack_4_1_2.zip"
